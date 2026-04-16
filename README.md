@@ -1,4 +1,4 @@
-# OpenClaw 一键安装器
+# OpenClaw 一键安装器(本项目基于kimicode vibecoding ，大部分时间本人都只是再写自然语言)
 
 面向小白用户的 OpenClaw（小龙虾）图形化一键安装工具。
 
@@ -9,6 +9,7 @@
 - **自动启动服务**：安装完成后自动启动 gateway 服务
 - **自动打开 WebUI**：自动获取 token 并打开浏览器访问 WebChat
 - **管理员权限**：程序启动即请求管理员权限，确保安装顺利
+- **支持多操作系统** ubuntu，windows，mac，均可运行build.py一键获得安装包
 
 ## 使用方式
 
@@ -43,7 +44,8 @@ uv run python main.py
 
 **打包可执行文件：**
 ```bash
-# 输出到 F:\download_exe\
+# 输出到 ~.\dist\openclaw.exe
+
 uv run python build.py
 
 # 或指定其他路径
