@@ -1,0 +1,12 @@
+[project]
+name = "one-click-deployment-of-openclaw"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "psutil>=7.2.2",
+    "pyinstaller>=6.11.0,<6.12.0",
+    "pyside6>=6.8.0,<6.9.0",
+]

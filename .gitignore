@@ -1,0 +1,44 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.egg-info
+
+# Build outputs
+build/
+dist/
+wheels/
+
+# Virtual environments
+.venv
+
+# Lint / Format caches
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / local config
+.python-version
+.env
+.env.local
+
+# Logs and temp files
+*.log
+logs.txt
+temp_*
+
+# Media / docs that shouldn't be versioned
+image.png
+*.docx
+*.doc
+
+# PyInstaller auto-generated spec (we use build.py as source of truth)
+*.spec
+
+# Project-specific excluded files
+AGENTS.md
+install.ps1
+install.sh
