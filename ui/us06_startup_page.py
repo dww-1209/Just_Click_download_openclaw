@@ -432,7 +432,8 @@ class US06StartupPage(QWidget):
         self.finish_button.hide()
 
     def _start_countdown(self):
-        """启动3秒倒计时，等待网关连接稳定"""
+        """启动8秒倒计时，等待网关连接稳定"""
+        
         self._countdown_value = 8
         self.open_webchat_btn.setEnabled(False)
         self.open_webchat_btn.setStyleSheet(

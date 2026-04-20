@@ -5,6 +5,8 @@ import signal
 import shutil
 import time
 import sys
+import stat
+import threading
 
 from pathlib import Path
 from typing import List, Callable, Optional
@@ -36,26 +38,22 @@ class OpenClawInstaller:
         self.is_cancelled = False
         self.start_time: float = 0.0
 
+    @staticmethod
+    def _remove_readonly(func, path, _):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
     def install(
         self,
         on_progress: Callable[[InstallProgress], None] = None,
         on_log: Callable[[str], None] = None,
     ) -> InstallResult:
-        """执行安装
-
-        Args:
-            on_progress: 进度回调函数
-            on_log: 日志回调函数
-
-        Returns:
-            InstallResult: 安装结果
-        """
+        """执行安装（全平台统一使用 Gitee + pnpm 本地构建）"""
         self.start_time = time.time()
         self.log_lines = []
         self.is_cancelled = False
 
         try:
-            # 1. 先确保前置依赖已就绪
             if on_progress:
                 on_progress(
                     InstallProgress(
@@ -65,7 +63,7 @@ class OpenClawInstaller:
                         current_task="检查前置依赖",
                     )
                 )
-            
+
             if self.os_type == "windows":
                 self._log("检查 Git 安装状态...", on_log)
                 if not ensure_git_installed(on_log=lambda msg: self._log(msg, on_log)):
@@ -78,64 +76,49 @@ class OpenClawInstaller:
                     )
                 self._log("Git 已就绪", on_log)
             elif self.os_type == "macos":
-                # macOS：curl 默认自带；git 如果没装，官方脚本调用时系统会自动弹窗引导安装 Xcode Command Line Tools
-                self._log("检查前置依赖 (curl)...", on_log)
-                try:
-                    result = subprocess.run(
-                        ["curl", "--version"],
-                        capture_output=True,
-                        shell=False,
-                        timeout=5,
-                    )
-                    if result.returncode != 0:
-                        raise FileNotFoundError()
-                except FileNotFoundError:
-                    return InstallResult(
-                        status=InstallStatus.FAILED,
-                        message="缺少 curl",
-                        error_message="系统未找到 curl，请检查 macOS 系统完整性后重试。",
-                        log_lines=self.log_lines.copy(),
-                        duration_seconds=time.time() - self.start_time,
-                    )
-                self._log("前置依赖已就绪（macOS 会自动处理 Git 安装）", on_log)
+                self._log("检查前置依赖 (git, curl)...", on_log)
+                for cmd, name in [("git", "Git"), ("curl", "curl")]:
+                    try:
+                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=5)
+                        if result.returncode != 0:
+                            raise FileNotFoundError()
+                    except FileNotFoundError:
+                        return InstallResult(
+                            status=InstallStatus.FAILED,
+                            message=f"缺少 {name}",
+                            error_message=f"系统未找到 {name}，请安装 Xcode Command Line Tools 后重试。",
+                            log_lines=self.log_lines.copy(),
+                            duration_seconds=time.time() - self.start_time,
+                        )
+                self._log("前置依赖已就绪", on_log)
             else:
-                # Linux：先 pkexec 预装系统依赖，再运行官方脚本（避免 sudo 无 TTY 且保证命令对普通用户可见）
+                # Linux
                 self._log("检查前置依赖 (git, curl)...", on_log)
                 missing_deps = []
                 for cmd, name in [("git", "Git"), ("curl", "curl")]:
                     try:
-                        result = subprocess.run(
-                            [cmd, "--version"],
-                            capture_output=True,
-                            shell=False,
-                            timeout=5,
-                        )
+                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=5)
                         if result.returncode != 0:
                             missing_deps.append(name)
                     except FileNotFoundError:
                         missing_deps.append(name)
-                
                 if missing_deps:
                     self._log(f"缺少依赖: {', '.join(missing_deps)}，将在系统授权后自动安装", on_log)
                 else:
                     self._log("前置依赖已就绪", on_log)
-                
-                self._log("正在安装系统依赖 (Node.js 22, pnpm, cmake, build tools)...", on_log)
+
+                self._log("正在安装系统依赖 (Node.js 22, pnpm)...", on_log)
                 pkexec_dep_cmd = (
                     "pkexec bash -c '"
                     "apt update >/dev/null 2>&1; "
                     "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -E - >/dev/null 2>&1; "
-                    "apt-get install -y nodejs git curl cmake make build-essential >/dev/null 2>&1; "
+                    "apt-get install -y nodejs git curl >/dev/null 2>&1; "
                     "npm install -g pnpm >/dev/null 2>&1; "
                     "echo \"[OK] system deps ready\""
                     "'"
                 )
                 dep_result = subprocess.run(
-                    pkexec_dep_cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
+                    pkexec_dep_cmd, shell=True, capture_output=True, text=True, timeout=600
                 )
                 if dep_result.stdout:
                     for line in dep_result.stdout.splitlines():
@@ -147,84 +130,34 @@ class OpenClawInstaller:
                     return InstallResult(
                         status=InstallStatus.FAILED,
                         message="系统依赖安装失败",
-                        error_message=f"自动安装 Node.js / cmake 失败，请确保网络畅通后重试。\n错误：{err}",
+                        error_message=f"自动安装 Node.js 失败，请确保网络畅通后重试。\n错误：{err}",
                         log_lines=self.log_lines.copy(),
                         duration_seconds=time.time() - self.start_time,
                     )
                 self._log("系统依赖安装完成", on_log)
 
-            # 2. 执行 OpenClaw 安装（使用国内镜像）
-            # 先清理残留目录，避免之前测试注入的脏数据导致 pnpm EPERM
+            # 清理残留目录
             cleanup_dirs = [
-                os.path.expanduser("~\\openclaw"),
-                os.path.expanduser("~\\openclaw-cn"),
-            ] if self.os_type == "windows" else [
-                os.path.expanduser("~/.openclaw"),
-                os.path.expanduser("~/openclaw-cn"),
+                os.path.expanduser("~\\openclaw") if self.os_type == "windows" else os.path.expanduser("~/.openclaw"),
+                os.path.expanduser("~\\openclaw-cn") if self.os_type == "windows" else os.path.expanduser("~/openclaw-cn"),
             ]
+            if self.os_type == "windows":
+                cleanup_dirs.extend([
+                    os.path.expanduser(r"~\AppData\Local\openclaw"),
+                    os.path.expanduser(r"~\AppData\Roaming\npm\node_modules\openclaw"),
+                    os.path.expanduser(r"~\AppData\Roaming\npm\node_modules\openclaw-cn"),
+                ])
             for d in cleanup_dirs:
                 if os.path.exists(d):
                     try:
-                        shutil.rmtree(d)
+                        shutil.rmtree(d, onerror=self._remove_readonly)
                         self._log(f"已清理残留目录: {d}", on_log)
                     except Exception as e:
                         self._log(f"清理残留目录失败 {d}: {e}", on_log)
 
-            command = get_official_command(self.os_type, use_mirror=True)
-            self._log("准备执行安装命令", on_log)
-            self._log(f"操作系统: {self.os_type}", on_log)
-            self._log("使用国内镜像加速...", on_log)
-
-            # 报告开始下载阶段
-            if on_progress:
-                on_progress(
-                    InstallProgress(
-                        stage=InstallStage.DOWNLOADING,
-                        progress_percent=0,
-                        message="开始下载 OpenClaw...",
-                        current_task="执行官方安装命令",
-                    )
-                )
-
-            # 执行命令（隐藏窗口模式）
-            install_result = self._execute_command(command, on_progress, on_log)
-            
-            # Linux/macOS 补救：如果安装主体成功但命令不可用，尝试 npm link
-            if self.os_type in ("linux", "macos") and install_result.status == InstallStatus.FAILED:
-                log_text_all = "\n".join(install_result.log_lines)
-                if any(marker in log_text_all for marker in ["安装完成", "OpenClaw CN 安装完成", "✓ OpenClaw CN"]):
-                    self._log("检测到安装主体已完成，尝试修复 openclaw 命令...", on_log)
-                    fix_cmds = [
-                        'bash -c "cd ~/openclaw-cn && npm run build 2>&1 || true"',
-                        'bash -c "mkdir -p ~/.local/lib/node_modules ~/.local/bin && export NPM_CONFIG_PREFIX=~/.local && cd ~/openclaw-cn && npm link 2>&1 || true"',
-                        'bash -c "[ -f ~/.local/bin/openclaw ] && chmod +x ~/.local/bin/openclaw 2>&1 || true"',
-                        'bash -c "[ -f ~/openclaw-cn/bin/openclaw ] && ln -sf ~/openclaw-cn/bin/openclaw ~/.local/bin/openclaw 2>&1 || true"',
-                    ]
-                    for fix_cmd in fix_cmds:
-                        fix_result = subprocess.run(fix_cmd, shell=True, capture_output=True, text=True, timeout=300)
-                        if fix_result.stdout:
-                            for line in fix_result.stdout.splitlines():
-                                if line.strip():
-                                    self._log(line.strip(), on_log)
-                    
-                    # 确保 ~/.local/bin 在 .bashrc / .zshrc / .profile 中
-                    self._ensure_local_bin_in_path(on_log)
-                    
-                    # 验证是否修复成功：命令可用且 dist/entry 存在
-                    env_cmd = 'export PATH="$HOME/.local/bin:$PATH"; which openclaw && ls ~/openclaw-cn/dist/entry.* 1>/dev/null 2>&1'
-                    verify = subprocess.run(["bash", "-c", env_cmd], capture_output=True, text=True, timeout=5)
-                    if verify.returncode == 0:
-                        self._log(f"openclaw 已修复: {verify.stdout.strip()}", on_log)
-                        return InstallResult(
-                            status=InstallStatus.SUCCESS,
-                            message="OpenClaw 安装成功",
-                            log_lines=self.log_lines.copy(),
-                            duration_seconds=time.time() - self.start_time,
-                        )
-                    else:
-                        self._log("openclaw 修复失败: 构建产物缺失或命令不可用，建议手动执行安装脚本", on_log)
-            
-            return install_result
+            # 统一走本地构建流程
+            target_dir = os.path.expanduser("~\\openclaw-cn") if self.os_type == "windows" else os.path.expanduser("~/openclaw-cn")
+            return self._install_local_build(target_dir, on_progress, on_log)
 
         except Exception as e:
             error_msg = f"安装过程出错: {str(e)}"
@@ -502,6 +435,621 @@ class OpenClawInstaller:
                 log_lines=self.log_lines.copy(),
                 duration_seconds=time.time() - self.start_time,
             )
+
+    def _install_local_build(
+        self,
+        target_dir: str,
+        on_progress: Callable[[InstallProgress], None],
+        on_log: Callable[[str], None],
+    ) -> InstallResult:
+        """全平台统一本地构建流程：Gitee 克隆 + pnpm 构建"""
+        is_windows = self.os_type == "windows"
+        startupinfo = None
+        creationflags = 0
+        if is_windows:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["NODE_OPTIONS"] = "--max-old-space-size=8192"
+        project_dir = Path(target_dir)
+
+        def _check_cancelled() -> Optional[InstallResult]:
+            if self.is_cancelled:
+                return InstallResult(
+                    status=InstallStatus.CANCELLED,
+                    message="安装已取消",
+                    log_lines=self.log_lines.copy(),
+                    duration_seconds=time.time() - self.start_time,
+                )
+            return None
+
+        def _run(cmd: str, timeout: float = 300) -> subprocess.CompletedProcess:
+            kw = {"shell": True, "capture_output": True, "text": True, "timeout": timeout, "env": env}
+            if is_windows:
+                kw["startupinfo"] = startupinfo
+                kw["creationflags"] = creationflags
+            return subprocess.run(cmd, **kw)
+
+        def _run_in_project(cmd: str, timeout: float = 300, progress: InstallProgress = None) -> int:
+            if is_windows:
+                full_cmd = f'cd /d "{project_dir}" && {cmd}'
+            else:
+                full_cmd = f'cd "{project_dir}" && {cmd}'
+            if progress and on_progress:
+                on_progress(progress)
+            return self._run_cmd_with_streaming(
+                full_cmd, env, timeout,
+                startupinfo, creationflags, on_log
+            )
+
+        def _which(cmd_name: str) -> bool:
+            if is_windows:
+                return _run(f"where {cmd_name}", timeout=5).returncode == 0
+            return subprocess.run(["which", cmd_name], capture_output=True, timeout=5).returncode == 0
+
+        # 0. 卸载已有的全局 openclaw（兼容旧版）
+        self._log("检查并清理已有的 OpenClaw 安装...", on_log)
+        for pkg_cmd in [
+            "npm unlink -g openclaw",
+            "npm uninstall -g openclaw",
+            "npm unlink -g openclaw-cn",
+            "npm uninstall -g openclaw-cn",
+        ]:
+            _run(pkg_cmd, timeout=30)
+
+        # 1. 检查/安装 Node.js 22+
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        self._log("检查 Node.js 环境...", on_log)
+        node_ok = False
+        node_ver = _run("node -v", timeout=10)
+        if node_ver.returncode == 0:
+            try:
+                major = int(node_ver.stdout.strip().lstrip("v").split(".")[0])
+                if major >= 22:
+                    node_ok = True
+                    self._log(f"Node.js {node_ver.stdout.strip()} 已满足要求", on_log)
+            except Exception:
+                pass
+
+        if not node_ok:
+            self._log("正在安装 Node.js 22...", on_log)
+            if on_progress:
+                on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=10, message="正在安装系统依赖...", current_task="安装 Node.js"))
+
+            if is_windows:
+                node_urls = [
+                    "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0-x64.msi",
+                    "https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi",
+                ]
+                node_msi = Path(os.environ.get("TEMP", "C:\\Windows\\Temp")) / "node-v22-installer.msi"
+                downloaded = False
+                for url in node_urls:
+                    if _check_cancelled():
+                        return _check_cancelled()
+                    self._log(f"尝试下载 Node.js: {url}", on_log)
+                    ps_cmd = (
+                        f'$ProgressPreference = "SilentlyContinue"; '
+                        f'try {{ Invoke-WebRequest -Uri "{url}" -OutFile "{node_msi}" '
+                        f'-UseBasicParsing -TimeoutSec 180; exit 0 }} catch {{ exit 1 }}'
+                    )
+                    result = _run(ps_cmd, timeout=200)
+                    if result.returncode == 0 and node_msi.exists() and node_msi.stat().st_size > 50 * 1024 * 1024:
+                        downloaded = True
+                        self._log("Node.js 安装包下载成功", on_log)
+                        break
+                if not downloaded:
+                    return InstallResult(
+                        status=InstallStatus.FAILED, message="Node.js 下载失败",
+                        error_message="无法下载 Node.js 22 安装包，请检查网络后重试",
+                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                    )
+                install_result = _run(f'msiexec /i "{node_msi}" /qn /norestart', timeout=300)
+                if install_result.returncode != 0:
+                    err = install_result.stderr.strip() if install_result.stderr else "未知错误"
+                    self._log(f"Node.js 安装失败: {err[:200]}", on_log)
+                    return InstallResult(
+                        status=InstallStatus.FAILED, message="Node.js 安装失败",
+                        error_message=f"无法安装 Node.js: {err}",
+                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                    )
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+                        sys_path, _ = winreg.QueryValueEx(key, "Path")
+                    os.environ["Path"] = sys_path + ";" + os.environ.get("Path", "")
+                except Exception:
+                    pass
+                node_path = r"C:\Program Files\nodejs"
+                if os.path.exists(node_path):
+                    os.environ["Path"] = node_path + os.pathsep + os.environ.get("Path", "")
+            elif self.os_type == "macos":
+                node_pkg = Path(os.path.expanduser("~/Downloads")) / "node-v22-installer.pkg"
+                node_urls = [
+                    "https://nodejs.org/dist/v22.14.0/node-v22.14.0.pkg",
+                    "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0.pkg",
+                ]
+                downloaded = False
+                for url in node_urls:
+                    if _check_cancelled():
+                        return _check_cancelled()
+                    self._log(f"尝试下载 Node.js: {url}", on_log)
+                    r = subprocess.run(
+                        ["curl", "-fsSL", "-o", str(node_pkg), url],
+                        capture_output=True, timeout=180
+                    )
+                    if r.returncode == 0 and node_pkg.exists() and node_pkg.stat().st_size > 30 * 1024 * 1024:
+                        downloaded = True
+                        self._log("Node.js 安装包下载成功", on_log)
+                        break
+                if not downloaded:
+                    return InstallResult(
+                        status=InstallStatus.FAILED, message="Node.js 下载失败",
+                        error_message="无法下载 Node.js 22 安装包，请检查网络后重试",
+                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                    )
+                install_result = subprocess.run(
+                    ["installer", "-pkg", str(node_pkg), "-target", "/"],
+                    capture_output=True, text=True, timeout=300
+                )
+                if install_result.returncode != 0:
+                    err = install_result.stderr.strip() if install_result.stderr else "未知错误"
+                    self._log(f"Node.js 安装失败: {err[:200]}", on_log)
+                    return InstallResult(
+                        status=InstallStatus.FAILED, message="Node.js 安装失败",
+                        error_message=f"无法安装 Node.js: {err}",
+                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                    )
+                # 刷新 PATH（macOS 安装器通常把 node 放在 /usr/local/bin）
+                os.environ["PATH"] = "/usr/local/bin:" + os.environ.get("PATH", "")
+            else:
+                # Linux：理论上 install() 里已经通过 pkexec 安装了 Node.js，这里再检查一次
+                self._log("Linux Node.js 应在系统依赖阶段已安装，跳过独立安装", on_log)
+
+            env["PATH"] = os.environ.get("PATH", "")
+            self._log("Node.js 安装完成，PATH 已刷新", on_log)
+
+        # 2. 检查/安装 pnpm
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        self._log("检查 pnpm 环境...", on_log)
+        if not _which("pnpm"):
+            self._log("正在安装 pnpm...", on_log)
+            if on_progress:
+                on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=15, message="正在安装系统依赖...", current_task="安装 pnpm"))
+            npm_cmd = "npm.cmd" if is_windows else "npm"
+            pnpm_install = _run(f"{npm_cmd} install -g pnpm", timeout=120)
+            if pnpm_install.returncode != 0:
+                err = pnpm_install.stderr.strip() if pnpm_install.stderr else "未知错误"
+                self._log(f"pnpm 安装失败: {err[:200]}", on_log)
+                return InstallResult(
+                    status=InstallStatus.FAILED, message="pnpm 安装失败",
+                    error_message=f"无法安装 pnpm: {err}",
+                    log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                )
+            self._log("pnpm 安装完成", on_log)
+        else:
+            self._log("pnpm 已存在", on_log)
+
+        # 3. 从 Gitee 克隆仓库
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        self._log("正在从 Gitee 下载 openclaw-cn...", on_log)
+        if on_progress:
+            on_progress(InstallProgress(stage=InstallStage.DOWNLOADING, progress_percent=20, message="正在下载 OpenClaw...", current_task="git clone"))
+
+        clone_result = _run(
+            f'git clone https://gitee.com/OpenClaw-CN/openclaw-cn.git "{project_dir}"',
+            timeout=300,
+        )
+        if clone_result.stdout:
+            for line in clone_result.stdout.splitlines()[-50:]:
+                if line.strip():
+                    self._log(line.strip(), on_log)
+        if clone_result.stderr:
+            for line in clone_result.stderr.splitlines()[-20:]:
+                if line.strip():
+                    self._log(line.strip(), on_log)
+        if clone_result.returncode != 0:
+            return InstallResult(
+                status=InstallStatus.FAILED, message="下载失败",
+                error_message="从 Gitee 克隆仓库失败，请检查网络或 Git 安装后重试",
+                log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+            )
+        self._log("仓库克隆完成", on_log)
+
+        # 4. 设置 pnpm 国内镜像
+        _run_in_project('pnpm config set registry https://registry.npmmirror.com/', timeout=30)
+
+        # 5. pnpm install
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        self._log("正在安装依赖...", on_log)
+        if on_progress:
+            on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=35, message="正在安装依赖...", current_task="pnpm install"))
+        rc = _run_in_project("pnpm install", timeout=600)
+        if rc != 0:
+            return InstallResult(
+                status=InstallStatus.FAILED, message="依赖安装失败",
+                error_message="pnpm install 失败，请检查网络后重试",
+                log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+            )
+
+        # 6. pnpm ui:build
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        self._log("正在构建前端界面...", on_log)
+        if on_progress:
+            on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=55, message="正在构建前端界面...", current_task="pnpm ui:build"))
+        rc = _run_in_project("pnpm ui:build", timeout=300)
+        if rc != 0:
+            return InstallResult(
+                status=InstallStatus.FAILED, message="前端构建失败",
+                error_message="pnpm ui:build 失败",
+                log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+            )
+
+        # 7. pnpm build（Windows 需确保 bash 可用）
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        if is_windows:
+            bash_dir = ""
+            for candidate in [r"C:\Program Files\Git\bin", r"C:\Program Files (x86)\Git\bin"]:
+                if os.path.exists(os.path.join(candidate, "bash.exe")):
+                    bash_dir = candidate
+                    break
+            if bash_dir:
+                self._log(f"找到 Git bash: {bash_dir}", on_log)
+                env["PATH"] = bash_dir + os.pathsep + env.get("PATH", "")
+            else:
+                where_bash = _run("where bash", timeout=5)
+                if where_bash.returncode == 0 and where_bash.stdout.strip():
+                    bash_dir = os.path.dirname(where_bash.stdout.strip().splitlines()[0].strip())
+                    if bash_dir:
+                        env["PATH"] = bash_dir + os.pathsep + env.get("PATH", "")
+                        self._log(f"找到 bash: {bash_dir}", on_log)
+
+        self._log("正在构建核心服务...", on_log)
+        if on_progress:
+            on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=70, message="正在构建核心服务...", current_task="pnpm build"))
+        rc = _run_in_project("pnpm build", timeout=300)
+        if rc != 0:
+            return InstallResult(
+                status=InstallStatus.FAILED, message="核心构建失败",
+                error_message="pnpm build 失败",
+                log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+            )
+
+        # 8. 初始化配置
+        cancelled = _check_cancelled()
+        if cancelled:
+            return cancelled
+
+        self._log("正在初始化配置...", on_log)
+        if on_progress:
+            on_progress(InstallProgress(stage=InstallStage.CONFIGURING, progress_percent=85, message="正在初始化配置...", current_task="pnpm openclaw onboard"))
+        rc = _run_in_project(
+            "pnpm openclaw onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon --node-manager pnpm --skip-channels",
+            timeout=120,
+        )
+        if rc != 0:
+            self._log("onboard 返回非零，但可能已部分完成，继续尝试...", on_log)
+
+        # 9. 创建全局命令 wrapper
+        self._log("正在创建全局命令...", on_log)
+        if is_windows:
+            npm_bin_dir = ""
+            npm_bin_result = _run("npm.cmd bin -g", timeout=10)
+            if npm_bin_result.returncode == 0 and npm_bin_result.stdout.strip():
+                npm_bin_dir = npm_bin_result.stdout.strip()
+            else:
+                npm_bin_dir = str(Path(os.path.expanduser(r"~\AppData\Roaming\npm")))
+            Path(npm_bin_dir).mkdir(parents=True, exist_ok=True)
+            for wrapper_name in ["openclaw.cmd", "openclaw-cn.cmd"]:
+                wrapper_path = Path(npm_bin_dir) / wrapper_name
+                wrapper_content = (
+                    f'@echo off\n'
+                    f'set CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com/\n'
+                    f'cd /d "{project_dir}"\n'
+                    f'pnpm openclaw %*\n'
+                )
+                try:
+                    wrapper_path.write_text(wrapper_content, encoding="utf-8")
+                    self._log(f"已创建全局命令: {wrapper_path}", on_log)
+                except Exception as e:
+                    self._log(f"创建全局命令失败 {wrapper_path}: {e}", on_log)
+        else:
+            # macOS / Linux：在 ~/.local/bin 下创建 shell 脚本
+            local_bin = Path(os.path.expanduser("~/.local/bin"))
+            local_bin.mkdir(parents=True, exist_ok=True)
+            for wrapper_name in ["openclaw", "openclaw-cn"]:
+                wrapper_path = local_bin / wrapper_name
+                wrapper_content = (
+                    f'#!/bin/bash\n'
+                    f'export CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com/\n'
+                    f'cd "{project_dir}" || exit 1\n'
+                    f'pnpm openclaw "$@"\n'
+                )
+                try:
+                    wrapper_path.write_text(wrapper_content, encoding="utf-8")
+                    wrapper_path.chmod(0o755)
+                    self._log(f"已创建全局命令: {wrapper_path}", on_log)
+                except Exception as e:
+                    self._log(f"创建全局命令失败 {wrapper_path}: {e}", on_log)
+            npm_bin_dir = str(local_bin)
+            self._ensure_local_bin_in_path(on_log)
+
+        # 10. 刷新 PATH 并验证
+        self._log("刷新 PATH 并验证 openclaw 命令...", on_log)
+        if npm_bin_dir and os.path.exists(npm_bin_dir):
+            current_path = os.environ.get("Path" if is_windows else "PATH", "")
+            path_sep = ";" if is_windows else ":"
+            if npm_bin_dir.lower() not in current_path.lower():
+                path_key = "Path" if is_windows else "PATH"
+                os.environ[path_key] = npm_bin_dir + path_sep + current_path
+                self._log(f"已将 {npm_bin_dir} 加入当前进程 PATH", on_log)
+            env["PATH" if is_windows else "PATH"] = os.environ.get("Path" if is_windows else "PATH", "")
+
+        if is_windows:
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+                    user_path, _ = winreg.QueryValueEx(key, "Path")
+                user_path_expanded = os.path.expandvars(user_path)
+                current_path = os.environ.get("Path", "")
+                merged_paths = [p.strip() for p in current_path.split(";") if p.strip()]
+                for p in user_path_expanded.split(";"):
+                    p_strip = p.strip()
+                    if p_strip and p_strip.lower() not in [mp.lower() for mp in merged_paths]:
+                        merged_paths.append(p_strip)
+                os.environ["Path"] = ";".join(merged_paths)
+                env["Path"] = os.environ["Path"]
+            except Exception as e:
+                self._log(f"刷新 PATH 时出错（非致命）: {e}", on_log)
+
+        def _verify_cmd(cmd: str) -> bool:
+            if is_windows:
+                return _run(f"where {cmd}", timeout=10).returncode == 0
+            return subprocess.run(["which", cmd], capture_output=True, timeout=5).returncode == 0
+
+        if not _verify_cmd("openclaw-cn") and not _verify_cmd("openclaw"):
+            if is_windows and npm_bin_dir:
+                try:
+                    _run(f'setx PATH "%PATH%;{npm_bin_dir}"', timeout=10)
+                except Exception:
+                    pass
+                env["Path"] = os.environ.get("Path", "")
+                if not _verify_cmd("openclaw-cn") and not _verify_cmd("openclaw"):
+                    return InstallResult(
+                        status=InstallStatus.FAILED, message="openclaw 命令不可用",
+                        error_message="安装成功但系统 PATH 中找不到 openclaw/openclaw-cn 命令，请重启程序后重试",
+                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                    )
+            else:
+                return InstallResult(
+                    status=InstallStatus.FAILED, message="openclaw 命令不可用",
+                    error_message="未找到 openclaw/openclaw-cn 可执行文件",
+                    log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                )
+
+        self._log("安装成功", on_log)
+        if on_progress:
+            on_progress(InstallProgress(stage=InstallStage.COMPLETED, progress_percent=100, message="安装完成", current_task="完成"))
+        return InstallResult(
+            status=InstallStatus.SUCCESS, message="OpenClaw 安装成功",
+            log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+        )
+
+    def _inject_prebuilt_matrix_packages(
+        self,
+        npm_root: Path,
+        on_log: Callable[[str], None],
+    ) -> bool:
+        """将本地 assets 中完整的 matrix 预置包复制到 npm 全局目录，完全绕过网络"""
+        try:
+            assets_dir = self._get_assets_dir()
+            packages = [
+                "matrix-sdk-crypto-nodejs",
+                "matrix-sdk-crypto-wasm",
+            ]
+            ok = True
+            for pkg in packages:
+                src = assets_dir / "windows" / "@matrix-org" / pkg
+                dst = npm_root / "@matrix-org" / pkg
+                pkg_json = src / "package.json"
+                if not pkg_json.exists():
+                    continue
+                try:
+                    if dst.exists():
+                        shutil.rmtree(dst, onerror=self._remove_readonly)
+                    shutil.copytree(src, dst)
+                    self._log(f"已注入本地预置包: {pkg}", on_log)
+                except Exception as e:
+                    self._log(f"注入预置包 {pkg} 失败: {e}", on_log)
+                    ok = False
+            return ok
+        except Exception as e:
+            self._log(f"预置包注入失败: {e}", on_log)
+            return False
+
+    def _fix_matrix_node_global(
+        self,
+        env: dict,
+        startupinfo,
+        creationflags: int,
+        on_log: Callable[[str], None],
+    ) -> bool:
+        """全局安装失败后，确保 matrix 原生模块可用（优先本地预置包， fallback 网络下载）"""
+        try:
+            version = "0.4.0"
+            filename = "matrix-sdk-crypto.win32-x64-msvc.node"
+
+            # 获取 npm 全局 root
+            npm_root = Path(os.path.expanduser(r"~\AppData\Roaming\npm\node_modules"))
+            npm_root_result = subprocess.run(
+                "npm.cmd root -g",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+            if npm_root_result.returncode == 0 and npm_root_result.stdout.strip():
+                npm_root = Path(npm_root_result.stdout.strip())
+
+            matrix_dir = npm_root / "@matrix-org" / "matrix-sdk-crypto-nodejs"
+
+            # 1. 优先完整复制本地预置包（包含 .node / wasm / package.json 等）
+            if self._inject_prebuilt_matrix_packages(npm_root, on_log):
+                dest_file = matrix_dir / filename
+                if dest_file.exists() and dest_file.stat().st_size > 1000000:
+                    self._log("matrix 原生模块已通过本地预置包就绪", on_log)
+                    return True
+
+            # 2. 本地没有完整包，尝试网络下载单个 .node 文件（仍需骨架，但先尝试下载）
+            matrix_dir.mkdir(parents=True, exist_ok=True)
+            dest_file = matrix_dir / filename
+            url = f"https://github.com/matrix-org/matrix-rust-sdk-crypto-nodejs/releases/download/v{version}/{filename}"
+            mirror_urls = [
+                f"https://mirror.ghproxy.com/{url}",
+                f"https://gh.api.99988866.xyz/{url}",
+                url,
+            ]
+
+            downloaded = False
+            for mu in mirror_urls:
+                if self.is_cancelled:
+                    return False
+                self._log("尝试下载 matrix 预编译文件...", on_log)
+                ps_cmd = (
+                    f'$ProgressPreference = "SilentlyContinue"; '
+                    f'try {{ Invoke-WebRequest -Uri "{mu}" -OutFile "{dest_file}" '
+                    f'-UseBasicParsing -TimeoutSec 120; exit 0 }} catch {{ exit 1 }}'
+                )
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    timeout=150,
+                    env=env,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if result.returncode == 0 and dest_file.exists() and dest_file.stat().st_size > 1000000:
+                    self._log(f"下载成功: {filename}", on_log)
+                    downloaded = True
+                    break
+                else:
+                    self._log("下载失败，尝试下一个源...", on_log)
+
+            return downloaded
+
+        except Exception as e:
+            self._log(f"修复 matrix 失败: {e}", on_log)
+            return False
+
+    def _run_cmd_with_streaming(
+        self,
+        cmd: str,
+        env: dict,
+        timeout: float,
+        startupinfo,
+        creationflags: int,
+        on_log: Callable[[str], None],
+    ) -> int:
+        """运行命令，实时输出日志，支持无输出超时终止"""
+        self._log(f"启动命令: {cmd}", on_log)
+        process = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            universal_newlines=True,
+            bufsize=1,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+        )
+        self._log(f"进程已启动，PID: {process.pid}", on_log)
+        last_output_time = [time.time()]
+        cmd_start = time.time()
+        next_heartbeat = cmd_start + 30
+
+        def reader():
+            try:
+                for line in process.stdout:
+                    if line:
+                        stripped = line.strip()
+                        if stripped:
+                            self._log(stripped, on_log)
+                            last_output_time[0] = time.time()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+
+        try:
+            while process.poll() is None:
+                time.sleep(2)
+                now = time.time()
+                if now > next_heartbeat:
+                    elapsed = int(now - cmd_start)
+                    self._log(f"命令仍在运行中，已等待 {elapsed} 秒，请耐心等待...", on_log)
+                    next_heartbeat = now + 30
+                if now - last_output_time[0] > timeout:
+                    self._log(f"命令超过 {int(timeout)} 秒无输出，判定为卡住，强制终止...", on_log)
+                    self._kill_process_tree(process)
+                    break
+            process.wait(timeout=5)
+        except Exception as e:
+            self._log(f"等待进程时出错: {e}", on_log)
+            self._kill_process_tree(process)
+
+        t.join(timeout=5)
+        return process.returncode if process.poll() is not None else -1
+
+    def _kill_process_tree(self, process: subprocess.Popen):
+        """终止进程及其子进程"""
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            subprocess.run(
+                f"taskkill /F /T /PID {process.pid}",
+                shell=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _get_assets_dir(self) -> Path:
+        """获取资源目录路径（支持 PyInstaller 打包环境和开发环境）"""
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS) / "assets"
+        return Path(__file__).resolve().parent.parent / "assets"
 
     def _log(self, message: str, on_log: Callable[[str], None] = None):
         """记录日志"""

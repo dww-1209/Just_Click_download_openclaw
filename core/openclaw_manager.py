@@ -61,7 +61,7 @@ class OpenClawManager:
                     status=ConfigStatus.FAILED,
                     service_status=ServiceStatus.FAILED,
                     message="OpenClaw 未安装",
-                    error_message="未找到 OpenClaw 命令",
+                    error_message="未找到 openclaw 或 openclaw-cn 命令",
                     log_lines=self._log_lines.copy(),
                 )
 
@@ -245,11 +245,57 @@ class OpenClawManager:
         # Then startup
         return self.startup_only(on_progress=on_progress)
 
+    def _resolve_openclaw_cmd(self) -> str:
+        """检测系统中可用的 openclaw 命令（优先 openclaw-cn，fallback openclaw）"""
+        import shutil
+        os_type = platform.system().lower()
+        if os_type == "windows":
+            # Windows 下使用 where 更可靠（能处理 %APPDATA% 等环境变量展开）
+            for cmd in ["openclaw-cn", "openclaw"]:
+                result = subprocess.run(
+                    f"where {cmd}",
+                    shell=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    return cmd
+        else:
+            for cmd in ["openclaw-cn", "openclaw"]:
+                if shutil.which(cmd):
+                    return cmd
+        return "openclaw"
+
     def _check_openclaw_installed(self) -> bool:
         """Check if openclaw command is available"""
         try:
-            result = self._run_openclaw_command("--version")
-            return result.returncode == 0
+            cmd = self._resolve_openclaw_cmd()
+            os_type = platform.system().lower()
+            if os_type == "windows":
+                # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
+                result = subprocess.run(
+                    f"where {cmd}",
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return result.returncode == 0
+            else:
+                # Linux/macOS: 使用 which 检测
+                import os
+                env = os.environ.copy()
+                home = os.path.expanduser("~")
+                local_bin = os.path.join(home, ".local", "bin")
+                env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
+                result = subprocess.run(
+                    ["which", cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env=env,
+                )
+                return result.returncode == 0
         except Exception:
             return False
 
@@ -261,7 +307,7 @@ class OpenClawManager:
                 ("gateway.mode", "local"),
                 ("gateway.bind", "loopback"),
                 ("gateway.port", "18789"),
-                ("gateway.allowUnconfigured", "true"),
+                # openclaw-cn 不支持 allowUnconfigured，由 onboard 完成初始化
             ]
             
             for key, value in configs:
@@ -279,7 +325,7 @@ class OpenClawManager:
             
             self._log("Running onboard...")
             try:
-                cmd = 'onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon'
+                cmd = 'onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon --node-manager pnpm --skip-channels'
                 result = self._run_openclaw_command(cmd)
                 self._log(f"onboard return code: {result.returncode}")
                 if result.stdout:
@@ -289,11 +335,43 @@ class OpenClawManager:
             except Exception as e:
                 self._log(f"onboard error: {e}")
             
+            self._inject_browser_config()
+            
             return True
             
         except Exception as e:
             self._log(f"Setup config error: {e}")
             return False
+
+    def _inject_browser_config(self) -> None:
+        """Inject browser default config into ~/.openclaw/openclaw.json"""
+        import json
+        import os
+
+        config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+        except (json.JSONDecodeError, OSError) as e:
+            self._log(f"Browser config: failed to read existing config: {e}")
+            config = {}
+
+        config["browser"] = {
+            "enabled": True,
+            "defaultProfile": "openclaw",
+        }
+
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            self._log("Browser config injected: enabled=true, defaultProfile=openclaw")
+        except OSError as e:
+            self._log(f"Browser config: failed to write: {e}")
 
     def _start_gateway(self) -> bool:
         """Start OpenClaw gateway service"""
@@ -328,13 +406,14 @@ class OpenClawManager:
                 "text": True,
             }
             
+            cmd = self._resolve_openclaw_cmd()
             if os_type == "windows":
                 # Windows needs PowerShell wrapper and creation flags
-                full_command = f'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "openclaw gateway"'
+                full_command = f'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "{cmd} gateway"'
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 # Linux/macOS: run directly
-                full_command = "openclaw gateway"
+                full_command = f"{cmd} gateway"
             
             self._log(f"Execute: {full_command[:80]}...")
             
@@ -402,12 +481,27 @@ class OpenClawManager:
     def _run_openclaw_command(self, command: str) -> subprocess.CompletedProcess:
         """Execute openclaw command using PowerShell with hidden window"""
         import os
+        import shutil
         
         os_type = platform.system().lower()
         env = os.environ.copy()
+        cmd = self._resolve_openclaw_cmd()
+        
+        # 如果全局命令找不到，但本地项目存在，使用项目内 pnpm
+        local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
+        local_fallback = (
+            cmd == "openclaw"
+            and not shutil.which("openclaw")
+            and not shutil.which("openclaw-cn")
+            and local_project.exists()
+            and (local_project / "package.json").exists()
+        )
         
         if os_type == "windows":
-            ps_command = f'openclaw {command}'
+            if local_fallback:
+                ps_command = f'cd "{local_project}"; pnpm openclaw {command}'
+            else:
+                ps_command = f'{cmd} {command}'
             full_command = f'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"'
             
             self._log(f"Execute: {full_command[:100]}...")
@@ -428,8 +522,13 @@ class OpenClawManager:
             local_bin = os.path.join(home, ".local", "bin")
             env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
             
+            if local_fallback:
+                full_command = f'cd "{local_project}" && pnpm openclaw {command}'
+            else:
+                full_command = f"{cmd} {command}"
+            
             result = subprocess.run(
-                f"openclaw {command}",
+                full_command,
                 shell=True,
                 capture_output=True,
                 text=True,

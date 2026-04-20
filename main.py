@@ -151,8 +151,24 @@ class InstallerWindow:
     def _on_openclaw_reinstall(self):
         try:
             import subprocess
-            subprocess.run("openclaw gateway stop", shell=True, capture_output=True)
-            subprocess.run("npm uninstall -g openclaw", shell=True, capture_output=True)
+            import shutil
+            import os
+            cmd = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
+            subprocess.run(f"{cmd} gateway stop", shell=True, capture_output=True)
+            # 清理本地构建目录
+            for d in [os.path.expanduser("~\\openclaw-cn"), os.path.expanduser("~\\openclaw")]:
+                if os.path.exists(d):
+                    try:
+                        import stat
+                        def _remove_readonly(func, path, _):
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                        shutil.rmtree(d, onerror=_remove_readonly)
+                    except Exception:
+                        pass
+            # 清理全局 npm 包（兼容旧版）
+            for pkg in ["openclaw-cn", "openclaw"]:
+                subprocess.run(f"npm uninstall -g {pkg}", shell=True, capture_output=True)
         except Exception:
             pass
         self._on_env_check_next()
@@ -270,28 +286,29 @@ class InstallerWindow:
         import shutil
 
         os_type = platform.system().lower()
+        cmd = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
         try:
             if os_type == "windows" or sys.platform == "win32":
-                subprocess.Popen("start cmd /k openclaw config", shell=True)
+                subprocess.Popen(f"start cmd /k {cmd} config", shell=True)
             elif os_type == "darwin":
                 # macOS: use AppleScript to open Terminal
-                script = 'tell application "Terminal" to do script "openclaw config"'
+                script = f'tell application "Terminal" to do script "{cmd} config"'
                 subprocess.Popen(["osascript", "-e", script])
             else:
                 # Linux: try common terminals
                 opened = False
                 terminals = [
-                    ["gnome-terminal", "--", "bash", "-c", "openclaw config; exec bash"],
-                    ["xterm", "-e", "bash -c 'openclaw config; exec bash'"],
-                    ["konsole", "-e", "bash", "-c", "openclaw config; exec bash"],
+                    ["gnome-terminal", "--", "bash", "-c", f"{cmd} config; exec bash"],
+                    ["xterm", "-e", f"bash -c '{cmd} config; exec bash'"],
+                    ["konsole", "-e", "bash", "-c", f"{cmd} config; exec bash"],
                 ]
-                for cmd in terminals:
-                    if shutil.which(cmd[0]):
-                        subprocess.Popen(cmd)
+                for term_cmd in terminals:
+                    if shutil.which(term_cmd[0]):
+                        subprocess.Popen(term_cmd)
                         opened = True
                         break
                 if not opened:
-                    print("未找到可用的终端模拟器，请手动运行: openclaw config")
+                    print(f"未找到可用的终端模拟器，请手动运行: {cmd} config")
         except Exception as e:
             print(f"打开终端失败: {e}")
 
