@@ -1,4 +1,4 @@
-# 产品需求文档：OpenClaw 一键安装启动器 - V1.0
+# 产品需求文档：OpenClaw 一键安装启动器 - V1.0（一个完美的文档，可以让vibecoding 事半功倍）
 
 ## 1. 综述 (Overview)
 
