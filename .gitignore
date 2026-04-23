@@ -38,7 +38,11 @@ image.png
 # PyInstaller auto-generated spec (we use build.py as source of truth)
 *.spec
 
+# macOS
+.DS_Store
+
 # Project-specific excluded files
 AGENTS.md
 install.ps1
 install.sh
+provider.txt

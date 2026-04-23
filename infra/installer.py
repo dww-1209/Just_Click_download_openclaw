@@ -515,6 +515,8 @@ class OpenClawInstaller:
                 if major >= 22:
                     node_ok = True
                     self._log(f"Node.js {node_ver.stdout.strip()} 已满足要求", on_log)
+                else:
+                    self._log(f"检测到 Node.js v{major}，版本过低，正在为您升级...", on_log)
             except Exception:
                 pass
 
@@ -570,43 +572,83 @@ class OpenClawInstaller:
                 if os.path.exists(node_path):
                     os.environ["Path"] = node_path + os.pathsep + os.environ.get("Path", "")
             elif self.os_type == "macos":
-                node_pkg = Path(os.path.expanduser("~/Downloads")) / "node-v22-installer.pkg"
-                node_urls = [
-                    "https://nodejs.org/dist/v22.14.0/node-v22.14.0.pkg",
-                    "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0.pkg",
-                ]
-                downloaded = False
-                for url in node_urls:
-                    if _check_cancelled():
-                        return _check_cancelled()
-                    self._log(f"尝试下载 Node.js: {url}", on_log)
-                    r = subprocess.run(
-                        ["curl", "-fsSL", "-o", str(node_pkg), url],
-                        capture_output=True, timeout=180
+                # macOS：把所有需要管理员权限的命令收集起来，只弹一次密码框
+                admin_cmds = []
+                node_pkg = None
+
+                # 1. 如果需要安装 Node.js，下载 .pkg 并准备安装命令
+                if not node_ok:
+                    node_pkg = Path("/tmp") / "node-v22-installer.pkg"
+                    node_urls = [
+                        "https://nodejs.org/dist/v22.14.0/node-v22.14.0.pkg",
+                        "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0.pkg",
+                    ]
+                    downloaded = False
+                    for url in node_urls:
+                        if _check_cancelled():
+                            return _check_cancelled()
+                        self._log(f"尝试下载 Node.js: {url}", on_log)
+                        r = subprocess.run(
+                            ["curl", "-fsSL", "-o", str(node_pkg), url],
+                            capture_output=True, timeout=300
+                        )
+                        if r.returncode == 0 and node_pkg.exists() and node_pkg.stat().st_size > 30 * 1024 * 1024:
+                            downloaded = True
+                            self._log("Node.js 安装包下载成功", on_log)
+                            break
+                        else:
+                            err_msg = r.stderr.decode("utf-8", errors="replace")[:300] if r.stderr else f"curl exit {r.returncode}"
+                            self._log(f"下载失败: {err_msg}", on_log)
+                    if not downloaded:
+                        return InstallResult(
+                            status=InstallStatus.FAILED, message="Node.js 下载失败",
+                            error_message="无法下载 Node.js 22 安装包，请检查网络后重试",
+                            log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                        )
+                    admin_cmds.append(f"installer -pkg {node_pkg} -target /")
+                    # Node.js 装好后顺带把 pnpm 也装上（新 shell 里 /usr/local/bin 已在 PATH）
+                    admin_cmds.append("cd /tmp && export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && npm install -g pnpm")
+                else:
+                    # Node.js 已装好，检查 pnpm
+                    if not _which("pnpm"):
+                        pnpm_install = _run("npm install -g pnpm", timeout=120)
+                        if pnpm_install.returncode != 0:
+                            err_text = pnpm_install.stderr.strip() if pnpm_install.stderr else ""
+                            if "EACCES" in err_text or "permission denied" in err_text.lower():
+                                admin_cmds.append("cd /tmp && export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && npm install -g pnpm")
+                            else:
+                                self._log(f"pnpm 安装失败: {err_text[:200]}", on_log)
+                                return InstallResult(
+                                    status=InstallStatus.FAILED, message="pnpm 安装失败",
+                                    error_message=f"无法安装 pnpm: {err_text}",
+                                    log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                                )
+
+                # 2. 一次性执行所有管理员命令（只弹一次密码框）
+                if admin_cmds:
+                    cmd_str = " && ".join(admin_cmds)
+                    self._log("正在申请管理员权限安装系统依赖（只需输入一次密码）...", on_log)
+                    install_script = f'do shell script "{cmd_str}" with administrator privileges'
+                    result = subprocess.run(
+                        ["osascript", "-e", install_script],
+                        capture_output=True, text=True, timeout=300
                     )
-                    if r.returncode == 0 and node_pkg.exists() and node_pkg.stat().st_size > 30 * 1024 * 1024:
-                        downloaded = True
-                        self._log("Node.js 安装包下载成功", on_log)
-                        break
-                if not downloaded:
-                    return InstallResult(
-                        status=InstallStatus.FAILED, message="Node.js 下载失败",
-                        error_message="无法下载 Node.js 22 安装包，请检查网络后重试",
-                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
-                    )
-                install_result = subprocess.run(
-                    ["installer", "-pkg", str(node_pkg), "-target", "/"],
-                    capture_output=True, text=True, timeout=300
-                )
-                if install_result.returncode != 0:
-                    err = install_result.stderr.strip() if install_result.stderr else "未知错误"
-                    self._log(f"Node.js 安装失败: {err[:200]}", on_log)
-                    return InstallResult(
-                        status=InstallStatus.FAILED, message="Node.js 安装失败",
-                        error_message=f"无法安装 Node.js: {err}",
-                        log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
-                    )
-                # 刷新 PATH（macOS 安装器通常把 node 放在 /usr/local/bin）
+                    # 清理临时文件
+                    if node_pkg and node_pkg.exists():
+                        try:
+                            node_pkg.unlink()
+                        except Exception:
+                            pass
+                    if result.returncode != 0:
+                        err = result.stderr.strip() if result.stderr else "未知错误"
+                        self._log(f"系统依赖安装失败: {err[:200]}", on_log)
+                        return InstallResult(
+                            status=InstallStatus.FAILED, message="系统依赖安装失败",
+                            error_message=f"安装失败: {err}\n请确保输入了正确的管理员密码。",
+                            log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                        )
+
+                # 刷新 PATH
                 os.environ["PATH"] = "/usr/local/bin:" + os.environ.get("PATH", "")
             else:
                 # Linux：理论上 install() 里已经通过 pkexec 安装了 Node.js，这里再检查一次
@@ -627,6 +669,18 @@ class OpenClawInstaller:
                 on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=15, message="正在安装系统依赖...", current_task="安装 pnpm"))
             npm_cmd = "npm.cmd" if is_windows else "npm"
             pnpm_install = _run(f"{npm_cmd} install -g pnpm", timeout=120)
+
+            # macOS：如果普通权限安装失败（EACCES），弹出密码框用管理员权限重试
+            if pnpm_install.returncode != 0 and self.os_type == "macos":
+                err_text = pnpm_install.stderr.strip() if pnpm_install.stderr else ""
+                if "EACCES" in err_text or "permission denied" in err_text.lower():
+                    self._log("普通权限安装 pnpm 失败，正在弹出密码框申请管理员权限...", on_log)
+                    install_script = 'do shell script "cd /tmp && export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && npm install -g pnpm" with administrator privileges'
+                    pnpm_install = subprocess.run(
+                        ["osascript", "-e", install_script],
+                        capture_output=True, text=True, timeout=300
+                    )
+
             if pnpm_install.returncode != 0:
                 err = pnpm_install.stderr.strip() if pnpm_install.stderr else "未知错误"
                 self._log(f"pnpm 安装失败: {err[:200]}", on_log)
@@ -856,115 +910,6 @@ class OpenClawInstaller:
             log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
         )
 
-    def _inject_prebuilt_matrix_packages(
-        self,
-        npm_root: Path,
-        on_log: Callable[[str], None],
-    ) -> bool:
-        """将本地 assets 中完整的 matrix 预置包复制到 npm 全局目录，完全绕过网络"""
-        try:
-            assets_dir = self._get_assets_dir()
-            packages = [
-                "matrix-sdk-crypto-nodejs",
-                "matrix-sdk-crypto-wasm",
-            ]
-            ok = True
-            for pkg in packages:
-                src = assets_dir / "windows" / "@matrix-org" / pkg
-                dst = npm_root / "@matrix-org" / pkg
-                pkg_json = src / "package.json"
-                if not pkg_json.exists():
-                    continue
-                try:
-                    if dst.exists():
-                        shutil.rmtree(dst, onerror=self._remove_readonly)
-                    shutil.copytree(src, dst)
-                    self._log(f"已注入本地预置包: {pkg}", on_log)
-                except Exception as e:
-                    self._log(f"注入预置包 {pkg} 失败: {e}", on_log)
-                    ok = False
-            return ok
-        except Exception as e:
-            self._log(f"预置包注入失败: {e}", on_log)
-            return False
-
-    def _fix_matrix_node_global(
-        self,
-        env: dict,
-        startupinfo,
-        creationflags: int,
-        on_log: Callable[[str], None],
-    ) -> bool:
-        """全局安装失败后，确保 matrix 原生模块可用（优先本地预置包， fallback 网络下载）"""
-        try:
-            version = "0.4.0"
-            filename = "matrix-sdk-crypto.win32-x64-msvc.node"
-
-            # 获取 npm 全局 root
-            npm_root = Path(os.path.expanduser(r"~\AppData\Roaming\npm\node_modules"))
-            npm_root_result = subprocess.run(
-                "npm.cmd root -g",
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=env,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-            )
-            if npm_root_result.returncode == 0 and npm_root_result.stdout.strip():
-                npm_root = Path(npm_root_result.stdout.strip())
-
-            matrix_dir = npm_root / "@matrix-org" / "matrix-sdk-crypto-nodejs"
-
-            # 1. 优先完整复制本地预置包（包含 .node / wasm / package.json 等）
-            if self._inject_prebuilt_matrix_packages(npm_root, on_log):
-                dest_file = matrix_dir / filename
-                if dest_file.exists() and dest_file.stat().st_size > 1000000:
-                    self._log("matrix 原生模块已通过本地预置包就绪", on_log)
-                    return True
-
-            # 2. 本地没有完整包，尝试网络下载单个 .node 文件（仍需骨架，但先尝试下载）
-            matrix_dir.mkdir(parents=True, exist_ok=True)
-            dest_file = matrix_dir / filename
-            url = f"https://github.com/matrix-org/matrix-rust-sdk-crypto-nodejs/releases/download/v{version}/{filename}"
-            mirror_urls = [
-                f"https://mirror.ghproxy.com/{url}",
-                f"https://gh.api.99988866.xyz/{url}",
-                url,
-            ]
-
-            downloaded = False
-            for mu in mirror_urls:
-                if self.is_cancelled:
-                    return False
-                self._log("尝试下载 matrix 预编译文件...", on_log)
-                ps_cmd = (
-                    f'$ProgressPreference = "SilentlyContinue"; '
-                    f'try {{ Invoke-WebRequest -Uri "{mu}" -OutFile "{dest_file}" '
-                    f'-UseBasicParsing -TimeoutSec 120; exit 0 }} catch {{ exit 1 }}'
-                )
-                result = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_cmd],
-                    capture_output=True,
-                    timeout=150,
-                    env=env,
-                    startupinfo=startupinfo,
-                    creationflags=creationflags,
-                )
-                if result.returncode == 0 and dest_file.exists() and dest_file.stat().st_size > 1000000:
-                    self._log(f"下载成功: {filename}", on_log)
-                    downloaded = True
-                    break
-                else:
-                    self._log("下载失败，尝试下一个源...", on_log)
-
-            return downloaded
-
-        except Exception as e:
-            self._log(f"修复 matrix 失败: {e}", on_log)
-            return False
-
     def _run_cmd_with_streaming(
         self,
         cmd: str,
@@ -1044,12 +989,6 @@ class OpenClawInstaller:
             )
         except Exception:
             pass
-
-    def _get_assets_dir(self) -> Path:
-        """获取资源目录路径（支持 PyInstaller 打包环境和开发环境）"""
-        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            return Path(sys._MEIPASS) / "assets"
-        return Path(__file__).resolve().parent.parent / "assets"
 
     def _log(self, message: str, on_log: Callable[[str], None] = None):
         """记录日志"""

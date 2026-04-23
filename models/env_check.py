@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 
 
 class CheckStatus(Enum):
@@ -57,6 +57,15 @@ class OpenClawInstallResult:
 
 
 @dataclass
+class BrowserResult:
+    """浏览器检测结果"""
+
+    status: CheckStatus
+    found_browsers: List[str]
+    message: str = ""
+
+
+@dataclass
 class EnvCheckResult:
     """环境检测总结果"""
 
@@ -65,6 +74,7 @@ class EnvCheckResult:
     network: Optional[NetworkResult]
     permission: PermissionResult
     openclaw_install: OpenClawInstallResult
+    browser: BrowserResult
     is_ready: bool = True
     message: str = ""
 
