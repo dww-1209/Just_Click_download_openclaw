@@ -6,6 +6,7 @@ from ui.welcome_page import WelcomePage
 from ui.env_check_page import EnvCheckPage
 from ui.installing_page import InstallingPage
 from ui.us05_config_page import US05ConfigPage
+from ui.provider_config_page import ProviderConfigPage
 from ui.us06_startup_page import US06StartupPage
 from services.env_check_service import EnvCheckService
 from services.install_service import InstallService
@@ -16,6 +17,8 @@ class InstallerWindow:
     def __init__(self):
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("OpenClaw Installer")
+        # 全局样式重置：避免 macOS 原生风格给 QLabel 等添加边框和背景
+        self.app.setStyleSheet("QLabel { background: transparent; border: none; }")
         self.current_stage = "welcome"
         self.env_check_service = EnvCheckService()
         self.install_service = InstallService()
@@ -31,13 +34,15 @@ class InstallerWindow:
         self.env_check_page = EnvCheckPage()
         self.installing_page = InstallingPage()
         self.config_page = US05ConfigPage()
+        self.provider_config_page = ProviderConfigPage()
         self.startup_page = US06StartupPage()
 
-        self.stacked_widget.addWidget(self.welcome_page)
-        self.stacked_widget.addWidget(self.env_check_page)
-        self.stacked_widget.addWidget(self.installing_page)
-        self.stacked_widget.addWidget(self.config_page)
-        self.stacked_widget.addWidget(self.startup_page)
+        self.stacked_widget.addWidget(self.welcome_page)      # 0
+        self.stacked_widget.addWidget(self.env_check_page)    # 1
+        self.stacked_widget.addWidget(self.installing_page)   # 2
+        self.stacked_widget.addWidget(self.config_page)       # 3
+        self.stacked_widget.addWidget(self.provider_config_page)  # 4
+        self.stacked_widget.addWidget(self.startup_page)      # 5
 
         self.stacked_widget.setWindowTitle("OpenClaw One-Click Installer")
 
@@ -60,6 +65,7 @@ class InstallerWindow:
         self.env_check_page.back_clicked.connect(self._on_env_check_back)
         self.env_check_page.openclaw_quick_start.connect(self._on_openclaw_quick_start)
         self.env_check_page.openclaw_config_and_start.connect(self._on_openclaw_config_and_start)
+        self.env_check_page.openclaw_provider_config.connect(self._on_openclaw_provider_config)
         self.env_check_page.openclaw_manual_config.connect(self._on_openclaw_manual_config)
         self.env_check_page.openclaw_reinstall.connect(self._on_openclaw_reinstall)
 
@@ -82,6 +88,11 @@ class InstallerWindow:
         self.config_page.next_clicked.connect(self._on_config_next)
         self.config_page.back_clicked.connect(self._on_config_back)
         self.config_page.manual_config_clicked.connect(self._on_config_manual)
+
+        # Provider Config page
+        self.provider_config_page.back_clicked.connect(self._on_provider_config_back)
+        self.provider_config_page.skip_clicked.connect(self._on_provider_config_skip)
+        self.provider_config_page.save_and_start_clicked.connect(self._on_provider_config_save)
 
         # US-06 Startup page
         self.startup_page.retry_clicked.connect(self._on_startup_retry)
@@ -110,6 +121,7 @@ class InstallerWindow:
         self.env_check_page.update_permission_result(
             result.permission.status, result.permission.message
         )
+        self.env_check_page.update_browser_result(result.browser)
         self.env_check_page.update_openclaw_result(
             result.openclaw_install.status, result.openclaw_install.message
         )
@@ -135,7 +147,7 @@ class InstallerWindow:
     def _on_openclaw_quick_start(self):
         # Quick start - skip config, go directly to startup
         self.current_stage = "startup"
-        self.stacked_widget.setCurrentIndex(4)
+        self.stacked_widget.setCurrentIndex(5)
         self._start_startup(quick_start=True)
 
     def _on_openclaw_config_and_start(self):
@@ -143,6 +155,14 @@ class InstallerWindow:
         self.current_stage = "configuring"
         self.stacked_widget.setCurrentIndex(3)
         self._start_config()
+
+    def _on_openclaw_provider_config(self):
+        # Directly go to provider config page
+        self.current_stage = "provider_config"
+        self.stacked_widget.setCurrentIndex(4)
+        self.provider_config_page.reset()
+        existing = self.openclaw_manager.read_existing_provider_config()
+        self.provider_config_page.load_config(existing)
 
     def _on_openclaw_manual_config(self):
         self._open_manual_config_terminal()
@@ -156,7 +176,7 @@ class InstallerWindow:
             cmd = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
             subprocess.run(f"{cmd} gateway stop", shell=True, capture_output=True)
             # 清理本地构建目录
-            for d in [os.path.expanduser("~\\openclaw-cn"), os.path.expanduser("~\\openclaw")]:
+            for d in [os.path.expanduser("~/openclaw-cn"), os.path.expanduser("~/.openclaw")]:
                 if os.path.exists(d):
                     try:
                         import stat
@@ -267,14 +287,16 @@ class InstallerWindow:
         self._start_config()
 
     def _on_config_next(self):
-        # Config done, go to startup
-        self.current_stage = "startup"
+        # Config done, go to provider config
+        self.current_stage = "provider_config"
         self.stacked_widget.setCurrentIndex(4)
-        self._start_startup(quick_start=False)
+        self.provider_config_page.reset()
+        existing = self.openclaw_manager.read_existing_provider_config()
+        self.provider_config_page.load_config(existing)
 
     def _on_config_back(self):
-        self.current_stage = "installing"
-        self.stacked_widget.setCurrentIndex(2)
+        self.current_stage = "env_check"
+        self.stacked_widget.setCurrentIndex(1)
 
     def _on_config_manual(self):
         self._open_manual_config_terminal()
@@ -364,8 +386,63 @@ class InstallerWindow:
         self._start_startup(quick_start=True)
 
     def _on_startup_back(self):
-        self.current_stage = "configuring"
-        self.stacked_widget.setCurrentIndex(3)
+        self.current_stage = "env_check"
+        self.stacked_widget.setCurrentIndex(1)
+
+    # ========== Provider Config ==========
+    def _on_provider_config_back(self):
+        self.current_stage = "env_check"
+        self.stacked_widget.setCurrentIndex(1)
+
+    def _on_provider_config_skip(self):
+        self.current_stage = "startup"
+        self.stacked_widget.setCurrentIndex(5)
+        self._start_startup(quick_start=False)
+
+    def _on_provider_config_save(self, payload: dict):
+        """保存 Provider 配置并启动"""
+        from PySide6.QtCore import QThread, Signal
+
+        class ProviderConfigWorker(QThread):
+            progress_updated = Signal(object)
+            log_line = Signal(str)
+            complete = Signal(bool)
+
+            def __init__(self, manager, providers_config, global_default_model, fallback_models):
+                super().__init__()
+                self.manager = manager
+                self.providers_config = providers_config
+                self.global_default_model = global_default_model
+                self.fallback_models = fallback_models
+
+            def run(self):
+                ok = self.manager.configure_providers(
+                    self.providers_config,
+                    self.global_default_model,
+                    self.fallback_models,
+                    on_progress=self.progress_updated.emit,
+                    on_log=self.log_line.emit,
+                )
+                self.complete.emit(ok)
+
+        self.provider_config_page.show_saving()
+        self._provider_config_worker = ProviderConfigWorker(
+            self.openclaw_manager,
+            payload["providers"],
+            payload["global_default_model"],
+            payload.get("fallback_models", []),
+        )
+        self._provider_config_worker.complete.connect(self._on_provider_config_complete)
+        self._provider_config_worker.start()
+
+    def _on_provider_config_complete(self, ok: bool):
+        self.provider_config_page.hide_saving()
+        if ok:
+            self.current_stage = "startup"
+            self.stacked_widget.setCurrentIndex(5)
+            self._start_startup(quick_start=False)
+        else:
+            self.provider_config_page.show_error("配置保存失败，请检查 API Key 和网络连接后重试。")
 
     def _on_open_webchat(self):
         """User clicked 'Open WebChat' button"""

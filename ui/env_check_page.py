@@ -16,6 +16,7 @@ from models.env_check import (
     CheckStatus,
     OpenClawStatus,
     EnvCheckResult,
+    BrowserResult,
 )
 
 
@@ -58,6 +59,7 @@ class OpenClawInstalledWidget(QWidget):
 
     quick_start_clicked = Signal()       # 快速启动
     config_and_start_clicked = Signal()  # 重新配置并启动
+    provider_config_clicked = Signal()   # 配置模型
     manual_config_clicked = Signal()     # 手动配置
     reinstall_clicked = Signal()         # 重新下载
 
@@ -91,8 +93,16 @@ class OpenClawInstalledWidget(QWidget):
         self.config_and_start_btn.setFixedSize(140, 35)
         self.config_and_start_btn.clicked.connect(self.config_and_start_clicked.emit)
 
+        self.provider_config_btn = QPushButton("配置模型")
+        self.provider_config_btn.setFixedSize(140, 35)
+        self.provider_config_btn.setStyleSheet(
+            "background-color: #17a2b8; color: white; font-weight: bold;"
+        )
+        self.provider_config_btn.clicked.connect(self.provider_config_clicked.emit)
+
         quick_layout.addWidget(self.quick_start_btn)
         quick_layout.addWidget(self.config_and_start_btn)
+        quick_layout.addWidget(self.provider_config_btn)
         quick_layout.addStretch(1)
 
         # 第二行按钮：其他选项
@@ -128,6 +138,7 @@ class EnvCheckPage(QWidget):
     back_clicked = Signal()
     openclaw_quick_start = Signal()      # 快速启动
     openclaw_config_and_start = Signal() # 重新配置并启动
+    openclaw_provider_config = Signal()  # 配置模型
     openclaw_manual_config = Signal()    # 手动配置
     openclaw_reinstall = Signal()        # 重新下载
 
@@ -170,6 +181,7 @@ class EnvCheckPage(QWidget):
         self.os_item = CheckItemWidget("操作系统")
         self.disk_item = CheckItemWidget("磁盘空间")
         self.permission_item = CheckItemWidget("权限状态")
+        self.browser_item = CheckItemWidget("浏览器支持")
         self.openclaw_item = CheckItemWidget("OpenClaw 安装")
 
         self.progress_bar = QProgressBar()
@@ -182,6 +194,9 @@ class EnvCheckPage(QWidget):
         )
         self.openclaw_widget.config_and_start_clicked.connect(
             self.openclaw_config_and_start.emit
+        )
+        self.openclaw_widget.provider_config_clicked.connect(
+            self.openclaw_provider_config.emit
         )
         self.openclaw_widget.manual_config_clicked.connect(
             self.openclaw_manual_config.emit
@@ -200,6 +215,7 @@ class EnvCheckPage(QWidget):
         layout.addWidget(self.os_item)
         layout.addWidget(self.disk_item)
         layout.addWidget(self.permission_item)
+        layout.addWidget(self.browser_item)
         layout.addWidget(self.openclaw_item)
         layout.addSpacing(15)
         layout.addWidget(self.progress_bar)
@@ -277,6 +293,15 @@ class EnvCheckPage(QWidget):
 
     def update_permission_result(self, status: CheckStatus, message: str):
         self.permission_item.set_status(status, message)
+
+    def update_browser_result(self, result: BrowserResult):
+        if result.status == CheckStatus.OK:
+            self.browser_item.set_status(CheckStatus.OK, result.message)
+        else:
+            self.browser_item.set_status(
+                CheckStatus.WARNING,
+                f"{result.message}（建议安装以使用浏览器自动化）"
+            )
 
     def update_openclaw_result(self, status: OpenClawStatus, message: str):
         if status == OpenClawStatus.INSTALLED:

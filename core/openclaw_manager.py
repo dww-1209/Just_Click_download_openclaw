@@ -695,6 +695,332 @@ class OpenClawManager:
         except Exception as e:
             self._log(f"Stop gateway error: {e}")
 
+    def read_existing_provider_config(self) -> dict:
+        """读取已有的 Provider 配置
+        
+        从两个来源读取：
+        1. ~/.openclaw/openclaw.json — env 变量、默认模型、providers 配置
+        2. ~/.openclaw/agents/main/agent/auth-profiles.json — auth profile 中的 API Key
+        
+        Returns:
+            dict: {
+                "env": {"DEEPSEEK_API_KEY": "sk-xxx", ...},
+                "auth_profiles": {"kimi-coding": "sk-xxx", ...},
+                "primary_model": "deepseek/deepseek-chat",
+                "providers": {"deepseek": {"baseUrl": "...", ...}},
+            }
+        """
+        import json
+        import os
+
+        result = {
+            "env": {},
+            "auth_profiles": {},
+            "primary_model": "",
+            "fallback_models": [],
+            "providers": {},
+        }
+
+        # 1. 读取 openclaw.json
+        config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+
+                # env 中的 API Key
+                env = config.get("env", {})
+                if isinstance(env, dict):
+                    result["env"] = {k: v for k, v in env.items() if "_API_KEY" in k}
+
+                # 默认模型
+                agents = config.get("agents", {})
+                defaults = agents.get("defaults", {})
+                model = defaults.get("model", {})
+                if isinstance(model, dict):
+                    result["primary_model"] = model.get("primary", "")
+                    result["fallback_models"] = model.get("fallbacks", [])
+                elif isinstance(model, str):
+                    result["primary_model"] = model
+
+                # providers 配置
+                models_config = config.get("models", {})
+                providers = models_config.get("providers", {})
+                if isinstance(providers, dict):
+                    result["providers"] = providers
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        # 2. 读取 auth-profiles.json
+        auth_path = os.path.join(
+            os.path.expanduser("~"), ".openclaw", "agents", "main", "agent", "auth-profiles.json"
+        )
+        try:
+            if os.path.exists(auth_path):
+                with open(auth_path, "r", encoding="utf-8") as f:
+                    auth_store = json.load(f)
+
+                profiles = auth_store.get("profiles", {})
+                for profile_id, cred in profiles.items():
+                    if not isinstance(cred, dict):
+                        continue
+                    # 提取 provider 和 key
+                    # profile_id 格式: "provider:default" 或 "provider:work"
+                    provider = cred.get("provider", "")
+                    if not provider:
+                        # 从 profile_id 推断
+                        if ":" in profile_id:
+                            provider = profile_id.split(":")[0]
+
+                    if cred.get("type") == "api_key" and cred.get("key"):
+                        result["auth_profiles"][provider] = cred["key"]
+                    elif cred.get("type") == "token" and cred.get("token"):
+                        result["auth_profiles"][provider] = cred["token"]
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        return result
+
+    def configure_providers(
+        self,
+        providers_config: dict,
+        global_default_model: str,
+        fallback_models: Optional[list] = None,
+        on_progress: Optional[Callable] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """配置 AI Provider：写入 env 变量和默认模型
+        
+        Args:
+            providers_config: {vendor_id: {api_key, env_var, fallback_env_var, model, base_url, auth_choice, key_type}}
+            global_default_model: 全局默认 model ref
+            on_progress: 进度回调
+            on_log: 日志回调
+        
+        Returns:
+            bool: 是否全部成功
+        """
+        self._on_log = on_log
+        all_ok = True
+
+        total = len(providers_config)
+        for idx, (config_key, cfg) in enumerate(providers_config.items(), 1):
+            # config_key 格式: "vendor_id:key_type" 或 "vendor_id"
+            if ":" in config_key:
+                vendor_id, _ = config_key.split(":", 1)
+            else:
+                vendor_id = config_key
+
+            api_key = cfg.get("api_key", "").strip()
+            env_var = cfg.get("env_var", "")
+            fallback_env_var = cfg.get("fallback_env_var", "")
+            auth_choice = cfg.get("auth_choice", "")
+
+            if not api_key or not env_var:
+                continue
+
+            self._log(f"[{idx}/{total}] Configuring {vendor_id}...")
+            if on_progress:
+                on_progress({
+                    "percent": int(10 + 80 * idx / total),
+                    "message": f"正在配置 {vendor_id}...",
+                })
+
+            # 1. 设置主 env 变量
+            try:
+                cmd = f'config set env.{env_var} "{api_key}"'
+                result = self._run_openclaw_command(cmd)
+                if result.returncode == 0:
+                    self._log(f"  Set env.{env_var} OK")
+                else:
+                    self._log(f"  Set env.{env_var} failed: rc={result.returncode}")
+                    if result.stderr:
+                        self._log(f"    stderr: {result.stderr[:200]}")
+                    all_ok = False
+            except Exception as e:
+                self._log(f"  Set env.{env_var} error: {e}")
+                all_ok = False
+
+            # 2. 如有 fallback_env_var，也设置（用于兼容）
+            if fallback_env_var and fallback_env_var != env_var:
+                try:
+                    cmd = f'config set env.{fallback_env_var} "{api_key}"'
+                    result = self._run_openclaw_command(cmd)
+                    if result.returncode == 0:
+                        self._log(f"  Set env.{fallback_env_var} OK")
+                except Exception as e:
+                    self._log(f"  Set env.{fallback_env_var} error: {e}")
+
+            # 3. 如有 auth_choice，执行 onboard（设置 provider baseUrl 等）
+            if auth_choice:
+                try:
+                    onboard_cmd = (
+                        f'onboard --auth-choice {auth_choice} '
+                        f'--non-interactive --accept-risk --mode local '
+                        f'--skip-skills --skip-health --no-install-daemon '
+                        f'--node-manager pnpm --skip-channels'
+                    )
+                    result = self._run_openclaw_command(onboard_cmd)
+                    self._log(f"  onboard return code: {result.returncode}")
+                    if result.stdout:
+                        self._log(f"  onboard stdout: {result.stdout[:300]}")
+                except Exception as e:
+                    self._log(f"  onboard error: {e}")
+
+        # 4. 设置全局默认模型
+        if global_default_model:
+            self._log(f"Setting global default model: {global_default_model}")
+            try:
+                cmd = f'config set agents.defaults.model.primary "{global_default_model}"'
+                result = self._run_openclaw_command(cmd)
+                if result.returncode == 0:
+                    self._log("  Set default model OK")
+                else:
+                    self._log(f"  Set default model failed: rc={result.returncode}")
+                    if result.stderr:
+                        self._log(f"    stderr: {result.stderr[:200]}")
+                    all_ok = False
+            except Exception as e:
+                self._log(f"  Set default model error: {e}")
+                all_ok = False
+
+        # 5. 设置 fallback models
+        if fallback_models:
+            self._log(f"Setting fallback models: {fallback_models}")
+            try:
+                self._set_fallback_models(fallback_models)
+                self._log("  Set fallback models OK")
+            except Exception as e:
+                self._log(f"  Set fallback models error: {e}")
+                all_ok = False
+
+        # 6. 写入自定义 provider 配置（无 onboard 的 provider，如 DashScope）
+        for config_key, cfg in providers_config.items():
+            auth_choice = cfg.get("auth_choice", "")
+            base_url = cfg.get("base_url", "")
+            if not auth_choice and base_url:
+                try:
+                    self._configure_custom_provider(config_key, cfg)
+                except Exception as e:
+                    self._log(f"  Configure custom provider {config_key} error: {e}")
+                    all_ok = False
+
+        self._on_log = None
+        return all_ok
+
+    def _set_fallback_models(self, fallback_models: list) -> None:
+        """直接修改 openclaw.json 写入 fallback models"""
+        import json
+        import os
+
+        config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+        except (json.JSONDecodeError, OSError) as e:
+            self._log(f"  Failed to read config for fallbacks: {e}")
+            config = {}
+
+        # Ensure agents.defaults.model structure exists
+        if "agents" not in config:
+            config["agents"] = {}
+        if "defaults" not in config["agents"]:
+            config["agents"]["defaults"] = {}
+        if "model" not in config["agents"]["defaults"]:
+            config["agents"]["defaults"]["model"] = {}
+
+        model_cfg = config["agents"]["defaults"]["model"]
+        # If model is a string, convert to dict
+        if isinstance(model_cfg, str):
+            model_cfg = {"primary": model_cfg}
+            config["agents"]["defaults"]["model"] = model_cfg
+
+        model_cfg["fallbacks"] = fallback_models
+
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except OSError as e:
+            self._log(f"  Failed to write fallbacks: {e}")
+            raise
+
+    def _configure_custom_provider(self, config_key: str, cfg: dict) -> None:
+        """直接修改 openclaw.json 写入自定义 provider 配置（如 DashScope）"""
+        import json
+        import os
+
+        config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+        except (json.JSONDecodeError, OSError) as e:
+            self._log(f"  Failed to read config for custom provider: {e}")
+            config = {}
+
+        if "models" not in config:
+            config["models"] = {}
+        if "providers" not in config["models"]:
+            config["models"]["providers"] = {}
+
+        # 解析 config_key: "vendor_id:key_type"
+        if ":" in config_key:
+            vendor_id, key_type = config_key.split(":", 1)
+        else:
+            vendor_id = config_key
+            key_type = cfg.get("key_type", "")
+
+        # 确定 provider ID
+        provider_id = self._resolve_provider_id(vendor_id, key_type)
+
+        # 构建模型列表
+        models = []
+        for model_ref in cfg.get("selected_models", []):
+            model_id = model_ref.split("/")[-1] if "/" in model_ref else model_ref
+            models.append({
+                "id": model_id,
+                "name": model_id,
+                "reasoning": False,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 128000,
+                "maxTokens": 8192,
+            })
+
+        config["models"]["providers"][provider_id] = {
+            "baseUrl": cfg["base_url"],
+            "api": "openai-completions",
+            "apiKey": cfg["api_key"],
+            "models": models,
+        }
+
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            self._log(f"  Set custom provider {provider_id} OK")
+        except OSError as e:
+            self._log(f"  Failed to write custom provider {provider_id}: {e}")
+            raise
+
+    def _resolve_provider_id(self, vendor_id: str, key_type: str) -> str:
+        """将程序内部的 vendor_id 映射到 openclaw 的 provider ID"""
+        if vendor_id == "kimi":
+            return "kimi-coding" if key_type == "coding" else "moonshot"
+        if vendor_id == "aliyun":
+            return "aliyun-coding" if key_type == "coding" else "dashscope"
+        if vendor_id == "volcengine":
+            return "volcengine-plan" if key_type == "coding" else "volcengine"
+        return vendor_id
+
     def stop(self):
         """Stop service (external call)"""
         self.is_cancelled = True

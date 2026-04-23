@@ -13,6 +13,7 @@ from models.env_check import (
     NetworkResult,
     PermissionResult,
     OpenClawInstallResult,
+    BrowserResult,
     EnvCheckResult,
 )
 
@@ -340,6 +341,76 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
     )
 
 
+def _check_browser() -> BrowserResult:
+    """检测系统是否安装了 Chromium 系浏览器（Chrome/Edge/Brave 等）
+    
+    浏览器自动化功能（Playwright + CDP）需要 Chromium 系浏览器，Safari 不支持。
+    这是一个提示项，不影响安装流程（is_ready 不受影响）。
+    """
+    import platform
+
+    os_type = platform.system().lower()
+    found = []
+    candidates = []
+
+    if os_type == "darwin":
+        # macOS
+        candidates = [
+            ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "Google Chrome"),
+            (os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), "Google Chrome"),
+            ("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "Microsoft Edge"),
+            (os.path.expanduser("~/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"), "Microsoft Edge"),
+            ("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", "Brave Browser"),
+            (os.path.expanduser("~/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"), "Brave Browser"),
+            ("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary", "Chrome Canary"),
+            ("/Applications/Chromium.app/Contents/MacOS/Chromium", "Chromium"),
+        ]
+    elif os_type == "win32":
+        # Windows
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+        program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        candidates = [
+            (os.path.join(local_appdata, "Google", "Chrome", "Application", "chrome.exe"), "Google Chrome"),
+            (os.path.join(program_files, "Google", "Chrome", "Application", "chrome.exe"), "Google Chrome"),
+            (os.path.join(program_files_x86, "Google", "Chrome", "Application", "chrome.exe"), "Google Chrome"),
+            (os.path.join(local_appdata, "Microsoft", "Edge", "Application", "msedge.exe"), "Microsoft Edge"),
+            (os.path.join(program_files, "Microsoft", "Edge", "Application", "msedge.exe"), "Microsoft Edge"),
+            (os.path.join(local_appdata, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"), "Brave Browser"),
+            (os.path.join(program_files, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"), "Brave Browser"),
+        ]
+    else:
+        # Linux
+        candidates = [
+            ("/usr/bin/google-chrome", "Google Chrome"),
+            ("/usr/bin/google-chrome-stable", "Google Chrome"),
+            ("/usr/bin/microsoft-edge", "Microsoft Edge"),
+            ("/usr/bin/microsoft-edge-stable", "Microsoft Edge"),
+            ("/usr/bin/brave-browser", "Brave Browser"),
+            ("/usr/bin/brave", "Brave Browser"),
+            ("/usr/bin/chromium", "Chromium"),
+            ("/usr/bin/chromium-browser", "Chromium"),
+        ]
+
+    for path, name in candidates:
+        if os.path.exists(path):
+            if name not in found:
+                found.append(name)
+
+    if found:
+        return BrowserResult(
+            status=CheckStatus.OK,
+            found_browsers=found,
+            message=f"已安装: {', '.join(found)}",
+        )
+    else:
+        return BrowserResult(
+            status=CheckStatus.WARNING,
+            found_browsers=[],
+            message="未检测到 Chrome/Edge/Brave，浏览器自动化功能不可用",
+        )
+
+
 def check_environment(install_path: str = None) -> EnvCheckResult:
     """检查环境
     
@@ -353,6 +424,7 @@ def check_environment(install_path: str = None) -> EnvCheckResult:
     disk_result = _check_disk_space()
     permission_result = _check_permission()
     openclaw_result = _check_openclaw_installed()
+    browser_result = _check_browser()
 
     # US-02 阶段不检测网络，留空或跳过
     # 网络检测将在 US-04 下载阶段由命令行自行处理
@@ -370,6 +442,7 @@ def check_environment(install_path: str = None) -> EnvCheckResult:
         network=network_result,
         permission=permission_result,
         openclaw_install=openclaw_result,
+        browser=browser_result,
         is_ready=is_ready,
         message=message,
     )

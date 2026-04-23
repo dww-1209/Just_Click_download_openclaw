@@ -199,10 +199,15 @@ def build(output_dir: str = None):
         exe_path = os.path.join(output_dir, exe_name)
         
         if os.path.exists(exe_path):
-            if is_windows() or is_macos():
-                size_mb = os.path.getsize(exe_path) / (1024 * 1024)
+            if is_macos() and os.path.isdir(exe_path):
+                # macOS .app bundle: 计算整个目录大小
+                total_size = sum(
+                    os.path.getsize(os.path.join(dirpath, f))
+                    for dirpath, _, filenames in os.walk(exe_path)
+                    for f in filenames
+                )
+                size_mb = total_size / (1024 * 1024)
             else:
-                # Linux 可执行文件
                 size_mb = os.path.getsize(exe_path) / (1024 * 1024)
             print(f"输出文件: {exe_path}")
             print(f"文件大小: {size_mb:.1f} MB")
@@ -212,7 +217,43 @@ def build(output_dir: str = None):
             if is_windows():
                 print("- Windows 用户双击运行会自动请求管理员权限")
             elif is_macos():
-                print("- macOS 用户首次运行可能需要去系统设置放行")
+                # 删除 PyInstaller 额外生成的 Unix 可执行文件，只保留 .app
+                unix_exe = os.path.join(output_dir, "OpenClaw安装器")
+                if os.path.exists(unix_exe) and not os.path.isdir(unix_exe):
+                    os.remove(unix_exe)
+                    print("- 已清理多余的 Unix 可执行文件，仅保留 .app")
+
+                # 生成辅助启动脚本，帮助小白用户绕过 Gatekeeper
+                launcher_name = "双击运行-OpenClaw安装器.command"
+                launcher_path = os.path.join(output_dir, launcher_name)
+                launcher_script = '''#!/bin/bash
+# OpenClaw 安装器 macOS 启动脚本
+# 作用：自动移除 Gatekeeper 隔离属性并启动程序
+
+cd "$(dirname "$0")"
+APP_BUNDLE="./OpenClaw安装器.app"
+APP_EXE="$APP_BUNDLE/Contents/MacOS/OpenClaw安装器"
+
+if [ ! -f "$APP_EXE" ]; then
+    echo "错误：找不到 OpenClaw安装器.app，请确保本文件与程序在同一文件夹内。"
+    read -n 1 -s -r -p "按任意键退出..."
+    exit 1
+fi
+
+# 移除隔离属性（解决"无法打开"提示）
+if xattr -p com.apple.quarantine "$APP_BUNDLE" >/dev/null 2>&1; then
+    echo "正在移除安全隔离属性..."
+    xattr -rd com.apple.quarantine "$APP_BUNDLE" 2>/dev/null || true
+fi
+
+echo "正在启动 OpenClaw 安装器..."
+"$APP_EXE"
+'''
+                with open(launcher_path, 'w', encoding='utf-8') as f:
+                    f.write(launcher_script)
+                os.chmod(launcher_path, 0o755)
+                print(f"- macOS 辅助脚本已生成: {launcher_name}")
+                print("  将 dist/ 文件夹打包发给用户，让用户先双击 .command 文件即可")
         else:
             print(f"[警告] 输出文件不存在: {exe_path}")
             print("请检查 dist/ 目录")
