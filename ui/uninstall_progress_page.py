@@ -43,7 +43,7 @@ class UninstallProgressPage(QWidget):
 
         self.progress_label = QLabel("准备卸载...")
         self.progress_label.setAlignment(Qt.AlignCenter)
-        self.progress_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.progress_label.setStyleSheet("color: #666; font-size: 12px; background: transparent; border: none;")
 
         # 日志区域
         log_frame = QFrame()

@@ -34,8 +34,8 @@ class UninstallDonePage(QWidget):
         # 状态区域
         self.status_frame = QFrame()
         self.status_frame.setStyleSheet(
-            "QFrame { background-color: #e8f5e9; border-radius: 8px; "
-            "border: 1px solid #a5d6a7; }"
+            "QFrame { background-color: #e8f5e9; border-radius: 8px; }"
+            "QFrame QLabel { background: transparent; border: none; }"
         )
         sf_layout = QVBoxLayout(self.status_frame)
         sf_layout.setContentsMargins(20, 16, 20, 16)
@@ -43,7 +43,7 @@ class UninstallDonePage(QWidget):
 
         self.status_icon = QLabel("✅")
         self.status_icon.setAlignment(Qt.AlignCenter)
-        self.status_icon.setStyleSheet("font-size: 40px;")
+        self.status_icon.setStyleSheet("font-size: 40px; background: transparent; border: none;")
 
         self.status_title = QLabel("卸载完成")
         self.status_title.setAlignment(Qt.AlignCenter)
@@ -51,11 +51,11 @@ class UninstallDonePage(QWidget):
         stf.setPointSize(16)
         stf.setBold(True)
         self.status_title.setFont(stf)
-        self.status_title.setStyleSheet("color: #2e7d32;")
+        self.status_title.setStyleSheet("color: #2e7d32; background: transparent; border: none;")
 
         self.status_desc = QLabel("您的系统已恢复到安装前状态。")
         self.status_desc.setAlignment(Qt.AlignCenter)
-        self.status_desc.setStyleSheet("color: #555; font-size: 12px;")
+        self.status_desc.setStyleSheet("color: #555; font-size: 12px; background: transparent; border: none;")
 
         sf_layout.addWidget(self.status_icon)
         sf_layout.addWidget(self.status_title)
@@ -64,15 +64,15 @@ class UninstallDonePage(QWidget):
         # 清单区域
         self.checklist_frame = QFrame()
         self.checklist_frame.setStyleSheet(
-            "QFrame { background-color: #f8f9fa; border-radius: 8px; "
-            "border: 1px solid #e9ecef; }"
+            "QFrame { background-color: #f8f9fa; border-radius: 8px; }"
+            "QFrame QLabel { background: transparent; border: none; }"
         )
         cl_layout = QVBoxLayout(self.checklist_frame)
         cl_layout.setContentsMargins(16, 12, 16, 12)
         cl_layout.setSpacing(6)
 
         cl_title = QLabel("已删除项目")
-        cl_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        cl_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #333; background: transparent; border: none;")
 
         self.checklist_label = QLabel(
             "✓ OpenClaw 程序文件  — 已删除\n"
@@ -81,7 +81,7 @@ class UninstallDonePage(QWidget):
             "✓ Gateway 服务  — 已停止"
         )
         self.checklist_label.setStyleSheet(
-            "color: #424242; font-size: 12px; line-height: 1.6;"
+            "color: #424242; font-size: 12px; line-height: 1.6; background: transparent; border: none;"
         )
 
         cl_layout.addWidget(cl_title)
@@ -125,12 +125,12 @@ class UninstallDonePage(QWidget):
 
     def set_success(self):
         self.status_frame.setStyleSheet(
-            "QFrame { background-color: #e8f5e9; border-radius: 8px; "
-            "border: 1px solid #a5d6a7; }"
+            "QFrame { background-color: #e8f5e9; border-radius: 8px; }"
+            "QFrame QLabel { background: transparent; border: none; }"
         )
         self.status_icon.setText("✅")
         self.status_title.setText("卸载完成")
-        self.status_title.setStyleSheet("color: #2e7d32;")
+        self.status_title.setStyleSheet("color: #2e7d32; background: transparent; border: none;")
         self.status_desc.setText("您的系统已恢复到安装前状态。")
         self.checklist_label.setText(
             "✓ OpenClaw 程序文件  — 已删除\n"
@@ -141,12 +141,12 @@ class UninstallDonePage(QWidget):
 
     def set_partial(self, failed_items: list):
         self.status_frame.setStyleSheet(
-            "QFrame { background-color: #fff8e1; border-radius: 8px; "
-            "border: 1px solid #ffe082; }"
+            "QFrame { background-color: #fff8e1; border-radius: 8px; }"
+            "QFrame QLabel { background: transparent; border: none; }"
         )
         self.status_icon.setText("⚠️")
         self.status_title.setText("卸载部分完成")
-        self.status_title.setStyleSheet("color: #e65100;")
+        self.status_title.setStyleSheet("color: #e65100; background: transparent; border: none;")
         self.status_desc.setText("部分文件未能删除，您可以手动清理剩余文件。")
 
         lines = [
