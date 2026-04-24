@@ -28,6 +28,7 @@ wheels/
 # Logs and temp files
 *.log
 logs.txt
+openclaw.json
 temp_*
 
 # Media / docs that shouldn't be versioned
