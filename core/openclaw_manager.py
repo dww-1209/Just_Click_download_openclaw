@@ -1029,3 +1029,82 @@ class OpenClawManager:
     def is_running(self) -> bool:
         """Check if service is running"""
         return self.process is not None and self.process.poll() is None
+
+    def uninstall(self, on_log: Optional[Callable[[str], None]] = None) -> bool:
+        """完全卸载 OpenClaw：停止服务、删除目录、卸载 npm 包、清理命令包装器"""
+        import shutil
+        import platform
+
+        all_ok = True
+        os_type = platform.system().lower()
+        home = os.path.expanduser("~")
+
+        # 1. 停止 Gateway
+        try:
+            self._stop_gateway()
+            if on_log:
+                on_log("已停止 OpenClaw Gateway")
+        except Exception as e:
+            if on_log:
+                on_log(f"停止 Gateway 失败（可能未运行）: {e}")
+
+        # 2. 删除本地构建目录
+        dirs_to_remove = [
+            os.path.join(home, "openclaw-cn"),
+            os.path.join(home, ".openclaw"),
+        ]
+        for d in dirs_to_remove:
+            if os.path.exists(d):
+                try:
+                    shutil.rmtree(d, onerror=self._remove_readonly)
+                    if on_log:
+                        on_log(f"已删除: {d}")
+                except Exception as e:
+                    if on_log:
+                        on_log(f"删除 {d} 失败: {e}")
+                    all_ok = False
+
+        # 3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）
+        for pkg in ["openclaw-cn", "openclaw"]:
+            try:
+                result = subprocess.run(
+                    f'npm uninstall -g {pkg}',
+                    shell=True, capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    if on_log:
+                        on_log(f"已卸载 npm 包: {pkg}")
+                elif on_log:
+                    on_log(f"npm 包 {pkg} 可能未全局安装，跳过")
+            except Exception as e:
+                if on_log:
+                    on_log(f"卸载 {pkg} 出错: {e}")
+
+        # 4. 删除命令包装器
+        if os_type == "win32":
+            wrapper_dir = os.path.join(home, r"AppData\Roaming\npm")
+            wrappers = ["openclaw.cmd", "openclaw-cn.cmd"]
+        else:
+            wrapper_dir = os.path.join(home, ".local", "bin")
+            wrappers = ["openclaw", "openclaw-cn"]
+
+        for w in wrappers:
+            wpath = os.path.join(wrapper_dir, w)
+            if os.path.exists(wpath):
+                try:
+                    os.remove(wpath)
+                    if on_log:
+                        on_log(f"已删除命令: {wpath}")
+                except Exception as e:
+                    if on_log:
+                        on_log(f"删除 {wpath} 失败: {e}")
+
+        if on_log:
+            on_log("OpenClaw 卸载完成")
+        return all_ok
+
+    @staticmethod
+    def _remove_readonly(func, path, _):
+        import stat
+        os.chmod(path, stat.S_IWRITE)
+        func(path)

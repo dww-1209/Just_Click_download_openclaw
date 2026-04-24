@@ -61,6 +61,7 @@ class OpenClawInstalledWidget(QWidget):
     config_and_start_clicked = Signal()  # 重新配置并启动
     provider_config_clicked = Signal()   # 配置模型
     manual_config_clicked = Signal()     # 手动配置
+    uninstall_clicked = Signal()         # 卸载
     reinstall_clicked = Signal()         # 重新下载
 
     def __init__(self, parent=None):
@@ -113,11 +114,17 @@ class OpenClawInstalledWidget(QWidget):
         self.manual_config_btn.setFixedSize(120, 35)
         self.manual_config_btn.clicked.connect(self.manual_config_clicked.emit)
 
+        self.uninstall_btn = QPushButton("卸载")
+        self.uninstall_btn.setFixedSize(120, 35)
+        self.uninstall_btn.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold;")
+        self.uninstall_btn.clicked.connect(self.uninstall_clicked.emit)
+
         self.reinstall_btn = QPushButton("重新下载")
         self.reinstall_btn.setFixedSize(120, 35)
         self.reinstall_btn.clicked.connect(self.reinstall_clicked.emit)
 
         other_layout.addWidget(self.manual_config_btn)
+        other_layout.addWidget(self.uninstall_btn)
         other_layout.addWidget(self.reinstall_btn)
         other_layout.addStretch(1)
 
@@ -140,6 +147,7 @@ class EnvCheckPage(QWidget):
     openclaw_config_and_start = Signal() # 重新配置并启动
     openclaw_provider_config = Signal()  # 配置模型
     openclaw_manual_config = Signal()    # 手动配置
+    openclaw_uninstall = Signal()        # 卸载
     openclaw_reinstall = Signal()        # 重新下载
 
     def __init__(self, parent=None):
@@ -200,6 +208,9 @@ class EnvCheckPage(QWidget):
         )
         self.openclaw_widget.manual_config_clicked.connect(
             self.openclaw_manual_config.emit
+        )
+        self.openclaw_widget.uninstall_clicked.connect(
+            self.openclaw_uninstall.emit
         )
         self.openclaw_widget.reinstall_clicked.connect(self.openclaw_reinstall.emit)
 
