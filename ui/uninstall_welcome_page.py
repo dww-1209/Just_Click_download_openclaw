@@ -48,7 +48,8 @@ class UninstallWelcomePage(QWidget):
         # 状态区域
         self.status_frame = QFrame()
         self.status_frame.setStyleSheet(
-            "QFrame { background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef; }"
+            "QFrame { background-color: #f8f9fa; border-radius: 8px; }"
+            "QFrame QLabel { background: transparent; border: none; }"
         )
         sf_layout = QVBoxLayout(self.status_frame)
         sf_layout.setContentsMargins(20, 16, 20, 16)
@@ -56,7 +57,7 @@ class UninstallWelcomePage(QWidget):
 
         self.status_icon = QLabel("🔍")
         self.status_icon.setAlignment(Qt.AlignCenter)
-        self.status_icon.setStyleSheet("font-size: 32px;")
+        self.status_icon.setStyleSheet("font-size: 32px; background: transparent; border: none;")
 
         self.status_title = QLabel("正在检测...")
         self.status_title.setAlignment(Qt.AlignCenter)
@@ -77,8 +78,8 @@ class UninstallWelcomePage(QWidget):
         # 警告区域（仅已安装时显示）
         self.warning_frame = QFrame()
         self.warning_frame.setStyleSheet(
-            "QFrame { background-color: #fff3f3; border-radius: 8px; "
-            "border: 1px solid #ffcdd2; }"
+            "QFrame { background-color: #fff3f3; border-radius: 8px; }"
+            "QFrame QLabel { background: transparent; border: none; }"
         )
         wf_layout = QVBoxLayout(self.warning_frame)
         wf_layout.setContentsMargins(16, 12, 16, 12)
@@ -159,10 +160,13 @@ class UninstallWelcomePage(QWidget):
 
             self.warning_frame.show()
             self.confirm_btn.show()
+            self.cancel_btn.setText("取消")
         else:
             self.installed = False
             self.status_icon.setText("✅")
             self.status_title.setText("未检测到 OpenClaw")
-            self.status_title.setStyleSheet("color: #2e7d32;")
+            self.status_title.setStyleSheet("color: #2e7d32; background: transparent; border: none;")
             self.status_detail.setText("您的系统中没有 OpenClaw 安装记录，无需卸载。")
             self.cancel_btn.setText("退出")
+            self.warning_frame.hide()
+            self.confirm_btn.hide()
