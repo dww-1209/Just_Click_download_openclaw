@@ -376,9 +376,24 @@ def _check_browser() -> BrowserResult:
             (os.path.join(program_files_x86, "Google", "Chrome", "Application", "chrome.exe"), "Google Chrome"),
             (os.path.join(local_appdata, "Microsoft", "Edge", "Application", "msedge.exe"), "Microsoft Edge"),
             (os.path.join(program_files, "Microsoft", "Edge", "Application", "msedge.exe"), "Microsoft Edge"),
+            (os.path.join(program_files_x86, "Microsoft", "Edge", "Application", "msedge.exe"), "Microsoft Edge"),
             (os.path.join(local_appdata, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"), "Brave Browser"),
             (os.path.join(program_files, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"), "Brave Browser"),
+            (os.path.join(program_files_x86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"), "Brave Browser"),
         ]
+        # 备用：通过 where/shutil.which 检测 PATH 中的浏览器
+        try:
+            import shutil
+            path_candidates = {
+                "msedge": "Microsoft Edge",
+                "chrome": "Google Chrome",
+                "brave": "Brave Browser",
+            }
+            for exe, name in path_candidates.items():
+                if shutil.which(exe) and name not in found:
+                    found.append(name)
+        except Exception:
+            pass
     else:
         # Linux
         candidates = [

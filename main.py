@@ -67,6 +67,7 @@ class InstallerWindow:
         self.env_check_page.openclaw_config_and_start.connect(self._on_openclaw_config_and_start)
         self.env_check_page.openclaw_provider_config.connect(self._on_openclaw_provider_config)
         self.env_check_page.openclaw_manual_config.connect(self._on_openclaw_manual_config)
+        self.env_check_page.openclaw_uninstall.connect(self._on_openclaw_uninstall)
         self.env_check_page.openclaw_reinstall.connect(self._on_openclaw_reinstall)
 
         self.env_check_service.check_complete.connect(self._on_env_check_complete)
@@ -167,6 +168,48 @@ class InstallerWindow:
     def _on_openclaw_manual_config(self):
         self._open_manual_config_terminal()
         self.env_check_page.status_label.setText("请完成手动配置后，点击'重新配置并启动'")
+
+    def _on_openclaw_uninstall(self):
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self.stacked_widget,
+            "确认卸载",
+            "卸载将删除 OpenClaw 程序、所有配置和 API Key，\n此操作不可恢复。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.env_check_page.status_label.setText("正在卸载 OpenClaw，请稍后...")
+        self.env_check_page.setEnabled(False)
+
+        from PySide6.QtCore import QThread, Signal
+
+        class UninstallWorker(QThread):
+            log_line = Signal(str)
+            complete = Signal(bool)
+
+            def __init__(self, manager):
+                super().__init__()
+                self.manager = manager
+
+            def run(self):
+                ok = self.manager.uninstall(on_log=self.log_line.emit)
+                self.complete.emit(ok)
+
+        self._uninstall_worker = UninstallWorker(self.openclaw_manager)
+        self._uninstall_worker.log_line.connect(
+            lambda msg: self.env_check_page.status_label.setText(msg)
+        )
+        self._uninstall_worker.complete.connect(self._on_uninstall_complete)
+        self._uninstall_worker.start()
+
+    def _on_uninstall_complete(self, ok: bool):
+        self.env_check_page.setEnabled(True)
+        self.env_check_page.status_label.setText("卸载完成，正在刷新环境检测...")
+        # 重新检测环境
+        self._start_env_check()
 
     def _on_openclaw_reinstall(self):
         try:
