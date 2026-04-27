@@ -20,7 +20,7 @@ class UninstallProgressPage(QWidget):
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
         title = QLabel("正在卸载 OpenClaw")
@@ -35,11 +35,7 @@ class UninstallProgressPage(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setMinimumHeight(20)
-        self.progress_bar.setStyleSheet(
-            "QProgressBar { border: 1px solid #ddd; border-radius: 6px; "
-            "background-color: #f5f5f5; text-align: center; }"
-            "QProgressBar::chunk { background-color: #dc3545; border-radius: 6px; }"
-        )
+        self.progress_bar.setObjectName("dangerProgressBar")
 
         self.progress_label = QLabel("准备卸载...")
         self.progress_label.setAlignment(Qt.AlignCenter)
@@ -55,11 +51,7 @@ class UninstallProgressPage(QWidget):
 
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
-        self.log_edit.setStyleSheet(
-            "QTextEdit { background-color: #1e1e1e; color: #4ec9b0; "
-            "border: none; font-family: 'SF Mono', 'Consolas', monospace; "
-            "font-size: 12px; }"
-        )
+        self.log_edit.setObjectName("logArea")
         self.log_edit.setMinimumHeight(200)
 
         log_layout.addWidget(self.log_edit)
@@ -78,11 +70,6 @@ class UninstallProgressPage(QWidget):
 
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setFixedSize(100, 36)
-        self.cancel_btn.setStyleSheet(
-            "QPushButton { background-color: #f5f5f5; color: #333; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: 1px solid #ddd; }"
-            "QPushButton:hover { background-color: #e0e0e0; }"
-        )
         self.cancel_btn.clicked.connect(self.cancel_clicked.emit)
 
         btn_layout.addWidget(self.cancel_btn)

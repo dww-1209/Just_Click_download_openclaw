@@ -25,7 +25,7 @@ class UninstallWelcomePage(QWidget):
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -116,21 +116,11 @@ class UninstallWelcomePage(QWidget):
 
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setFixedSize(100, 36)
-        self.cancel_btn.setStyleSheet(
-            "QPushButton { background-color: #f5f5f5; color: #333; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: 1px solid #ddd; }"
-            "QPushButton:hover { background-color: #e0e0e0; }"
-        )
         self.cancel_btn.clicked.connect(self.cancel_clicked.emit)
 
         self.confirm_btn = QPushButton("确认卸载")
         self.confirm_btn.setFixedSize(120, 36)
-        self.confirm_btn.setStyleSheet(
-            "QPushButton { background-color: #dc3545; color: white; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: none; }"
-            "QPushButton:hover { background-color: #c82333; }"
-            "QPushButton:pressed { background-color: #bd2130; }"
-        )
+        self.confirm_btn.setObjectName("dangerButton")
         self.confirm_btn.clicked.connect(self.confirm_clicked.emit)
         self.confirm_btn.hide()
 

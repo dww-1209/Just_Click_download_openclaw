@@ -21,7 +21,7 @@ class UninstallDonePage(QWidget):
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
         title = QLabel("OpenClaw 卸载工具")
@@ -101,20 +101,11 @@ class UninstallDonePage(QWidget):
 
         self.exit_btn = QPushButton("退出")
         self.exit_btn.setFixedSize(100, 36)
-        self.exit_btn.setStyleSheet(
-            "QPushButton { background-color: #f5f5f5; color: #333; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: 1px solid #ddd; }"
-            "QPushButton:hover { background-color: #e0e0e0; }"
-        )
         self.exit_btn.clicked.connect(self.exit_clicked.emit)
 
         self.recheck_btn = QPushButton("重新检测环境")
         self.recheck_btn.setFixedSize(140, 36)
-        self.recheck_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: none; }"
-            "QPushButton:hover { background-color: #43a047; }"
-        )
+        self.recheck_btn.setObjectName("primaryButton")
         self.recheck_btn.clicked.connect(self.recheck_clicked.emit)
 
         btn_layout.addWidget(self.exit_btn)
