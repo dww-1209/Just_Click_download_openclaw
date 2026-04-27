@@ -191,6 +191,18 @@ class US06StartupPage(QWidget):
         )
         self.fallback_hint.setWordWrap(True)
 
+        # 提示：如何隐藏工具调用过程，只看最终回复
+        self.thinking_hint = QLabel(
+            "💡 提示：打开 WebChat 后，若界面显示了太多工具调用过程，"
+            "可点击聊天界面右上角的 🧠（thinking）图标关闭，即可只查看 OpenClaw 的最终回复"
+        )
+        self.thinking_hint.setAlignment(Qt.AlignCenter)
+        self.thinking_hint.setWordWrap(True)
+        self.thinking_hint.setStyleSheet(
+            "background-color: #e3f2fd; color: #1565c0; border: 1px solid #64b5f6; "
+            "border-radius: 6px; padding: 10px; font-size: 12px;"
+        )
+
         # 关键警告：请勿关闭安装器
         self.keep_alive_hint = QLabel(
             "⚠️ 请勿关闭本窗口！程序在运行，OpenClaw 才能正常使用"
@@ -225,6 +237,7 @@ class US06StartupPage(QWidget):
         success_layout.addWidget(self.fallback_hint)
         success_layout.addWidget(self.countdown_label)
         success_layout.addWidget(self.browser_hint)
+        success_layout.addWidget(self.thinking_hint)
         success_layout.addWidget(self.keep_alive_hint)
 
         self.error_frame = QFrame()
