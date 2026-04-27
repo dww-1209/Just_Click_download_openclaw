@@ -487,6 +487,17 @@ class OpenClawManager:
         env = os.environ.copy()
         cmd = self._resolve_openclaw_cmd()
         
+        # 过滤掉包含非 ASCII 字符的环境变量，避免 Node.js ByteString 错误
+        clean_env = {}
+        for k, v in env.items():
+            try:
+                v.encode("ascii")
+                clean_env[k] = v
+            except UnicodeEncodeError:
+                # 非 ASCII 值跳过，避免传递给 Node.js 子进程
+                pass
+        env = clean_env
+        
         # 如果全局命令找不到，但本地项目存在，使用项目内 pnpm
         local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
         local_fallback = (
