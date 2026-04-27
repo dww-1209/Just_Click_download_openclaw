@@ -66,9 +66,9 @@ VENDOR_REGISTRY: List[VendorInfo] = [
                 fallback_env_var="KIMICODE_API_KEY",
                 base_url="https://api.kimi.com/coding/",
                 auth_choice="kimi-code-api-key",
-                model_prefix="",
+                model_prefix="kimi-coding/",
                 models=[
-                    ModelInfo("kimi-for-coding", "Kimi for Coding", "kimi-for-coding"),
+                    ModelInfo("kimi-for-coding", "Kimi for Coding", "kimi-coding/kimi-for-coding"),
                 ],
             ),
         ],
