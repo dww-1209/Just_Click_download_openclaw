@@ -1,5 +1,5 @@
 import sys
-from PySide6.QtWidgets import QApplication, QStackedWidget
+from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 from PySide6.QtCore import Qt
 
 from ui.welcome_page import WelcomePage
@@ -11,6 +11,59 @@ from ui.us06_startup_page import US06StartupPage
 from services.env_check_service import EnvCheckService
 from services.install_service import InstallService
 from core.openclaw_manager import OpenClawManager
+
+
+class StepIndicator(QWidget):
+    """全局步骤指示器 — 显示在窗口顶部，所有页面共享"""
+
+    def __init__(self, steps, parent=None):
+        super().__init__(parent)
+        self.steps = steps
+        self.labels = []
+        self._setup_ui()
+
+    def _setup_ui(self):
+        from PySide6.QtWidgets import QHBoxLayout
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(24, 10, 24, 10)
+        layout.setSpacing(4)
+
+        for i, name in enumerate(self.steps):
+            label = QLabel(name)
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet("padding: 5px 14px; border-radius: 16px; font-size: 12px;")
+            self.labels.append(label)
+            layout.addWidget(label)
+
+            if i < len(self.steps) - 1:
+                arrow = QLabel("›")
+                arrow.setAlignment(Qt.AlignCenter)
+                arrow.setStyleSheet("color: #CBD5E1; font-size: 18px; font-weight: bold;")
+                arrow.setFixedWidth(16)
+                layout.addWidget(arrow)
+
+        layout.addStretch(1)
+
+    def set_current_step(self, index):
+        for i, label in enumerate(self.labels):
+            if i < index:
+                label.setStyleSheet(
+                    "background-color: #E8F5E9; color: #2E7D32; padding: 5px 14px; "
+                    "border-radius: 16px; font-size: 12px; font-weight: bold;"
+                )
+                label.setText("✓ " + self.steps[i])
+            elif i == index:
+                label.setStyleSheet(
+                    "background-color: #4CAF50; color: white; padding: 5px 14px; "
+                    "border-radius: 16px; font-size: 12px; font-weight: bold;"
+                )
+                label.setText(self.steps[i])
+            else:
+                label.setStyleSheet(
+                    "background-color: #F1F5F9; color: #94A3B8; padding: 5px 14px; "
+                    "border-radius: 16px; font-size: 12px;"
+                )
+                label.setText(self.steps[i])
 
 
 class InstallerWindow:
@@ -150,7 +203,29 @@ class InstallerWindow:
 
     def _setup_window(self):
         from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QVBoxLayout, QFrame
 
+        # 主窗口容器（步骤指示器 + stacked_widget）
+        self.main_window = QWidget()
+        self.main_window.setWindowTitle("OpenClaw One-Click Installer")
+        main_layout = QVBoxLayout(self.main_window)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 全局步骤指示器
+        self.step_indicator = StepIndicator(
+            ["欢迎", "环境检测", "安装", "配置", "模型", "启动"]
+        )
+        main_layout.addWidget(self.step_indicator)
+
+        # 分割线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet("background-color: #E2E8F0;")
+        separator.setFixedHeight(1)
+        main_layout.addWidget(separator)
+
+        # Stacked widget
         self.stacked_widget = QStackedWidget()
 
         self.welcome_page = WelcomePage()
@@ -167,13 +242,14 @@ class InstallerWindow:
         self.stacked_widget.addWidget(self.provider_config_page)  # 4
         self.stacked_widget.addWidget(self.startup_page)      # 5
 
-        self.stacked_widget.setWindowTitle("OpenClaw One-Click Installer")
+        self.stacked_widget.currentChanged.connect(self._on_page_changed)
+        main_layout.addWidget(self.stacked_widget, 1)
 
         screen = QApplication.primaryScreen().geometry()
         window_width = 800
         window_height = min(700, int(screen.height() * 0.85))
-        self.stacked_widget.resize(window_width, window_height)
-        self.stacked_widget.setMinimumSize(QSize(700, 600))
+        self.main_window.resize(window_width, window_height)
+        self.main_window.setMinimumSize(QSize(700, 600))
 
         self._connect_signals()
 
@@ -607,10 +683,14 @@ class InstallerWindow:
             self.install_service.cancel_install()
         elif self.current_stage in ["configuring", "startup"]:
             self.openclaw_manager.stop()
-        self.stacked_widget.close()
+        self.main_window.close()
+
+    def _on_page_changed(self, index):
+        if hasattr(self, 'step_indicator'):
+            self.step_indicator.set_current_step(index)
 
     def show(self):
-        self.stacked_widget.show()
+        self.main_window.show()
 
     def run(self):
         return self.app.exec()
