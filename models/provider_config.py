@@ -52,6 +52,7 @@ VENDOR_REGISTRY: List[VendorInfo] = [
                 auth_choice="moonshot-api-key-cn",
                 model_prefix="moonshot/",
                 models=[
+                    ModelInfo("kimi-k2.6", "Kimi K2.6", "moonshot/kimi-k2.6"),
                     ModelInfo("kimi-k2.5", "Kimi K2.5", "moonshot/kimi-k2.5"),
                     ModelInfo("kimi-k2-thinking", "Kimi K2 Thinking", "moonshot/kimi-k2-thinking", reasoning=True),
                     ModelInfo("kimi-k2-turbo", "Kimi K2 Turbo", "moonshot/kimi-k2-turbo"),
@@ -63,11 +64,11 @@ VENDOR_REGISTRY: List[VendorInfo] = [
                 label="Kimi Coding API Key",
                 env_var="KIMI_API_KEY",
                 fallback_env_var="KIMICODE_API_KEY",
-                base_url="https://api.moonshot.ai/anthropic",
+                base_url="https://api.kimi.com/coding/",
                 auth_choice="kimi-code-api-key",
-                model_prefix="kimi-coding/",
+                model_prefix="",
                 models=[
-                    ModelInfo("k2p5", "Kimi for Coding K2.5", "kimi-coding/k2p5"),
+                    ModelInfo("kimi-for-coding", "Kimi for Coding", "kimi-for-coding"),
                 ],
             ),
         ],
