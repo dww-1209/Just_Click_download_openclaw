@@ -731,7 +731,6 @@ class ProviderConfigPage(QWidget):
             prefix_map = {
                 "moonshot/": ("kimi", "standard"),
                 "kimi-coding/": ("kimi", "coding"),
-                "kimi-for-coding": ("kimi", "coding"),
                 "deepseek/": ("deepseek", "standard"),
                 "minimax/": ("minimax", "standard"),
                 "volcengine/": ("volcengine", "standard"),
@@ -803,7 +802,7 @@ class ProviderConfigPage(QWidget):
 
             if not matched_key_type and primary_model:
                 if vendor.id == "kimi":
-                    if primary_model == "kimi-for-coding" or primary_model.startswith("kimi-coding/"):
+                    if primary_model.startswith("kimi-coding/"):
                         matched_key_type = "coding"
                     elif primary_model.startswith("moonshot/"):
                         matched_key_type = "standard"
