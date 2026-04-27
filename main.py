@@ -17,13 +17,136 @@ class InstallerWindow:
     def __init__(self):
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("OpenClaw Installer")
-        # 全局样式重置：避免 macOS 原生风格给 QLabel 等添加边框和背景
-        self.app.setStyleSheet("QLabel { background: transparent; border: none; }")
+        self.app.setStyleSheet(self._global_qss())
         self.current_stage = "welcome"
         self.env_check_service = EnvCheckService()
         self.install_service = InstallService()
         self.openclaw_manager = OpenClawManager()
         self._setup_window()
+
+    @staticmethod
+    def _global_qss() -> str:
+        return """
+        /* 全局背景和字体 */
+        QWidget {
+            background-color: #F8F9FC;
+            font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+        }
+
+        /* macOS 原生边框修复 */
+        QLabel {
+            background: transparent;
+            border: none;
+        }
+
+        /* 主按钮 */
+        QPushButton#primaryButton {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 24px;
+            font-weight: bold;
+            font-size: 14px;
+            min-width: 100px;
+        }
+        QPushButton#primaryButton:hover {
+            background-color: #45a049;
+        }
+        QPushButton#primaryButton:pressed {
+            background-color: #388E3C;
+        }
+        QPushButton#primaryButton:disabled {
+            background-color: #cccccc;
+            color: #888888;
+        }
+
+        /* 次要按钮 */
+        QPushButton {
+            background-color: transparent;
+            color: #1E293B;
+            border: 1px solid #CBD5E1;
+            border-radius: 8px;
+            padding: 8px 20px;
+            font-size: 13px;
+            min-width: 80px;
+        }
+        QPushButton:hover {
+            background-color: #F1F5F9;
+            border-color: #94A3B8;
+        }
+        QPushButton:pressed {
+            background-color: #E2E8F0;
+        }
+        QPushButton:disabled {
+            color: #94A3B8;
+            border-color: #E2E8F0;
+        }
+
+        /* 日志区 */
+        QPlainTextEdit#logArea, QTextEdit#logArea {
+            background-color: #1E293B;
+            color: #E2E8F0;
+            font-family: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+            font-size: 12px;
+            border-radius: 12px;
+            padding: 12px;
+            border: none;
+        }
+        QPlainTextEdit#logArea:focus, QTextEdit#logArea:focus {
+            border: none;
+            outline: none;
+        }
+
+        /* 进度条 */
+        QProgressBar {
+            border: none;
+            background-color: #E2E8F0;
+            border-radius: 10px;
+            height: 8px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #4CAF50;
+            border-radius: 10px;
+        }
+
+        /* 输入框 */
+        QLineEdit {
+            background-color: white;
+            border: 1px solid #CBD5E1;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: #1E293B;
+        }
+        QLineEdit:focus {
+            border: 1px solid #4CAF50;
+        }
+
+        /* 下拉框 */
+        QComboBox {
+            background-color: white;
+            border: 1px solid #CBD5E1;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 13px;
+            color: #1E293B;
+        }
+        QComboBox:focus {
+            border: 1px solid #4CAF50;
+        }
+        QComboBox::drop-down {
+            border: none;
+            width: 24px;
+        }
+        QComboBox QAbstractItemView {
+            background-color: white;
+            border: 1px solid #CBD5E1;
+            border-radius: 6px;
+            selection-background-color: #E8F5E9;
+        }
+        """
 
     def _setup_window(self):
         from PySide6.QtCore import QSize

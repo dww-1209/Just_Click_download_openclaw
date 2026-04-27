@@ -23,13 +23,7 @@ class PrimaryButton(QPushButton):
     def __init__(self, text: str, parent=None):
         super().__init__(text, parent)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: none; "
-            "padding: 0 16px; min-height: 36px; }"
-            "QPushButton:hover { background-color: #43a047; }"
-            "QPushButton:pressed { background-color: #388e3c; }"
-        )
+        self.setObjectName("primaryButton")
 
 
 class SecondaryButton(QPushButton):
@@ -38,13 +32,6 @@ class SecondaryButton(QPushButton):
     def __init__(self, text: str, parent=None):
         super().__init__(text, parent)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(
-            "QPushButton { background-color: #f5f5f5; color: #333; font-weight: bold; "
-            "border-radius: 6px; font-size: 13px; border: 1px solid #ddd; "
-            "padding: 0 16px; min-height: 36px; }"
-            "QPushButton:hover { background-color: #e0e0e0; }"
-            "QPushButton:pressed { background-color: #bdbdbd; }"
-        )
 
 
 class VendorRow(QFrame):
@@ -153,10 +140,7 @@ class VendorRow(QFrame):
         )
         add_btn = QPushButton("添加")
         add_btn.setFixedSize(60, 28)
-        add_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "border-radius: 4px; border: none; font-size: 12px; }"
-        )
+        add_btn.setObjectName("primaryButton")
         add_btn.clicked.connect(self._add_custom_model)
         custom_layout.addWidget(custom_label)
         custom_layout.addWidget(self.custom_input, 1)
@@ -365,7 +349,7 @@ class ProviderConfigPage(QWidget):
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)

@@ -44,14 +44,14 @@ class CheckItemWidget(QFrame):
 
     def set_status(self, status: CheckStatus, message: str = ""):
         if status == CheckStatus.OK:
-            self.status_label.setText(f"[OK] {message}")
-            self.status_label.setStyleSheet("color: green;")
+            tag = '<span style="background:#E8F5E9; color:#2E7D32; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">✓ OK</span>'
+            self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
         elif status == CheckStatus.WARNING:
-            self.status_label.setText(f"[!] {message}")
-            self.status_label.setStyleSheet("color: orange;")
+            tag = '<span style="background:#FFF8E1; color:#F57C00; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">⚠</span>'
+            self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
         else:
-            self.status_label.setText(f"[X] {message}")
-            self.status_label.setStyleSheet("color: red;")
+            tag = '<span style="background:#FFEBEE; color:#C62828; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">✗</span>'
+            self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
 
 
 class OpenClawInstalledWidget(QWidget):
@@ -85,19 +85,18 @@ class OpenClawInstalledWidget(QWidget):
         quick_layout.addStretch(1)
 
         self.quick_start_btn = QPushButton("快速启动")
-        self.quick_start_btn.setFixedSize(140, 35)
-        self.quick_start_btn.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;")
+        self.quick_start_btn.setFixedSize(140, 36)
+        self.quick_start_btn.setObjectName("primaryButton")
         self.quick_start_btn.clicked.connect(self.quick_start_clicked.emit)
 
         self.config_and_start_btn = QPushButton("重新配置并启动")
-        self.config_and_start_btn.setFixedSize(140, 35)
+        self.config_and_start_btn.setFixedSize(140, 36)
+        self.config_and_start_btn.setObjectName("primaryButton")
         self.config_and_start_btn.clicked.connect(self.config_and_start_clicked.emit)
 
         self.provider_config_btn = QPushButton("配置模型")
-        self.provider_config_btn.setFixedSize(140, 35)
-        self.provider_config_btn.setStyleSheet(
-            "background-color: #17a2b8; color: white; font-weight: bold;"
-        )
+        self.provider_config_btn.setFixedSize(140, 36)
+        self.provider_config_btn.setObjectName("primaryButton")
         self.provider_config_btn.clicked.connect(self.provider_config_clicked.emit)
 
         quick_layout.addWidget(self.quick_start_btn)
@@ -110,11 +109,11 @@ class OpenClawInstalledWidget(QWidget):
         other_layout.addStretch(1)
 
         self.manual_config_btn = QPushButton("手动配置")
-        self.manual_config_btn.setFixedSize(120, 35)
+        self.manual_config_btn.setFixedSize(120, 36)
         self.manual_config_btn.clicked.connect(self.manual_config_clicked.emit)
 
         self.reinstall_btn = QPushButton("重新下载")
-        self.reinstall_btn.setFixedSize(120, 35)
+        self.reinstall_btn.setFixedSize(120, 36)
         self.reinstall_btn.clicked.connect(self.reinstall_clicked.emit)
 
         other_layout.addWidget(self.manual_config_btn)
@@ -154,7 +153,7 @@ class EnvCheckPage(QWidget):
         # 主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         # 创建滚动区域以适应小屏幕
         scroll_area = QScrollArea()
@@ -242,8 +241,9 @@ class EnvCheckPage(QWidget):
         self.back_button.setFixedSize(100, 36)
         self.back_button.clicked.connect(self.back_clicked.emit)
 
-        self.next_button = QPushButton("Next")
+        self.next_button = QPushButton("下一步")
         self.next_button.setFixedSize(100, 36)
+        self.next_button.setObjectName("primaryButton")
         self.next_button.clicked.connect(self.next_clicked.emit)
         self.next_button.setEnabled(False)
 

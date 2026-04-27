@@ -63,7 +63,7 @@ class US06StartupPage(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -130,9 +130,7 @@ class US06StartupPage(QWidget):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet(
-            "background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 11px;"
-        )
+        self.log_text.setObjectName("logArea")
         self.log_text.setMaximumHeight(150)
         log_layout.addWidget(self.log_text)
 
@@ -169,18 +167,9 @@ class US06StartupPage(QWidget):
 
         self.url_input = QLineEdit()
         self.url_input.setReadOnly(True)
-        self.url_input.setStyleSheet(
-            "QLineEdit { background-color: #ffffff; border: 1px solid #c8e6c9; border-radius: 6px; "
-            "padding: 8px 10px; font-size: 12px; color: #333; }"
-        )
 
         self.copy_button = QPushButton("复制")
         self.copy_button.setFixedWidth(72)
-        self.copy_button.setStyleSheet(
-            "QPushButton { background-color: #ffffff; border: 1px solid #a5d6a7; "
-            "border-radius: 6px; padding: 6px; font-size: 12px; color: #2e7d32; }"
-            "QPushButton:hover { background-color: #c8e6c9; }"
-        )
         self.copy_button.clicked.connect(self._copy_url)
 
         url_input_layout = QHBoxLayout()
@@ -224,12 +213,7 @@ class US06StartupPage(QWidget):
         # 打开 WebChat 按钮
         self.open_webchat_btn = QPushButton("打开 WebChat")
         self.open_webchat_btn.setCursor(Qt.PointingHandCursor)
-        self.open_webchat_btn.setStyleSheet(
-            "QPushButton { background-color: #cccccc; color: white; font-weight: bold; "
-            "padding: 10px; font-size: 14px; border-radius: 8px; border: none; }"
-            "QPushButton:enabled { background-color: #28a745; }"
-            "QPushButton:enabled:hover { background-color: #218838; }"
-        )
+        self.open_webchat_btn.setObjectName("primaryButton")
         self.open_webchat_btn.setFixedHeight(46)
         self.open_webchat_btn.setEnabled(False)
         self.open_webchat_btn.clicked.connect(self.open_webchat_clicked.emit)
@@ -279,6 +263,7 @@ class US06StartupPage(QWidget):
 
         self.finish_button = QPushButton("完成")
         self.finish_button.setFixedSize(100, 36)
+        self.finish_button.setObjectName("primaryButton")
         self.finish_button.clicked.connect(self.finish_clicked.emit)
         self.finish_button.hide()
 
@@ -436,11 +421,7 @@ class US06StartupPage(QWidget):
         
         self._countdown_value = 8
         self.open_webchat_btn.setEnabled(False)
-        self.open_webchat_btn.setStyleSheet(
-            "QPushButton { background-color: #cccccc; color: white; font-weight: bold; padding: 10px; font-size: 13px; border-radius: 6px; }"
-            "QPushButton:enabled { background-color: #28a745; }"
-            "QPushButton:enabled:hover { background-color: #218838; }"
-        )
+        pass
         self.countdown_label.setText(f"服务已就绪，正在等待连接稳定... {self._countdown_value} 秒")
         self.countdown_label.show()
 
@@ -480,9 +461,6 @@ class US06StartupPage(QWidget):
             self._countdown_timer.stop()
         self.countdown_label.hide()
         self.open_webchat_btn.setEnabled(False)
-        self.open_webchat_btn.setStyleSheet(
-            "background-color: #cccccc; color: white; font-weight: bold; padding: 10px; font-size: 13px;"
-        )
 
         self.back_button.show()
         self.retry_button.hide()
