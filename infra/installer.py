@@ -538,7 +538,9 @@ class OpenClawInstaller:
 
             if is_windows:
                 node_urls = [
-                    "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0-x64.msi",
+                    "https://npmmirror.com/mirrors/node/v22.14.0/node-v22.14.0-x64.msi",
+                    "https://mirrors.cloud.tencent.com/nodejs-release/v22.14.0/node-v22.14.0-x64.msi",
+                    "https://repo.huaweicloud.com/nodejs/v22.14.0/node-v22.14.0-x64.msi",
                     "https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi",
                 ]
                 # 使用用户级临时目录，避免管理员上下文下的目录重定向问题
@@ -546,6 +548,18 @@ class OpenClawInstaller:
                 node_msi = temp_dir / "node-v22-installer.msi"
                 downloaded = False
                 last_error_detail: Optional[InstallErrorDetail] = None
+
+                def _is_valid_msi(path: Path) -> bool:
+                    """校验 MSI 文件头魔数（OLE 复合文档格式）"""
+                    if not path.exists():
+                        return False
+                    try:
+                        with open(path, "rb") as f:
+                            header = f.read(8)
+                        # MSI 文件头魔数: D0 CF 11 E0 A1 B1 1A E1
+                        return header == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+                    except Exception:
+                        return False
 
                 for url in node_urls:
                     if _check_cancelled():
@@ -561,25 +575,29 @@ class OpenClawInstaller:
                         with urllib.request.urlopen(req, context=ctx, timeout=180) as resp:
                             with open(node_msi, "wb") as f:
                                 f.write(resp.read())
-                        if node_msi.exists() and node_msi.stat().st_size > 30 * 1024 * 1024:
+                        if _is_valid_msi(node_msi):
                             downloaded = True
                             self._log(f"Node.js 安装包下载成功 ({node_msi.stat().st_size / 1024 / 1024:.1f} MB)", on_log)
                             break
                         else:
                             actual = node_msi.stat().st_size if node_msi.exists() else 0
-                            self._log(f"下载完成但文件过小 ({actual} 字节)，判定为失败", on_log)
+                            self._log(f"下载完成但文件校验失败 ({actual} 字节)，判定为失败", on_log)
                     except Exception as e:
                         self._log(f"[Python 下载失败] {type(e).__name__}: {str(e)}", on_log)
 
                     # 方法2：PowerShell fallback
                     if not downloaded:
-                        ps_cmd = (
+                        # 使用 -EncodedCommand 避免 cmd 对 PowerShell 语法的引号转义问题
+                        import base64
+                        ps_script = (
                             f'$ProgressPreference = "SilentlyContinue"; '
                             f'try {{ Invoke-WebRequest -Uri "{url}" -OutFile "{node_msi}" '
                             f'-UseBasicParsing -TimeoutSec 180; exit 0 }} catch {{ '
                             f'Write-Error "异常: $($_.Exception.Message)"; '
                             f'Write-Error "堆栈: $($_.ScriptStackTrace)"; exit 1 }}'
                         )
+                        encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+                        ps_cmd = f"powershell -ExecutionPolicy Bypass -EncodedCommand {encoded}"
                         result = run_shell(
                             ps_cmd, timeout=200,
                             context=f"从 {url} 下载 Node.js msi 到 {node_msi}",
@@ -593,12 +611,12 @@ class OpenClawInstaller:
                             self._log(f"[用户提示] {result.error_detail.user_message}", on_log)
                             raw = result.error_detail.raw_error
                             self._log(f"[原始错误] {raw[:1000]}{'...' if len(raw) > 1000 else ''}", on_log)
-                        if result.success and node_msi.exists() and node_msi.stat().st_size > 30 * 1024 * 1024:
+                        if result.success and _is_valid_msi(node_msi):
                             downloaded = True
                             self._log(f"Node.js 安装包下载成功 (PowerShell, {node_msi.stat().st_size / 1024 / 1024:.1f} MB)", on_log)
                             break
                         else:
-                            self._log(f"PowerShell 下载失败, rc={result.returncode}", on_log)
+                            self._log(f"PowerShell 下载失败或文件校验不通过, rc={result.returncode}", on_log)
 
                 if not downloaded:
                     err_detail = last_error_detail
@@ -612,19 +630,74 @@ class OpenClawInstaller:
                         error_detail=err_detail,
                     )
 
+                # 安装前自动修复 Windows Installer（DeepSeek 方案）
+                self._log("修复 Windows Installer 服务...", on_log)
+                run_shell("msiexec /unregister", timeout=30)
+                run_shell("msiexec /regserver", timeout=30)
+                self._log("Windows Installer 服务已修复", on_log)
+
+                # 安装前自动清理注册表残留
+                self._log("清理可能的 Node.js 注册表残留...", on_log)
+                reg_clean_result = run_shell(
+                    'powershell -Command "Remove-Item -Path HKCU:\\Software\\Node.js -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Path HKLM:\\SOFTWARE\\Node.js -Recurse -Force -ErrorAction SilentlyContinue"',
+                    timeout=30,
+                )
+                if reg_clean_result.success:
+                    self._log("注册表清理完成", on_log)
+                else:
+                    self._log("注册表无残留或清理失败（不影响安装）", on_log)
+
                 # 安装 Node.js
                 self._log(f"正在安装 Node.js (msi: {node_msi})...", on_log)
-                install_result = run_shell(
-                    f'msiexec /i "{node_msi}" /qn /norestart',
-                    timeout=300,
-                    context=f"安装 Node.js msi ({node_msi})",
-                    stage="INSTALLING",
-                )
-                if install_result.stderr.strip():
-                    self._log(f"[msiexec stderr]\n{install_result.stderr.strip()}", on_log)
-                if not install_result.success:
+                msi_log = temp_dir / "node-v22-install.log"
+
+                install_success = False
+                for attempt in range(2):
+                    if attempt > 0:
+                        self._log("首次安装失败，等待 10 秒后重试...", on_log)
+                        time.sleep(10)
+
+                    install_result = run_shell(
+                        f'msiexec /i "{node_msi}" /qn /norestart /l*v "{msi_log}"',
+                        timeout=300,
+                        context=f"安装 Node.js msi ({node_msi})",
+                        stage="INSTALLING",
+                    )
+                    if install_result.stderr.strip():
+                        self._log(f"[msiexec stderr]\n{install_result.stderr.strip()}", on_log)
+
+                    if install_result.success:
+                        install_success = True
+                        break
+
+                    # 读取 MSI 详细日志，输出最后 100 行供诊断
+                    if msi_log.exists():
+                        try:
+                            log_content = msi_log.read_text(encoding="utf-8", errors="replace")
+                            all_lines = log_content.splitlines()
+                            # 输出日志最后 100 行
+                            self._log(f"[MSI 安装日志 最后 {min(len(all_lines), 100)} 行]\n" + "\n".join(all_lines[-100:]), on_log)
+                        except Exception as e:
+                            self._log(f"[读取 MSI 日志失败] {e}", on_log)
+
+                    if attempt == 0 and install_result.returncode == 1603:
+                        self._log("检测到 1603 错误，可能是 Windows Installer 正忙或已有 Node.js 冲突，等待后重试...", on_log)
+                        time.sleep(3)
+                        continue
+
+                if not install_success:
                     err_detail = install_result.error_detail
-                    user_msg = "无法安装 Node.js"
+                    user_msg = (
+                        "Node.js 安装失败 (错误 1603)\n\n"
+                        "常见原因：\n"
+                        "1. 电脑上已安装了其他版本的 Node.js，导致冲突\n"
+                        "2. Windows 正在执行其他安装/更新程序\n"
+                        "3. 安全软件阻止了安装\n\n"
+                        "建议：\n"
+                        "• 先手动卸载已有的 Node.js，再重试\n"
+                        "• 重启电脑后重试\n"
+                        "• 暂时关闭杀毒软件后重试"
+                    )
                     if err_detail:
                         user_msg = f"{err_detail.user_message}\n\n{err_detail.suggestion}"
                     self._log(f"Node.js 安装失败: {user_msg}", on_log)
@@ -634,6 +707,16 @@ class OpenClawInstaller:
                         log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
                         error_detail=err_detail,
                     )
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+                        sys_path, _ = winreg.QueryValueEx(key, "Path")
+                    os.environ["Path"] = sys_path + ";" + os.environ.get("Path", "")
+                except Exception:
+                    pass
+                node_path = r"C:\Program Files\nodejs"
+                if os.path.exists(node_path):
+                    os.environ["Path"] = node_path + os.pathsep + os.environ.get("Path", "")
                 try:
                     import winreg
                     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:

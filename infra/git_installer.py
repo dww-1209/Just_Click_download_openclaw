@@ -98,21 +98,21 @@ def download_file(
     # 方法2：PowerShell fallback（Python SSL/网络受限时使用）
     try:
         log("尝试 PowerShell 下载...")
-        ps_command = f"""
-        $ProgressPreference = 'SilentlyContinue'
-        try {{
-            Invoke-WebRequest -Uri "{url}" -OutFile "{dest_path}" -UseBasicParsing -TimeoutSec 180
-            exit 0
-        }} catch {{
-            Write-Error "异常类型: $($_.Exception.GetType().FullName)"
-            Write-Error "异常消息: $($_.Exception.Message)"
-            Write-Error "堆栈跟踪: $($_.ScriptStackTrace)"
-            exit 1
-        }}
-        """
+        # 使用 -EncodedCommand 避免 cmd 对 PowerShell 语法的引号转义问题
+        import base64
+        ps_script = (
+            f"$ProgressPreference = 'SilentlyContinue'; "
+            f"try {{ Invoke-WebRequest -Uri '{url}' -OutFile '{dest_path}' "
+            f"-UseBasicParsing -TimeoutSec 180; exit 0 }} catch {{ "
+            f"Write-Error \"异常类型: $($_.Exception.GetType().FullName)\"; "
+            f"Write-Error \"异常消息: $($_.Exception.Message)\"; "
+            f"Write-Error \"堆栈跟踪: $($_.ScriptStackTrace)\"; exit 1 }}"
+        )
+        encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+        ps_cmd = f"powershell -ExecutionPolicy Bypass -EncodedCommand {encoded}"
 
         result = run_shell(
-            ps_command,
+            ps_cmd,
             timeout=200,
             context=f"从 {url[:80]}... 下载文件到 {dest_path}",
             stage="DOWNLOADING",
