@@ -58,7 +58,7 @@ class WelcomePage(QWidget):
         # 主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         # 创建滚动区域
         scroll_area = QScrollArea()
@@ -144,10 +144,7 @@ class WelcomePage(QWidget):
 
         self.next_button = QPushButton("开始安装")
         self.next_button.setFixedSize(120, 40)
-        self.next_button.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; border-radius: 6px; font-size: 13px; }"
-            "QPushButton:hover { background-color: #45a049; }"
-        )
+        self.next_button.setObjectName("primaryButton")
         self.next_button.clicked.connect(self.next_clicked.emit)
 
         button_layout.addWidget(self.exit_button)

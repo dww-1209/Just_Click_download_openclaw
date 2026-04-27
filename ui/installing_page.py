@@ -34,7 +34,7 @@ class InstallingPage(QWidget):
         # 主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(24, 24, 24, 24)
 
         # 创建滚动区域
         scroll_area = QScrollArea()
@@ -102,17 +102,7 @@ class InstallingPage(QWidget):
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumBlockCount(100)  # 限制日志行数
         self.log_text.setMinimumHeight(100)
-        self.log_text.setStyleSheet("""
-            QPlainTextEdit {
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 10px;
-                font-family: Consolas, Monaco, monospace;
-                font-size: 11px;
-            }
-        """)
+        self.log_text.setObjectName("logArea")
 
         # 提示信息
         self.hint_label = QLabel("")
@@ -161,6 +151,7 @@ class InstallingPage(QWidget):
 
         self.next_button = QPushButton("完成")
         self.next_button.setFixedSize(100, 36)
+        self.next_button.setObjectName("primaryButton")
         self.next_button.clicked.connect(self.next_clicked.emit)
         self.next_button.setEnabled(False)
         self.next_button.hide()
