@@ -1,5 +1,5 @@
 import sys
-from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
+from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget, QLabel
 from PySide6.QtCore import Qt
 
 from ui.welcome_page import WelcomePage
@@ -136,6 +136,28 @@ class InstallerWindow:
             border-color: #E2E8F0;
         }
 
+        /* 危险按钮（卸载确认等） */
+        QPushButton#dangerButton {
+            background-color: #DC3545;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 24px;
+            font-weight: bold;
+            font-size: 14px;
+            min-width: 100px;
+        }
+        QPushButton#dangerButton:hover {
+            background-color: #C82333;
+        }
+        QPushButton#dangerButton:pressed {
+            background-color: #BD2130;
+        }
+        QPushButton#dangerButton:disabled {
+            background-color: #cccccc;
+            color: #888888;
+        }
+
         /* 日志区 */
         QPlainTextEdit#logArea, QTextEdit#logArea {
             background-color: #1E293B;
@@ -161,6 +183,19 @@ class InstallerWindow:
         }
         QProgressBar::chunk {
             background-color: #4CAF50;
+            border-radius: 10px;
+        }
+
+        /* 危险进度条（卸载） */
+        QProgressBar#dangerProgressBar {
+            border: none;
+            background-color: #E2E8F0;
+            border-radius: 10px;
+            height: 8px;
+            text-align: center;
+        }
+        QProgressBar#dangerProgressBar::chunk {
+            background-color: #DC3545;
             border-radius: 10px;
         }
 
