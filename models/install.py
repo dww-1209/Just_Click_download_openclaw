@@ -22,6 +22,26 @@ class InstallStage(Enum):
     COMPLETED = "completed"
 
 
+class ErrorCategory(Enum):
+    """错误分类枚举"""
+
+    NETWORK_TIMEOUT = "network_timeout"
+    NETWORK_DNS = "network_dns"
+    NETWORK_SSL = "network_ssl"
+    NETWORK_HTTP_ERROR = "network_http_error"
+    NETWORK_UNKNOWN = "network_unknown"
+    PERMISSION_DENIED = "permission_denied"
+    DISK_FULL = "disk_full"
+    DISK_IO_ERROR = "disk_io_error"
+    PROCESS_TIMEOUT = "process_timeout"
+    PROCESS_NOT_FOUND = "process_not_found"
+    PROCESS_CRASHED = "process_crashed"
+    ANTIVIRUS_BLOCKED = "antivirus_blocked"
+    DEPENDENCY_MISSING = "dependency_missing"
+    ALREADY_EXISTS = "already_exists"
+    UNKNOWN = "unknown"
+
+
 @dataclass
 class InstallProgress:
     """安装进度"""
@@ -33,6 +53,31 @@ class InstallProgress:
 
 
 @dataclass
+class InstallErrorDetail:
+    """详细的安装错误信息
+
+    Attributes:
+        category: 错误分类
+        stage: 发生错误的阶段（如 DOWNLOADING, INSTALLING）
+        context: 错误发生时的上下文描述（如"正在从 npmmirror 下载 Node.js"）
+        raw_error: 原始错误信息（完整 stderr / 异常堆栈）
+        user_message: 给用户看的简洁错误描述
+        suggestion: 建议用户采取的修复措施
+        command: 触发错误的命令（如果有）
+        returncode: 子进程返回码（如果有）
+    """
+
+    category: ErrorCategory = ErrorCategory.UNKNOWN
+    stage: Optional[str] = None
+    context: str = ""
+    raw_error: str = ""
+    user_message: str = ""
+    suggestion: str = ""
+    command: str = ""
+    returncode: Optional[int] = None
+
+
+@dataclass
 class InstallResult:
     """安装结果"""
 
@@ -41,6 +86,7 @@ class InstallResult:
     error_message: str = ""
     log_lines: List[str] = field(default_factory=list)
     duration_seconds: float = 0.0
+    error_detail: Optional[InstallErrorDetail] = None
 
 
 @dataclass
