@@ -249,8 +249,9 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         # 进一步验证是否能正常运行（避免 build 产物缺失的误报）
         try:
             if os_type != "windows":
+                shell = os.environ.get("SHELL", "/bin/bash")
                 ver_result = subprocess.run(
-                    ["bash", "-c", f'export PATH="{env.get("PATH")}"; {cmd} --version'],
+                    [shell, "-ilc", f"{cmd} --version"],
                     capture_output=True, text=True, timeout=5,
                 )
                 if ver_result.returncode != 0:
@@ -317,8 +318,9 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
             if result.returncode == 0:
                 exe_path = result.stdout.strip()
                 install_path = os.path.dirname(exe_path)
+                shell = os.environ.get("SHELL", "/bin/bash")
                 ver_result = subprocess.run(
-                    ["bash", "-c", f'export PATH="{env.get("PATH")}"; {cmd2} --version'],
+                    [shell, "-ilc", f"{cmd2} --version"],
                     capture_output=True,
                     text=True,
                     timeout=5,
