@@ -84,8 +84,8 @@ VENDOR_REGISTRY: List[VendorInfo] = [
                 auth_choice="deepseek-api-key",
                 model_prefix="deepseek/",
                 models=[
-                    ModelInfo("deepseek-chat", "DeepSeek V3.2 (Chat)", "deepseek/deepseek-chat"),
-                    ModelInfo("deepseek-reasoner", "DeepSeek V3.2 (Reasoner)", "deepseek/deepseek-reasoner", reasoning=True),
+                    ModelInfo("deepseek-v4-pro", "DeepSeek V4 Pro", "deepseek/deepseek-v4-pro"),
+                    ModelInfo("deepseek-v4-flash", "DeepSeek V4 Flash", "deepseek/deepseek-v4-flash"),
                 ],
             ),
         ],

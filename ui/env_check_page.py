@@ -70,7 +70,8 @@ class OpenClawInstalledWidget(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        self.setStyleSheet("background-color: #e8f4e8; border-radius: 5px;")
+        self.setObjectName("openclawInstalledWidget")
+        self.setStyleSheet("QWidget#openclawInstalledWidget { background-color: #e8f4e8; border-radius: 8px; }")
 
         title = QLabel("检测到 OpenClaw 已安装")
         title_font = QFont()
