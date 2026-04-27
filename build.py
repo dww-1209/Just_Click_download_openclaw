@@ -122,6 +122,20 @@ def _build_single(
         if os.path.exists(icon_path):
             args.extend(["--icon", icon_path])
 
+        # 修复：PyInstaller 默认不会打包 OpenSSL DLL，导致目标机器上 _ssl 加载失败
+        # 自动检测并包含 libssl / libcrypto DLL
+        try:
+            import _ssl
+            ssl_dir = os.path.dirname(_ssl.__file__)
+            sep = ";"
+            for dll_name in ["libssl-3-x64.dll", "libcrypto-3-x64.dll"]:
+                dll_path = os.path.join(ssl_dir, dll_name)
+                if os.path.exists(dll_path):
+                    args.extend(["--add-binary", f"{dll_path}{sep}."])
+                    print(f"  包含 SSL DLL: {dll_name}")
+        except Exception:
+            pass
+
     # macOS
     elif is_macos():
         args.extend(["--osx-bundle-identifier", bundle_id])
