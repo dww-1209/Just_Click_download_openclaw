@@ -324,6 +324,7 @@ class OpenClawManager:
                     continue
             
             self._log("Running onboard...")
+            onboard_ok = False
             try:
                 cmd = 'onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon --node-manager pnpm --skip-channels'
                 result = self._run_openclaw_command(cmd)
@@ -332,8 +333,24 @@ class OpenClawManager:
                     self._log(f"onboard stdout: {result.stdout[:500]}")
                 if result.stderr:
                     self._log(f"onboard stderr: {result.stderr[:500]}")
+                if result.returncode == 0:
+                    onboard_ok = True
+                else:
+                    # onboard 非 0 可能是重复执行，检查配置目录是否已存在
+                    import os
+                    config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+                    if os.path.exists(config_path):
+                        self._log("onboard returned non-zero but config exists, treating as OK")
+                        onboard_ok = True
+                    else:
+                        self._log("onboard failed and no config exists")
+                        onboard_ok = False
             except Exception as e:
                 self._log(f"onboard error: {e}")
+                onboard_ok = False
+            
+            if not onboard_ok:
+                return False
             
             self._inject_browser_config()
             
@@ -373,6 +390,27 @@ class OpenClawManager:
         except OSError as e:
             self._log(f"Browser config: failed to write: {e}")
 
+    def _build_clean_env(self) -> dict:
+        """Build clean environment for subprocess, filtering non-ASCII values"""
+        import os
+        env = os.environ.copy()
+        keep_always = {"HOME", "PATH", "SHELL", "TMPDIR", "PWD", "OLDPWD"}
+        clean_env = {}
+        for k, v in env.items():
+            if k in keep_always:
+                clean_env[k] = v
+                continue
+            try:
+                v.encode("ascii")
+                clean_env[k] = v
+            except UnicodeEncodeError:
+                pass
+        # Ensure ~/.local/bin in PATH
+        home = os.path.expanduser("~")
+        local_bin = os.path.join(home, ".local", "bin")
+        clean_env["PATH"] = f"{local_bin}:{clean_env.get('PATH', '')}"
+        return clean_env
+
     def _start_gateway(self) -> bool:
         """Start OpenClaw gateway service"""
         try:
@@ -399,11 +437,13 @@ class OpenClawManager:
             
             # Use 'openclaw gateway' (without 'start') for foreground mode
             # This doesn't require admin privileges or scheduled task on any OS
+            env = self._build_clean_env()
             popen_kwargs = {
                 "shell": True,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
                 "text": True,
+                "env": env,
             }
             
             cmd = self._resolve_openclaw_cmd()
@@ -487,16 +527,7 @@ class OpenClawManager:
         env = os.environ.copy()
         cmd = self._resolve_openclaw_cmd()
         
-        # 过滤掉包含非 ASCII 字符的环境变量，避免 Node.js ByteString 错误
-        clean_env = {}
-        for k, v in env.items():
-            try:
-                v.encode("ascii")
-                clean_env[k] = v
-            except UnicodeEncodeError:
-                # 非 ASCII 值跳过，避免传递给 Node.js 子进程
-                pass
-        env = clean_env
+        env = self._build_clean_env()
         
         # 如果全局命令找不到，但本地项目存在，使用项目内 pnpm
         local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
@@ -528,11 +559,6 @@ class OpenClawManager:
             
             return result
         else:
-            # Linux/macOS: ensure ~/.local/bin is in PATH because openclaw may be installed there
-            home = os.path.expanduser("~")
-            local_bin = os.path.join(home, ".local", "bin")
-            env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
-            
             if local_fallback:
                 full_command = f'cd "{local_project}" && pnpm openclaw {command}'
             else:
@@ -739,20 +765,29 @@ class OpenClawManager:
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
 
-                # env 中的 API Key
+                # env 中的 API Key（防污染：跳过包含崩溃日志等异常内容的 key）
                 env = config.get("env", {})
                 if isinstance(env, dict):
-                    result["env"] = {k: v for k, v in env.items() if "_API_KEY" in k}
+                    clean_env = {}
+                    for k, v in env.items():
+                        if "_API_KEY" not in k:
+                            continue
+                        val = str(v).replace('"', '').replace('\n', ' ').strip()
+                        if not val or len(val) < 10 or 'Traceback' in val or 'ERROR' in val:
+                            continue
+                        clean_env[k] = v
+                    result["env"] = clean_env
 
                 # 默认模型
                 agents = config.get("agents", {})
                 defaults = agents.get("defaults", {})
                 model = defaults.get("model", {})
                 if isinstance(model, dict):
+                    # 兼容旧格式（错误地把 model 写成了对象）
                     result["primary_model"] = model.get("primary", "")
-                    result["fallback_models"] = model.get("fallbacks", [])
                 elif isinstance(model, str):
                     result["primary_model"] = model
+                result["fallback_models"] = defaults.get("fallbacks", [])
 
                 # providers 配置
                 models_config = config.get("models", {})
@@ -880,14 +915,37 @@ class OpenClawManager:
                     self._log(f"  onboard return code: {result.returncode}")
                     if result.stdout:
                         self._log(f"  onboard stdout: {result.stdout[:300]}")
+                    if result.stderr:
+                        self._log(f"  onboard stderr: {result.stderr[:300]}")
+                    if result.returncode != 0:
+                        # 检查 provider 是否已存在（onboard 可能是重复执行）
+                        import json, os
+                        config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+                        provider_exists = False
+                        try:
+                            if os.path.exists(config_path):
+                                with open(config_path, "r", encoding="utf-8") as f:
+                                    cfg = json.load(f)
+                                providers = cfg.get("models", {}).get("providers", {})
+                                if vendor_id in providers:
+                                    provider_exists = True
+                        except Exception:
+                            pass
+                        if provider_exists:
+                            self._log(f"  onboard returned non-zero but provider {vendor_id} exists, treating as OK")
+                        else:
+                            self._log(f"  onboard FAILED, provider config may be incomplete")
+                            all_ok = False
                 except Exception as e:
                     self._log(f"  onboard error: {e}")
+                    all_ok = False
 
         # 4. 设置全局默认模型
         if global_default_model:
             self._log(f"Setting global default model: {global_default_model}")
             try:
-                cmd = f'config set agents.defaults.model.primary "{global_default_model}"'
+                # agents.defaults.model 必须是字符串（模型 ref），不能是对象
+                cmd = f'config set agents.defaults.model "{global_default_model}"'
                 result = self._run_openclaw_command(cmd)
                 if result.returncode == 0:
                     self._log("  Set default model OK")
@@ -959,13 +1017,8 @@ class OpenClawManager:
         if "model" not in config["agents"]["defaults"]:
             config["agents"]["defaults"]["model"] = {}
 
-        model_cfg = config["agents"]["defaults"]["model"]
-        # If model is a string, convert to dict
-        if isinstance(model_cfg, str):
-            model_cfg = {"primary": model_cfg}
-            config["agents"]["defaults"]["model"] = model_cfg
-
-        model_cfg["fallbacks"] = fallback_models
+        # agents.defaults.model 必须是字符串，fallbacks 放在 agents.defaults.fallbacks
+        config["agents"]["defaults"]["fallbacks"] = fallback_models
 
         try:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -1025,23 +1078,18 @@ class OpenClawManager:
         if provider_id in config["models"]["providers"]:
             config["models"]["providers"][provider_id]["models"] = models
         else:
-            config["models"]["providers"][provider_id] = {
-                "baseUrl": cfg.get("base_url", ""),
-                "api": "openai-completions",
-                "models": models,
-            }
+            self._log(f"  WARNING: Provider {provider_id} not found in config, skipping model update (onboard may have failed)")
+            return
 
-        # 同时更新 agents.defaults.models alias
+        # 同时更新 agents.defaults.models alias（注意：是 defaults.models，不是 defaults.model.models）
         if "agents" not in config:
             config["agents"] = {}
         if "defaults" not in config["agents"]:
             config["agents"]["defaults"] = {}
-        if "model" not in config["agents"]["defaults"]:
-            config["agents"]["defaults"]["model"] = {}
-        if "models" not in config["agents"]["defaults"]["model"]:
-            config["agents"]["defaults"]["model"]["models"] = {}
+        if "models" not in config["agents"]["defaults"]:
+            config["agents"]["defaults"]["models"] = {}
 
-        config["agents"]["defaults"]["model"]["models"].update(aliases)
+        config["agents"]["defaults"]["models"].update(aliases)
 
         try:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
