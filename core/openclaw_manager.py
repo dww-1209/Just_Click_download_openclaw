@@ -837,9 +837,14 @@ class OpenClawManager:
                     "message": f"正在配置 {vendor_id}...",
                 })
 
-            # 1. 设置主 env 变量
+            # 1. 设置主 env 变量（先清理异常字符，防止之前崩溃堆栈等垃圾数据污染配置）
+            cleaned_key = api_key.replace('"', '').replace('\n', ' ').strip()
+            if not cleaned_key or len(cleaned_key) < 10 or 'Traceback' in cleaned_key or 'ERROR' in cleaned_key:
+                self._log(f"  Skip env.{env_var}: API Key 格式异常（可能包含崩溃日志或无效字符）")
+                all_ok = False
+                continue
             try:
-                cmd = f'config set env.{env_var} "{api_key}"'
+                cmd = f'config set env.{env_var} "{cleaned_key}"'
                 result = self._run_openclaw_command(cmd)
                 if result.returncode == 0:
                     self._log(f"  Set env.{env_var} OK")
@@ -905,7 +910,17 @@ class OpenClawManager:
                 self._log(f"  Set fallback models error: {e}")
                 all_ok = False
 
-        # 6. 写入自定义 provider 配置（无 onboard 的 provider，如 DashScope）
+        # 6. 更新 provider 模型列表（覆盖 onboard 可能创建的过时模型，如 k2p5 → kimi-for-coding）
+        for config_key, cfg in providers_config.items():
+            selected_models = cfg.get("selected_models", [])
+            if selected_models:
+                try:
+                    self._update_provider_models(config_key, cfg)
+                except Exception as e:
+                    self._log(f"  Update provider models {config_key} error: {e}")
+                    all_ok = False
+
+        # 7. 写入自定义 provider 配置（无 onboard 的 provider，如 DashScope）
         for config_key, cfg in providers_config.items():
             auth_choice = cfg.get("auth_choice", "")
             base_url = cfg.get("base_url", "")
@@ -958,6 +973,83 @@ class OpenClawManager:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except OSError as e:
             self._log(f"  Failed to write fallbacks: {e}")
+            raise
+
+    def _update_provider_models(self, config_key: str, cfg: dict) -> None:
+        """直接修改 openclaw.json 更新 provider 模型列表（覆盖 onboard 过时模型）"""
+        import json
+        import os
+
+        config_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
+
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+        except (json.JSONDecodeError, OSError) as e:
+            self._log(f"  Failed to read config for model update: {e}")
+            config = {}
+
+        if "models" not in config:
+            config["models"] = {}
+        if "providers" not in config["models"]:
+            config["models"]["providers"] = {}
+
+        if ":" in config_key:
+            vendor_id, key_type = config_key.split(":", 1)
+        else:
+            vendor_id = config_key
+            key_type = cfg.get("key_type", "")
+
+        provider_id = self._resolve_provider_id(vendor_id, key_type)
+        model_prefix = cfg.get("model_prefix", "")
+
+        models = []
+        aliases = {}
+        for model_ref in cfg.get("selected_models", []):
+            model_id = model_ref.split("/")[-1] if "/" in model_ref else model_ref
+            display_name = model_id
+            models.append({
+                "id": model_id,
+                "name": display_name,
+                "reasoning": False,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 262144,
+                "maxTokens": 32768,
+            })
+            aliases[f"{provider_id}/{model_id}"] = {"alias": display_name}
+
+        if provider_id in config["models"]["providers"]:
+            config["models"]["providers"][provider_id]["models"] = models
+        else:
+            config["models"]["providers"][provider_id] = {
+                "baseUrl": cfg.get("base_url", ""),
+                "api": "openai-completions",
+                "models": models,
+            }
+
+        # 同时更新 agents.defaults.models alias
+        if "agents" not in config:
+            config["agents"] = {}
+        if "defaults" not in config["agents"]:
+            config["agents"]["defaults"] = {}
+        if "model" not in config["agents"]["defaults"]:
+            config["agents"]["defaults"]["model"] = {}
+        if "models" not in config["agents"]["defaults"]["model"]:
+            config["agents"]["defaults"]["model"]["models"] = {}
+
+        config["agents"]["defaults"]["model"]["models"].update(aliases)
+
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            self._log(f"  Updated provider {provider_id} models OK")
+        except OSError as e:
+            self._log(f"  Failed to write provider models: {e}")
             raise
 
     def _configure_custom_provider(self, config_key: str, cfg: dict) -> None:
