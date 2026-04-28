@@ -479,9 +479,13 @@ class ProviderConfigPage(QWidget):
         default_layout.addWidget(self.default_model_combo)
         default_layout.addStretch(1)
 
+        fallback_hint = QLabel("其余已选模型将自动作为 fallback 备用")
+        fallback_hint.setStyleSheet("color: #888; font-size: 11px;")
+
         summary_layout.addWidget(summary_title)
         summary_layout.addWidget(self.summary_content)
         summary_layout.addLayout(default_layout)
+        summary_layout.addWidget(fallback_hint)
 
         layout.addWidget(title)
         layout.addWidget(desc)
@@ -607,9 +611,23 @@ class ProviderConfigPage(QWidget):
 
         global_model = self.default_model_combo.currentData()
 
+        # 收集所有已选模型作为 fallback 候选
+        all_selected = set()
+        for row in self.vendor_rows.values():
+            for ref in row.get_all_selected_models():
+                all_selected.add(ref)
+
+        # fallback = 所有已选模型中排除默认模型
+        fallback_models = []
+        if global_model and global_model in all_selected:
+            fallback_models = [ref for ref in all_selected if ref != global_model]
+        elif all_selected:
+            fallback_models = list(all_selected)
+
         self.save_and_start_clicked.emit({
             "providers": configured,
             "global_default_model": global_model or "",
+            "fallback_models": fallback_models,
         })
 
     # ─────────────────────────────── 配置导入/导出
@@ -713,6 +731,7 @@ class ProviderConfigPage(QWidget):
         env = existing.get("env", {})
         auth_profiles = existing.get("auth_profiles", {})
         primary_model = existing.get("primary_model", "")
+        fallback_models = existing.get("fallback_models", [])
         providers_cfg = existing.get("providers", {})
 
         provider_to_vendor = {
@@ -728,8 +747,8 @@ class ProviderConfigPage(QWidget):
             "aliyun-coding": ("aliyun", "coding"),
         }
 
-        # 收集所有已配置的 model ref
-        all_model_refs = set()
+        # 收集所有已配置的 model ref（primary + fallbacks）
+        all_model_refs = set(fallback_models)
         if primary_model:
             all_model_refs.add(primary_model)
 

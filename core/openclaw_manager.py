@@ -783,11 +783,11 @@ class OpenClawManager:
                 defaults = agents.get("defaults", {})
                 model = defaults.get("model", {})
                 if isinstance(model, dict):
-                    # 兼容旧格式（错误地把 model 写成了对象）
                     result["primary_model"] = model.get("primary", "")
+                    result["fallback_models"] = model.get("fallbacks", [])
                 elif isinstance(model, str):
                     result["primary_model"] = model
-                result["fallback_models"] = []
+                    result["fallback_models"] = []
 
                 # providers 配置
                 models_config = config.get("models", {})
@@ -831,6 +831,7 @@ class OpenClawManager:
         self,
         providers_config: dict,
         global_default_model: str,
+        fallback_models: Optional[list] = None,
         on_progress: Optional[Callable] = None,
         on_log: Optional[Callable[[str], None]] = None,
     ) -> bool:
@@ -939,22 +940,14 @@ class OpenClawManager:
                     self._log(f"  onboard error: {e}")
                     all_ok = False
 
-        # 4. 设置全局默认模型
+        # 4. 设置全局默认模型 + fallback（agents.defaults.model 为对象格式）
         if global_default_model:
             self._log(f"Setting global default model: {global_default_model}")
             try:
-                # agents.defaults.model 必须是字符串（模型 ref），不能是对象
-                cmd = f'config set agents.defaults.model "{global_default_model}"'
-                result = self._run_openclaw_command(cmd)
-                if result.returncode == 0:
-                    self._log("  Set default model OK")
-                else:
-                    self._log(f"  Set default model failed: rc={result.returncode}")
-                    if result.stderr:
-                        self._log(f"    stderr: {result.stderr[:200]}")
-                    all_ok = False
+                self._set_model_config(global_default_model, fallback_models)
+                self._log("  Set model config OK")
             except Exception as e:
-                self._log(f"  Set default model error: {e}")
+                self._log(f"  Set model config error: {e}")
                 all_ok = False
 
         # 5. 更新 provider 模型列表（覆盖 onboard 可能创建的过时模型，如 k2p5 → kimi-for-coding）
@@ -981,8 +974,8 @@ class OpenClawManager:
         self._on_log = None
         return all_ok
 
-    def _set_fallback_models(self, fallback_models: list) -> None:
-        """直接修改 openclaw.json 写入 fallback models"""
+    def _set_model_config(self, primary: str, fallbacks: Optional[list] = None) -> None:
+        """直接修改 openclaw.json 写入 agents.defaults.model（对象格式：primary + fallbacks）"""
         import json
         import os
 
@@ -995,26 +988,27 @@ class OpenClawManager:
             else:
                 config = {}
         except (json.JSONDecodeError, OSError) as e:
-            self._log(f"  Failed to read config for fallbacks: {e}")
+            self._log(f"  Failed to read config for model: {e}")
             config = {}
 
-        # Ensure agents.defaults.model structure exists
         if "agents" not in config:
             config["agents"] = {}
         if "defaults" not in config["agents"]:
             config["agents"]["defaults"] = {}
-        if "model" not in config["agents"]["defaults"]:
-            config["agents"]["defaults"]["model"] = {}
 
-        # agents.defaults.model 必须是字符串，fallbacks 放在 agents.defaults.fallbacks
-        config["agents"]["defaults"]["fallbacks"] = fallback_models
+        model_cfg = {"primary": primary}
+        if fallbacks:
+            model_cfg["fallbacks"] = fallbacks
+
+        config["agents"]["defaults"]["model"] = model_cfg
 
         try:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            self._log(f"  Set model config: primary={primary}, fallbacks={fallbacks or 'none'}")
         except OSError as e:
-            self._log(f"  Failed to write fallbacks: {e}")
+            self._log(f"  Failed to write model config: {e}")
             raise
 
     def _update_provider_models(self, config_key: str, cfg: dict) -> None:
