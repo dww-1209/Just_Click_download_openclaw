@@ -28,6 +28,8 @@ jobs:
           pip install httpx psutil "pyinstaller>=6.11.0,<6.12.0" "pyside6>=6.8.0,<6.9.0"
 
       - name: Build executables
+        env:
+          PYTHONIOENCODING: utf-8
         run: python build.py
 
       - name: Upload installer artifact
