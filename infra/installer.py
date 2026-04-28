@@ -527,6 +527,10 @@ class OpenClawInstaller:
 
             if is_windows:
                 node_urls = [
+                    "https://mirrors.aliyun.com/nodejs-release/v22.14.0/node-v22.14.0-x64.msi",
+                    "https://mirrors.cloud.tencent.com/nodejs-release/v22.14.0/node-v22.14.0-x64.msi",
+                    "https://repo.huaweicloud.com/nodejs/v22.14.0/node-v22.14.0-x64.msi",
+                    "https://mirrors.ustc.edu.cn/nodejs/v22.14.0/node-v22.14.0-x64.msi",
                     "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0-x64.msi",
                     "https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi",
                 ]
@@ -549,7 +553,7 @@ class OpenClawInstaller:
                 if not downloaded:
                     return InstallResult(
                         status=InstallStatus.FAILED, message="Node.js 下载失败",
-                        error_message="无法下载 Node.js 22 安装包，请检查网络后重试",
+                        error_message="无法下载 Node.js 22 安装包，请确保网络可以稳定访问 GitHub 和 nodejs.org（中国大陆用户建议开启代理/VPN 后重试）",
                         log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
                     )
                 install_result = _run(f'msiexec /i "{node_msi}" /qn /norestart', timeout=300)
@@ -580,6 +584,10 @@ class OpenClawInstaller:
                 if not node_ok:
                     node_pkg = Path("/tmp") / "node-v22-installer.pkg"
                     node_urls = [
+                        "https://mirrors.aliyun.com/nodejs-release/v22.14.0/node-v22.14.0.pkg",
+                        "https://mirrors.cloud.tencent.com/nodejs-release/v22.14.0/node-v22.14.0.pkg",
+                        "https://repo.huaweicloud.com/nodejs/v22.14.0/node-v22.14.0.pkg",
+                        "https://mirrors.ustc.edu.cn/nodejs/v22.14.0/node-v22.14.0.pkg",
                         "https://nodejs.org/dist/v22.14.0/node-v22.14.0.pkg",
                         "https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.14.0.pkg",
                     ]
@@ -602,7 +610,7 @@ class OpenClawInstaller:
                     if not downloaded:
                         return InstallResult(
                             status=InstallStatus.FAILED, message="Node.js 下载失败",
-                            error_message="无法下载 Node.js 22 安装包，请检查网络后重试",
+                            error_message="无法下载 Node.js 22 安装包，请确保网络可以稳定访问 GitHub 和 nodejs.org（中国大陆用户建议开启代理/VPN 后重试）",
                             log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
                         )
                     admin_cmds.append(f"installer -pkg {node_pkg} -target /")
