@@ -642,16 +642,18 @@ class InstallerWindow:
             log_line = Signal(str)
             complete = Signal(bool)
 
-            def __init__(self, manager, providers_config, global_default_model):
+            def __init__(self, manager, providers_config, global_default_model, fallback_models):
                 super().__init__()
                 self.manager = manager
                 self.providers_config = providers_config
                 self.global_default_model = global_default_model
+                self.fallback_models = fallback_models
 
             def run(self):
                 ok = self.manager.configure_providers(
                     self.providers_config,
                     self.global_default_model,
+                    self.fallback_models,
                     on_progress=self.progress_updated.emit,
                     on_log=self.log_line.emit,
                 )
@@ -662,6 +664,7 @@ class InstallerWindow:
             self.openclaw_manager,
             payload["providers"],
             payload["global_default_model"],
+            payload.get("fallback_models", []),
         )
         self._provider_config_worker.complete.connect(self._on_provider_config_complete)
         self._provider_config_worker.start()
