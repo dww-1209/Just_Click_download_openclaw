@@ -720,16 +720,6 @@ class OpenClawInstaller:
                 node_path = r"C:\Program Files\nodejs"
                 if os.path.exists(node_path):
                     os.environ["Path"] = node_path + os.pathsep + os.environ.get("Path", "")
-                try:
-                    import winreg
-                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
-                        sys_path, _ = winreg.QueryValueEx(key, "Path")
-                    os.environ["Path"] = sys_path + ";" + os.environ.get("Path", "")
-                except Exception:
-                    pass
-                node_path = r"C:\Program Files\nodejs"
-                if os.path.exists(node_path):
-                    os.environ["Path"] = node_path + os.pathsep + os.environ.get("Path", "")
             elif self.os_type == "macos":
                 # macOS：把所有需要管理员权限的命令收集起来，只弹一次密码框
                 admin_cmds = []
@@ -878,6 +868,29 @@ class OpenClawInstaller:
                     error_detail=err_detail,
                 )
             self._log("pnpm 安装完成", on_log)
+
+            # Windows: pnpm 刚全局安装完，需要把 npm 全局 bin 目录加到当前 env 的 PATH
+            # 否则新开的 shell 找不到 pnpm
+            if is_windows:
+                try:
+                    npm_bin_res = _run("npm bin -g", timeout=10)
+                    if npm_bin_res.returncode == 0:
+                        npm_bin_path = npm_bin_res.stdout.strip().strip('"').strip()
+                        if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in env.get("PATH", ""):
+                            env["PATH"] = npm_bin_path + os.pathsep + env.get("PATH", "")
+                            self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}", on_log)
+                except Exception as e:
+                    self._log(f"获取 npm 全局 bin 路径失败: {e}", on_log)
+                # fallback: 尝试常见的默认路径
+                appdata = os.environ.get("APPDATA", "")
+                fallback_paths = [
+                    os.path.join(appdata, "npm"),
+                    r"C:\Program Files\nodejs",
+                ]
+                for fp in fallback_paths:
+                    if os.path.exists(fp) and fp not in env.get("PATH", ""):
+                        env["PATH"] = fp + os.pathsep + env.get("PATH", "")
+                        self._log(f"已添加 fallback PATH: {fp}", on_log)
         else:
             self._log("pnpm 已存在", on_log)
 
