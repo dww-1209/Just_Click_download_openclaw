@@ -107,20 +107,11 @@ def _build_single(
         "--distpath", output_dir,
     ]
 
-    # assets
-    assets_dir = "assets"
-    if os.path.exists(assets_dir):
-        sep = ";" if is_windows() else ":"
-        args.extend(["--add-data", f"{assets_dir}{sep}{assets_dir}"])
-
     # Windows
     if is_windows():
         manifest_path = "app.manifest"
         if os.path.exists(manifest_path):
             args.extend(["--manifest", manifest_path])
-        icon_path = "assets/icon.ico"
-        if os.path.exists(icon_path):
-            args.extend(["--icon", icon_path])
 
         # 修复：PyInstaller 默认不会打包 OpenSSL DLL，导致目标机器上 _ssl 加载失败
         # 自动检测并包含 libssl / libcrypto DLL
@@ -136,12 +127,12 @@ def _build_single(
         except Exception:
             pass
 
+        # 降低杀毒软件误报率（UPX 压缩会被部分杀软误报）
+        args.append("--noupx")
+
     # macOS
     elif is_macos():
         args.extend(["--osx-bundle-identifier", bundle_id])
-        icon_path = "assets/icon.icns"
-        if os.path.exists(icon_path):
-            args.extend(["--icon", icon_path])
 
     args.append(entry_file)
     full_cmd = cmd + args
