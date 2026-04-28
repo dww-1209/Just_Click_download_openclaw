@@ -45,7 +45,7 @@ class VendorRow(QFrame):
         self.vendor = vendor
         self.is_expanded = False
         self._key_type_state = {}  # {key_type_key: {"api_key": "", "selected": set()}}
-        self._custom_models = []   # [(model_ref, display_name), ...]
+        self._custom_models = []   # [(model_ref, display_name, key_type_key), ...]
         self._model_checkboxes = {}  # {model_ref: QCheckBox}
         self._current_key_type = None
 
@@ -220,7 +220,9 @@ class VendorRow(QFrame):
             self._model_checkboxes[model.ref] = cb
             self.models_layout.addWidget(cb)
 
-        for ref, name in self._custom_models:
+        for ref, name, kt_key in self._custom_models:
+            if kt_key != self._current_key_type:
+                continue
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
@@ -261,14 +263,16 @@ class VendorRow(QFrame):
         else:
             ref = text
         name = text.split("/")[-1] if "/" in text else text
-        if ref not in [r for r, _ in self._custom_models]:
-            self._custom_models.append((ref, name))
+        key_type = self._current_key_type or ""
+        if not any(r == ref and k == key_type for r, n, k in self._custom_models):
+            self._custom_models.append((ref, name, key_type))
         self.custom_input.clear()
         self._refresh_models()
         self.model_selection_changed.emit()
 
     def _remove_custom_model(self, ref):
-        self._custom_models = [(r, n) for r, n in self._custom_models if r != ref]
+        key_type = self._current_key_type or ""
+        self._custom_models = [(r, n, k) for r, n, k in self._custom_models if not (r == ref and k == key_type)]
         self._save_current_state()
         self._refresh_models()
         self.model_selection_changed.emit()
@@ -344,7 +348,7 @@ class VendorRow(QFrame):
         for ref in list(selected_set):
             if ref not in preset_refs:
                 name = ref.split("/")[-1] if "/" in ref else ref
-                self._custom_models.append((ref, name))
+                self._custom_models.append((ref, name, self._current_key_type))
                 selected_set.discard(ref)
 
         self._key_type_state[self._current_key_type]["selected"] = selected_set
