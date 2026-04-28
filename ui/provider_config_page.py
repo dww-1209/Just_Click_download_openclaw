@@ -139,8 +139,7 @@ class VendorRow(QFrame):
             f"输入模型 ID，如 {prefix}my-model" if prefix else "输入模型 ID"
         )
         add_btn = QPushButton("添加")
-        add_btn.setFixedSize(60, 28)
-        add_btn.setObjectName("primaryButton")
+        add_btn.setFixedSize(70, 28)
         add_btn.clicked.connect(self._add_custom_model)
         custom_layout.addWidget(custom_label)
         custom_layout.addWidget(self.custom_input, 1)
@@ -222,11 +221,29 @@ class VendorRow(QFrame):
             self.models_layout.addWidget(cb)
 
         for ref, name in self._custom_models:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
             cb = QCheckBox(f"{name}  ({ref})  [自定义]")
             cb.setChecked(True)
             cb.stateChanged.connect(self._on_model_changed)
             self._model_checkboxes[ref] = cb
-            self.models_layout.addWidget(cb)
+
+            del_btn = QPushButton("✕")
+            del_btn.setFixedSize(24, 24)
+            del_btn.setStyleSheet(
+                "QPushButton { border: none; color: #999; font-size: 14px; background: transparent; }"
+                "QPushButton:hover { color: #e74c3c; }"
+            )
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.clicked.connect(lambda checked, r=ref: self._remove_custom_model(r))
+
+            row_layout.addWidget(cb)
+            row_layout.addWidget(del_btn)
+            row_layout.addStretch(1)
+            self.models_layout.addWidget(row_widget)
 
         self._restore_state()
 
@@ -234,7 +251,11 @@ class VendorRow(QFrame):
         text = self.custom_input.text().strip()
         if not text:
             return
-        prefix = self.vendor.key_types[0].model_prefix if self.vendor.key_types else ""
+        prefix = ""
+        for kt in self.vendor.key_types:
+            if kt.key == self._current_key_type:
+                prefix = kt.model_prefix
+                break
         if "/" not in text and prefix:
             ref = f"{prefix}{text}"
         else:
@@ -243,6 +264,12 @@ class VendorRow(QFrame):
         if ref not in [r for r, _ in self._custom_models]:
             self._custom_models.append((ref, name))
         self.custom_input.clear()
+        self._refresh_models()
+        self.model_selection_changed.emit()
+
+    def _remove_custom_model(self, ref):
+        self._custom_models = [(r, n) for r, n in self._custom_models if r != ref]
+        self._save_current_state()
         self._refresh_models()
         self.model_selection_changed.emit()
 
@@ -452,13 +479,9 @@ class ProviderConfigPage(QWidget):
         default_layout.addWidget(self.default_model_combo)
         default_layout.addStretch(1)
 
-        fallback_hint = QLabel("其余已选模型将自动作为 fallback 备用")
-        fallback_hint.setStyleSheet("color: #888; font-size: 11px;")
-
         summary_layout.addWidget(summary_title)
         summary_layout.addWidget(self.summary_content)
         summary_layout.addLayout(default_layout)
-        summary_layout.addWidget(fallback_hint)
 
         layout.addWidget(title)
         layout.addWidget(desc)
@@ -584,23 +607,9 @@ class ProviderConfigPage(QWidget):
 
         global_model = self.default_model_combo.currentData()
 
-        # 收集所有已选模型作为 fallback 候选
-        all_selected = set()
-        for row in self.vendor_rows.values():
-            for ref in row.get_all_selected_models():
-                all_selected.add(ref)
-
-        # fallback = 所有已选模型中排除默认模型
-        fallback_models = []
-        if global_model and global_model in all_selected:
-            fallback_models = [ref for ref in all_selected if ref != global_model]
-        elif all_selected:
-            fallback_models = list(all_selected)
-
         self.save_and_start_clicked.emit({
             "providers": configured,
             "global_default_model": global_model or "",
-            "fallback_models": fallback_models,
         })
 
     # ─────────────────────────────── 配置导入/导出
@@ -704,7 +713,6 @@ class ProviderConfigPage(QWidget):
         env = existing.get("env", {})
         auth_profiles = existing.get("auth_profiles", {})
         primary_model = existing.get("primary_model", "")
-        fallback_models = existing.get("fallback_models", [])
         providers_cfg = existing.get("providers", {})
 
         provider_to_vendor = {
@@ -720,8 +728,8 @@ class ProviderConfigPage(QWidget):
             "aliyun-coding": ("aliyun", "coding"),
         }
 
-        # 收集所有已配置的 model ref（primary + fallbacks）
-        all_model_refs = set(fallback_models)
+        # 收集所有已配置的 model ref
+        all_model_refs = set()
         if primary_model:
             all_model_refs.add(primary_model)
 

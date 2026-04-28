@@ -787,7 +787,7 @@ class OpenClawManager:
                     result["primary_model"] = model.get("primary", "")
                 elif isinstance(model, str):
                     result["primary_model"] = model
-                result["fallback_models"] = defaults.get("fallbacks", [])
+                result["fallback_models"] = []
 
                 # providers 配置
                 models_config = config.get("models", {})
@@ -831,7 +831,6 @@ class OpenClawManager:
         self,
         providers_config: dict,
         global_default_model: str,
-        fallback_models: Optional[list] = None,
         on_progress: Optional[Callable] = None,
         on_log: Optional[Callable[[str], None]] = None,
     ) -> bool:
@@ -958,17 +957,7 @@ class OpenClawManager:
                 self._log(f"  Set default model error: {e}")
                 all_ok = False
 
-        # 5. 设置 fallback models
-        if fallback_models:
-            self._log(f"Setting fallback models: {fallback_models}")
-            try:
-                self._set_fallback_models(fallback_models)
-                self._log("  Set fallback models OK")
-            except Exception as e:
-                self._log(f"  Set fallback models error: {e}")
-                all_ok = False
-
-        # 6. 更新 provider 模型列表（覆盖 onboard 可能创建的过时模型，如 k2p5 → kimi-for-coding）
+        # 5. 更新 provider 模型列表（覆盖 onboard 可能创建的过时模型，如 k2p5 → kimi-for-coding）
         for config_key, cfg in providers_config.items():
             selected_models = cfg.get("selected_models", [])
             if selected_models:
