@@ -234,16 +234,50 @@ class InstallingPage(QWidget):
         self.next_button.setEnabled(True)  # 启用下一步按钮
 
     def install_failed(self, result: InstallResult):
-        """安装失败"""
+        """安装失败
+
+        改进后的错误显示逻辑：
+        1. 优先使用 result.error_detail 中的结构化错误信息（分类、用户提示、建议）
+        2. 如果没有 error_detail，回退到旧的关键词匹配逻辑
+        3. 在日志区域追加完整的原始错误信息，方便高级用户排查
+        """
         from models.helpers import UserMessageHelper
-        
+
         self.status_label.setText("[X] 安装失败")
         self.status_label.setStyleSheet("color: red;")
         self.task_label.setText(result.message)
 
-        # 显示友好的错误提示
-        if result.error_message:
-            # 根据错误内容判断错误类型
+        friendly_msg = ""
+
+        # 优先使用结构化的 error_detail
+        if result.error_detail is not None:
+            friendly_msg = UserMessageHelper.get_friendly_message_by_category(
+                category=result.error_detail.category,
+                user_message=result.error_detail.user_message,
+                suggestion=result.error_detail.suggestion,
+                details=result.error_message,
+            )
+            # 在日志中追加完整的诊断信息
+            self._append_log("=" * 40)
+            self._append_log("[诊断信息]")
+            self._append_log(f"错误分类: {result.error_detail.category.value}")
+            self._append_log(f"发生阶段: {result.error_detail.stage or '未知'}")
+            self._append_log(f"上下文: {result.error_detail.context or '无'}")
+            if result.error_detail.command:
+                self._append_log(f"触发命令: {result.error_detail.command[:200]}")
+            if result.error_detail.returncode is not None:
+                self._append_log(f"返回码: {result.error_detail.returncode}")
+            self._append_log("-" * 40)
+            self._append_log("[原始错误输出]")
+            raw = result.error_detail.raw_error
+            if len(raw) > 3000:
+                self._append_log(raw[:3000])
+                self._append_log(f"... (后续截断，共 {len(raw)} 字符，请查看完整日志文件)")
+            else:
+                self._append_log(raw)
+            self._append_log("=" * 40)
+        elif result.error_message:
+            # 回退：根据错误内容关键词判断错误类型
             error_lower = result.error_message.lower()
             if "网络" in error_lower or "download" in error_lower or "curl" in error_lower:
                 friendly_msg = UserMessageHelper.get_friendly_error_message("download", result.error_message)
@@ -253,9 +287,12 @@ class InstallingPage(QWidget):
                 friendly_msg = UserMessageHelper.get_friendly_error_message("disk_space", result.error_message)
             else:
                 friendly_msg = UserMessageHelper.get_friendly_error_message("install", result.error_message)
-            
+
+        if friendly_msg:
             self.hint_label.setText(friendly_msg)
-            self.hint_label.setStyleSheet("color: #856404; background-color: #fff3cd; padding: 10px; border-radius: 5px;")
+            self.hint_label.setStyleSheet(
+                "color: #856404; background-color: #fff3cd; padding: 10px; border-radius: 5px;"
+            )
             self.hint_label.show()
 
         self._append_log(f"安装失败: {result.error_message}")
