@@ -124,7 +124,16 @@ class OpenClawInstaller:
                                 return InstallResult(
                                     status=InstallStatus.FAILED,
                                     message="Git 安装超时",
-                                    error_message="自动安装 Xcode Command Line Tools 超时或用户取消了安装。\n\n请手动安装后重试：\n1. 打开终端\n2. 运行: xcode-select --install\n3. 按提示完成安装",
+                                    error_message=(
+                                        "自动安装 Xcode Command Line Tools 超时，可能是连接 Apple 服务器较慢。\n\n"
+                                        "建议尝试以下方案：\n"
+                                        "1. 重新运行程序再次尝试自动安装\n"
+                                        "2. 手动从 Apple 官网下载安装：\n"
+                                        "   a. 访问 https://developer.apple.com/download/all/\n"
+                                        "   b. 使用 Apple ID 登录\n"
+                                        "   c. 搜索 'Command Line Tools for Xcode' 下载并安装\n"
+                                        "3. 安装完成后重新运行本程序"
+                                    ),
                                     log_lines=self.log_lines.copy(),
                                     duration_seconds=time.time() - self.start_time,
                                 )
