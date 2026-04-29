@@ -180,28 +180,6 @@ class OpenClawInstaller:
                     except Exception as e:
                         self._log(f"清理残留目录失败 {d}: {e}", on_log)
 
-            # 清理旧版守护进程配置（兼容旧版安装残留的开机自启）
-            if self.os_type == "macos":
-                launchd_plist = Path.home() / "Library/LaunchAgents/ai.openclaw.gateway.plist"
-                if launchd_plist.exists():
-                    try:
-                        subprocess.run(["launchctl", "unload", str(launchd_plist)], capture_output=True, timeout=10)
-                        launchd_plist.unlink()
-                        self._log(f"已清理旧版开机自启配置: {launchd_plist}", on_log)
-                    except Exception as e:
-                        self._log(f"清理旧版开机自启配置失败: {e}", on_log)
-            elif self.os_type == "windows":
-                try:
-                    import winreg
-                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
-                        try:
-                            winreg.DeleteValue(key, "openclaw")
-                            self._log("已清理旧版开机自启配置 (Run 键)", on_log)
-                        except FileNotFoundError:
-                            pass
-                except Exception:
-                    pass
-
             # 统一走本地构建流程
             target_dir = os.path.expanduser("~\\openclaw-cn") if self.os_type == "windows" else os.path.expanduser("~/openclaw-cn")
             return self._install_local_build(target_dir, on_progress, on_log)
