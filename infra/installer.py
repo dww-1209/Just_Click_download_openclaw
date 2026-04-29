@@ -96,7 +96,7 @@ class OpenClawInstaller:
                 self._log("前置依赖已就绪", on_log)
             else:
                 # Linux
-                self._log("检查前置依赖 (git, curl)...", on_log)
+                self._log("检查前置依赖 (git, curl, Node.js)...", on_log)
                 missing_deps = []
                 for cmd, name in [("git", "Git"), ("curl", "curl")]:
                     try:
@@ -105,47 +105,61 @@ class OpenClawInstaller:
                             missing_deps.append(name)
                     except FileNotFoundError:
                         missing_deps.append(name)
+
+                # 预检 Node.js 版本，满足则跳过 pkexec
+                node_ok_linux = False
+                try:
+                    node_result = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=5)
+                    if node_result.returncode == 0:
+                        major = int(node_result.stdout.strip().lstrip("v").split(".")[0])
+                        if major >= 22:
+                            node_ok_linux = True
+                            self._log(f"Node.js {node_result.stdout.strip()} 已满足要求", on_log)
+                except Exception:
+                    pass
+
                 if missing_deps:
                     self._log(f"缺少依赖: {', '.join(missing_deps)}，将在系统授权后自动安装", on_log)
-                else:
-                    self._log("前置依赖已就绪", on_log)
 
-                self._log("正在安装系统依赖 (Node.js 22, pnpm)...", on_log)
-                pkexec_dep_cmd = (
-                    "pkexec bash -c '"
-                    "apt update >/dev/null 2>&1; "
-                    "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -E - >/dev/null 2>&1; "
-                    "apt-get install -y nodejs git curl >/dev/null 2>&1; "
-                    "npm install -g pnpm >/dev/null 2>&1; "
-                    "echo \"[OK] system deps ready\""
-                    "'"
-                )
-                dep_result = subprocess.run(
-                    pkexec_dep_cmd, shell=True, capture_output=True, text=True, timeout=600
-                )
-                if dep_result.stdout:
-                    for line in dep_result.stdout.splitlines():
-                        if line.strip():
-                            self._log(line.strip(), on_log)
-                if dep_result.returncode != 0:
-                    err = dep_result.stderr.strip() if dep_result.stderr else "系统依赖安装失败"
-                    self._log(err, on_log)
-                    return InstallResult(
-                        status=InstallStatus.FAILED,
-                        message="系统依赖安装失败",
-                        error_message=f"自动安装 Node.js 失败，请确保网络畅通后重试。\n错误：{err}",
-                        log_lines=self.log_lines.copy(),
-                        duration_seconds=time.time() - self.start_time,
-                        error_detail=InstallErrorDetail(
-                            category=ErrorCategory.NETWORK_UNKNOWN,
-                            stage="INSTALLING",
-                            context="Linux 系统依赖安装 (pkexec)",
-                            raw_error=err,
-                            user_message="Linux 系统依赖安装失败",
-                            suggestion="1. 确保网络畅通后重试\n2. 手动执行: sudo apt install -y nodejs git curl",
-                        ),
+                if not missing_deps and node_ok_linux:
+                    self._log("前置依赖已就绪，跳过系统依赖安装", on_log)
+                else:
+                    self._log("正在安装系统依赖 (Node.js 22, pnpm)...", on_log)
+                    pkexec_dep_cmd = (
+                        "pkexec bash -c '"
+                        "apt update >/dev/null 2>&1; "
+                        "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -E - >/dev/null 2>&1; "
+                        "apt-get install -y nodejs git curl >/dev/null 2>&1; "
+                        "npm install -g pnpm >/dev/null 2>&1; "
+                        "echo \"[OK] system deps ready\""
+                        "'"
                     )
-                self._log("系统依赖安装完成", on_log)
+                    dep_result = subprocess.run(
+                        pkexec_dep_cmd, shell=True, capture_output=True, text=True, timeout=600
+                    )
+                    if dep_result.stdout:
+                        for line in dep_result.stdout.splitlines():
+                            if line.strip():
+                                self._log(line.strip(), on_log)
+                    if dep_result.returncode != 0:
+                        err = dep_result.stderr.strip() if dep_result.stderr else "系统依赖安装失败"
+                        self._log(err, on_log)
+                        return InstallResult(
+                            status=InstallStatus.FAILED,
+                            message="系统依赖安装失败",
+                            error_message=f"自动安装 Node.js 失败，请确保网络畅通后重试。\n错误：{err}",
+                            log_lines=self.log_lines.copy(),
+                            duration_seconds=time.time() - self.start_time,
+                            error_detail=InstallErrorDetail(
+                                category=ErrorCategory.NETWORK_UNKNOWN,
+                                stage="INSTALLING",
+                                context="Linux 系统依赖安装 (pkexec)",
+                                raw_error=err,
+                                user_message="Linux 系统依赖安装失败",
+                                suggestion="1. 确保网络畅通后重试\n2. 手动执行: sudo apt install -y nodejs git curl",
+                            ),
+                        )
+                    self._log("系统依赖安装完成", on_log)
 
             # 清理残留目录
             cleanup_dirs = [
@@ -720,6 +734,14 @@ class OpenClawInstaller:
                 node_path = r"C:\Program Files\nodejs"
                 if os.path.exists(node_path):
                     os.environ["Path"] = node_path + os.pathsep + os.environ.get("Path", "")
+
+                # 清理临时 MSI 文件
+                try:
+                    if node_msi.exists():
+                        node_msi.unlink()
+                        self._log("已清理 Node.js 安装临时文件", on_log)
+                except Exception:
+                    pass
             elif self.os_type == "macos":
                 # macOS：把所有需要管理员权限的命令收集起来，只弹一次密码框
                 admin_cmds = []
@@ -869,7 +891,7 @@ class OpenClawInstaller:
                 )
             self._log("pnpm 安装完成", on_log)
 
-            # Windows: pnpm 刚全局安装完，需要把 npm 全局 bin 目录加到当前 env 的 PATH
+            # Windows/macOS: pnpm 刚全局安装完，需要把 npm 全局 bin 目录加到当前 env 的 PATH
             # 否则新开的 shell 找不到 pnpm
             if is_windows:
                 try:
@@ -891,6 +913,16 @@ class OpenClawInstaller:
                     if os.path.exists(fp) and fp not in env.get("PATH", ""):
                         env["PATH"] = fp + os.pathsep + env.get("PATH", "")
                         self._log(f"已添加 fallback PATH: {fp}", on_log)
+            elif self.os_type == "macos":
+                try:
+                    npm_bin_res = _run("npm bin -g", timeout=10)
+                    if npm_bin_res.returncode == 0:
+                        npm_bin_path = npm_bin_res.stdout.strip().strip()
+                        if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in env.get("PATH", ""):
+                            env["PATH"] = npm_bin_path + ":" + env.get("PATH", "")
+                            self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}", on_log)
+                except Exception as e:
+                    self._log(f"获取 npm 全局 bin 路径失败: {e}", on_log)
         else:
             self._log("pnpm 已存在", on_log)
 
@@ -939,7 +971,7 @@ class OpenClawInstaller:
         self._log("正在安装依赖...", on_log)
         if on_progress:
             on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=35, message="正在安装依赖...", current_task="pnpm install"))
-        rc = _run_in_project("pnpm install", timeout=600)
+        rc = _run_in_project("pnpm install", timeout=900)
         if rc != 0:
             # 从最近日志中提取错误上下文
             recent_logs = "\n".join(self.log_lines[-30:])
@@ -1034,7 +1066,7 @@ class OpenClawInstaller:
             on_progress(InstallProgress(stage=InstallStage.CONFIGURING, progress_percent=85, message="正在初始化配置...", current_task="pnpm openclaw onboard"))
         rc = _run_in_project(
             "pnpm openclaw onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon --node-manager pnpm --skip-channels",
-            timeout=120,
+            timeout=300,
         )
         if rc != 0:
             self._log("onboard 返回非零，但可能已部分完成，继续尝试...", on_log)
