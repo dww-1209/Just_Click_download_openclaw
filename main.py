@@ -1,4 +1,29 @@
 import sys
+
+# Windows: 自动请求管理员权限（代码层兜底，比 manifest 更可靠）
+if sys.platform == "win32":
+    import ctypes
+
+    def _is_admin() -> bool:
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except Exception:
+            return False
+
+    if not _is_admin():
+        exe_path = sys.argv[0]
+        params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe_path, params, None, 1)
+        if ret <= 32:
+            # 用户取消或失败，弹出提示
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "程序需要管理员权限才能安装 Node.js。\n\n请右键点击本程序，选择\"以管理员身份运行\"。",
+                "权限不足",
+                0x10,  # MB_ICONERROR
+            )
+        sys.exit(0)
+
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget, QLabel
 from PySide6.QtCore import Qt
 
