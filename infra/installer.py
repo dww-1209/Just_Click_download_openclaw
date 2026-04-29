@@ -86,13 +86,57 @@ class OpenClawInstaller:
                         if result.returncode != 0:
                             raise FileNotFoundError()
                     except FileNotFoundError:
-                        return InstallResult(
-                            status=InstallStatus.FAILED,
-                            message=f"缺少 {name}",
-                            error_message=f"系统未找到 {name}，请安装 Xcode Command Line Tools 后重试。",
-                            log_lines=self.log_lines.copy(),
-                            duration_seconds=time.time() - self.start_time,
-                        )
+                        if cmd == "git":
+                            # macOS: 自动调用系统安装对话框帮用户安装 Xcode Command Line Tools
+                            self._log("系统未找到 Git，正在为您启动 Xcode Command Line Tools 安装...", on_log)
+                            if on_progress:
+                                on_progress(InstallProgress(
+                                    stage=InstallStage.DOWNLOADING,
+                                    progress_percent=5,
+                                    message="检测到缺少 Git，正在启动系统安装程序，请按提示操作...",
+                                    current_task="安装 Git (Xcode Command Line Tools)",
+                                ))
+                            subprocess.run(["xcode-select", "--install"], capture_output=True)
+
+                            # 循环等待用户完成安装，最多 10 分钟
+                            git_installed = False
+                            for attempt in range(120):
+                                time.sleep(5)
+                                try:
+                                    check = subprocess.run(["git", "--version"], capture_output=True, shell=False, timeout=5)
+                                    if check.returncode == 0:
+                                        git_installed = True
+                                        self._log("Git 安装完成", on_log)
+                                        break
+                                except FileNotFoundError:
+                                    pass
+                                elapsed = (attempt + 1) * 5
+                                self._log(f"等待 Git 安装中... ({elapsed}秒)", on_log)
+                                if on_progress and elapsed % 30 == 0:
+                                    on_progress(InstallProgress(
+                                        stage=InstallStage.DOWNLOADING,
+                                        progress_percent=5,
+                                        message=f"正在等待 Git 安装完成，已等待 {elapsed} 秒，请按系统提示完成安装...",
+                                        current_task="安装 Git (Xcode Command Line Tools)",
+                                    ))
+
+                            if not git_installed:
+                                return InstallResult(
+                                    status=InstallStatus.FAILED,
+                                    message="Git 安装超时",
+                                    error_message="自动安装 Xcode Command Line Tools 超时或用户取消了安装。\n\n请手动安装后重试：\n1. 打开终端\n2. 运行: xcode-select --install\n3. 按提示完成安装",
+                                    log_lines=self.log_lines.copy(),
+                                    duration_seconds=time.time() - self.start_time,
+                                )
+                        else:
+                            # curl 缺失（极少见，macOS 系统预装）
+                            return InstallResult(
+                                status=InstallStatus.FAILED,
+                                message=f"缺少 {name}",
+                                error_message=f"系统未找到 {name}，请安装 Xcode Command Line Tools 后重试。",
+                                log_lines=self.log_lines.copy(),
+                                duration_seconds=time.time() - self.start_time,
+                            )
                 self._log("前置依赖已就绪", on_log)
             else:
                 # Linux
