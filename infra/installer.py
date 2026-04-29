@@ -180,6 +180,28 @@ class OpenClawInstaller:
                     except Exception as e:
                         self._log(f"清理残留目录失败 {d}: {e}", on_log)
 
+            # 清理旧版守护进程配置（兼容旧版安装残留的开机自启）
+            if self.os_type == "macos":
+                launchd_plist = Path.home() / "Library/LaunchAgents/ai.openclaw.gateway.plist"
+                if launchd_plist.exists():
+                    try:
+                        subprocess.run(["launchctl", "unload", str(launchd_plist)], capture_output=True, timeout=10)
+                        launchd_plist.unlink()
+                        self._log(f"已清理旧版开机自启配置: {launchd_plist}", on_log)
+                    except Exception as e:
+                        self._log(f"清理旧版开机自启配置失败: {e}", on_log)
+            elif self.os_type == "windows":
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
+                        try:
+                            winreg.DeleteValue(key, "openclaw")
+                            self._log("已清理旧版开机自启配置 (Run 键)", on_log)
+                        except FileNotFoundError:
+                            pass
+                except Exception:
+                    pass
+
             # 统一走本地构建流程
             target_dir = os.path.expanduser("~\\openclaw-cn") if self.os_type == "windows" else os.path.expanduser("~/openclaw-cn")
             return self._install_local_build(target_dir, on_progress, on_log)
@@ -551,6 +573,20 @@ class OpenClawInstaller:
                 on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=10, message="正在安装系统依赖...", current_task="安装 Node.js"))
 
             if is_windows:
+                # 检测管理员权限，msiexec 安装 Node.js 必须需要
+                try:
+                    import ctypes
+                    if not ctypes.windll.shell32.IsUserAnAdmin():
+                        return InstallResult(
+                            status=InstallStatus.FAILED,
+                            message="需要管理员权限",
+                            error_message="安装 Node.js 需要管理员权限。\n\n请右键点击本程序，选择\"以管理员身份运行\"后重试。",
+                            log_lines=self.log_lines.copy(),
+                            duration_seconds=time.time() - self.start_time,
+                        )
+                except Exception:
+                    pass
+
                 node_urls = [
                     "https://mirrors.aliyun.com/nodejs-release/v22.14.0/node-v22.14.0-x64.msi",
                     "https://mirrors.cloud.tencent.com/nodejs-release/v22.14.0/node-v22.14.0-x64.msi",
