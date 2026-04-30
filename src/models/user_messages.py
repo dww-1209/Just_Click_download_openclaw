@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from models.install import ErrorCategory
+from src.models.install import ErrorCategory
 
 
 class UserMessageHelper:

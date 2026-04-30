@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 
-from models.provider_config import VENDOR_REGISTRY
+from src.models.provider_config import VENDOR_REGISTRY
 
 
 # ═══════════════════════════════════════════════════════════════════

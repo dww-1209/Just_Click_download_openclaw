@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
-from models.install import ErrorCategory, InstallErrorDetail
+from src.models.install import ErrorCategory, InstallErrorDetail
 
 
 @dataclass

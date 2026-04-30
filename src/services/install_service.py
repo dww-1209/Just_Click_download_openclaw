@@ -1,13 +1,13 @@
 from PySide6.QtCore import QThread, Signal, QObject
 from typing import Callable
 
-from models.install import (
+from src.models.install import (
     InstallStatus,
     InstallStage,
     InstallProgress,
     InstallResult,
 )
-from infra.openclaw_installer import OpenClawInstaller
+from src.infra.openclaw_installer import OpenClawInstaller
 
 
 class InstallWorker(QThread):

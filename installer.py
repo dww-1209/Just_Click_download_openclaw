@@ -1,16 +1,23 @@
 import sys
+from pathlib import Path
+
+# 确保 src/ 在模块搜索路径中（无论从哪里启动）
+_PROJECT_ROOT = Path(__file__).parent.resolve()
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget, QLabel
 from PySide6.QtCore import Qt
 
-from ui.welcome_page import WelcomePage
-from ui.env_check_page import EnvCheckPage
-from ui.installing_page import InstallingPage
-from ui.default_config_page import US05ConfigPage
-from ui.provider_config_page import ProviderConfigPage
-from ui.startup_page import US06StartupPage
-from services.env_check_service import EnvCheckService
-from services.install_service import InstallService
-from core.openclaw_manager import OpenClawManager
+from src.ui.welcome_page import WelcomePage
+from src.ui.env_check_page import EnvCheckPage
+from src.ui.installing_page import InstallingPage
+from src.ui.default_config_page import US05ConfigPage
+from src.ui.provider_config_page import ProviderConfigPage
+from src.ui.startup_page import US06StartupPage
+from src.services.env_check_service import EnvCheckService
+from src.services.install_service import InstallService
+from src.core.openclaw_manager import OpenClawManager
 
 
 class StepIndicator(QWidget):
