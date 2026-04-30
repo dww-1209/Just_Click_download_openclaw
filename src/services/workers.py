@@ -1,6 +1,6 @@
 from PySide6.QtCore import QThread, Signal
 
-from core.openclaw_manager import OpenClawManager
+from src.core.openclaw_manager import OpenClawManager
 
 
 class ConfigWorker(QThread):

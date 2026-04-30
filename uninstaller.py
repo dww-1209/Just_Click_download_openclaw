@@ -1,13 +1,20 @@
 """OpenClaw 卸载工具 — 独立程序入口"""
 
 import sys
+from pathlib import Path
+
+# 确保 src/ 在模块搜索路径中
+_PROJECT_ROOT = Path(__file__).parent.resolve()
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from PySide6.QtWidgets import QApplication, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt, QThread, Signal
 
-from ui.uninstall_welcome_page import UninstallWelcomePage
-from ui.uninstall_progress_page import UninstallProgressPage
-from ui.uninstall_done_page import UninstallDonePage
-from core.openclaw_manager import OpenClawManager
+from src.ui.uninstall_welcome_page import UninstallWelcomePage
+from src.ui.uninstall_progress_page import UninstallProgressPage
+from src.ui.uninstall_done_page import UninstallDonePage
+from src.core.openclaw_manager import OpenClawManager
 
 
 class UninstallerWindow:

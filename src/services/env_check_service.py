@@ -1,7 +1,7 @@
 from PySide6.QtCore import QThread, Signal, QObject
 
-from models.env_check import EnvCheckResult, OpenClawStatus
-from infra.system_checker import check_environment
+from src.models.env_check import EnvCheckResult, OpenClawStatus
+from src.infra.system_checker import check_environment
 
 
 class EnvCheckWorker(QThread):

@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Optional, Callable
 
-from models.config import (
+from src.models.config import (
     ConfigStatus,
     ServiceStatus,
     ConfigProgress,

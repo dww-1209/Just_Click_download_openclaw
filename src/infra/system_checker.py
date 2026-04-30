@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 import psutil
 
-from models.env_check import (
+from src.models.env_check import (
     CheckStatus,
     OpenClawStatus,
     DiskSpaceResult,

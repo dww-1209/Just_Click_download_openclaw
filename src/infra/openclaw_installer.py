@@ -15,7 +15,7 @@ from typing import List, Callable, Optional
 if platform.system().lower() != "windows":
     import select
 
-from models.install import (
+from src.models.install import (
     InstallStatus,
     InstallStage,
     InstallProgress,
@@ -24,8 +24,8 @@ from models.install import (
     ErrorCategory,
     get_official_command,
 )
-from infra.git_installer import ensure_git_installed
-from infra.shell_runner import run_shell, ShellResult
+from src.infra.git_installer import ensure_git_installed
+from src.infra.shell_runner import run_shell, ShellResult
 
 
 class OpenClawInstaller:

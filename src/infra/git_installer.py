@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from infra.shell_runner import run_shell, ShellResult
+from src.infra.shell_runner import run_shell, ShellResult
 
 
 def _get_hidden_startupinfo():
