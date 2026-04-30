@@ -317,10 +317,10 @@ class OpenClawInstaller:
         Returns:
             InstallResult: 安装结果。
         """
-        is_windows = is_windows()
+        _is_win = is_windows()
         startupinfo = None
         creationflags = 0
-        if is_windows:
+        if _is_win:
             # Windows 专用：隐藏子进程控制台窗口，避免弹出 CMD 黑框打扰用户
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -362,7 +362,7 @@ class OpenClawInstaller:
             if any(c in project_dir for c in '"&|;<>$`\\'):
                 self._log(f"项目路径包含非法字符，安装终止: {project_dir}", on_log)
                 return 1
-            if is_windows:
+            if _is_win:
                 full_cmd = f'cd /d "{project_dir}" && {cmd}'
             else:
                 full_cmd = f'cd "{project_dir}" && {cmd}'
@@ -375,7 +375,7 @@ class OpenClawInstaller:
 
         def _which(cmd_name: str) -> bool:
             """检测命令是否在 PATH 中可用。"""
-            if is_windows:
+            if _is_win:
                 return _run(f"where {cmd_name}", timeout=TIMEOUT_SHORT_CMD).returncode == 0
             return subprocess.run(["which", cmd_name], capture_output=True, timeout=TIMEOUT_SHORT_CMD).returncode == 0
 
@@ -417,7 +417,7 @@ class OpenClawInstaller:
             if on_progress:
                 on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=10, message="正在安装系统依赖...", current_task="安装 Node.js"))
 
-            if is_windows:
+            if _is_win:
                 # Windows：msiexec 安装 MSI 必须管理员权限，提前检测并给出友好提示
                 try:
                     import ctypes
@@ -753,7 +753,7 @@ class OpenClawInstaller:
             self._log("正在安装 pnpm...", on_log)
             if on_progress:
                 on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=15, message="正在安装系统依赖...", current_task="安装 pnpm"))
-            npm_cmd = "npm.cmd" if is_windows else "npm"
+            npm_cmd = "npm.cmd" if _is_win else "npm"
             pnpm_install = _run(f"{npm_cmd} install -g pnpm", timeout=120)
 
             # macOS：如果普通权限安装失败（EACCES），弹出密码框用管理员权限重试
@@ -784,7 +784,7 @@ class OpenClawInstaller:
 
             # Windows/macOS: pnpm 刚全局安装完，需要把 npm 全局 bin 目录加到当前 env 的 PATH
             # 否则新开的 shell 找不到 pnpm（安装程序本身不会自动重读注册表 PATH）
-            if is_windows:
+            if _is_win:
                 try:
                     npm_bin_res = _run("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
                     if npm_bin_res.returncode == 0:
@@ -921,7 +921,7 @@ class OpenClawInstaller:
             return cancelled
 
         # Windows 构建脚本可能依赖 bash（如 Makefile 或 shell 脚本），提前把 Git bash 加入 PATH
-        if is_windows:
+        if _is_win:
             bash_dir = ""
             for candidate in [r"C:\Program Files\Git\bin", r"C:\Program Files (x86)\Git\bin"]:
                 if os.path.exists(os.path.join(candidate, "bash.exe")):
@@ -981,7 +981,7 @@ class OpenClawInstaller:
         # ========================
         # 设计意图：不污染 npm 全局包，而是用轻量脚本代理到本地项目目录执行 pnpm openclaw
         self._log("正在创建全局命令...", on_log)
-        if is_windows:
+        if _is_win:
             # Windows：在 npm 全局 bin 目录下创建 .cmd 批处理脚本
             npm_bin_dir = ""
             npm_bin_result = _run("npm.cmd bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
@@ -1029,15 +1029,15 @@ class OpenClawInstaller:
         # ========================
         self._log("刷新 PATH 并验证 openclaw 命令...", on_log)
         if npm_bin_dir and os.path.exists(npm_bin_dir):
-            current_path = os.environ.get("Path" if is_windows else "PATH", "")
-            path_sep = ";" if is_windows else ":"
+            current_path = os.environ.get("Path" if _is_win else "PATH", "")
+            path_sep = ";" if _is_win else ":"
             if npm_bin_dir.lower() not in current_path.lower():
-                path_key = "Path" if is_windows else "PATH"
+                path_key = "Path" if _is_win else "PATH"
                 os.environ[path_key] = npm_bin_dir + path_sep + current_path
                 self._log(f"已将 {npm_bin_dir} 加入当前进程 PATH", on_log)
-            env["PATH" if is_windows else "PATH"] = os.environ.get("Path" if is_windows else "PATH", "")
+            env["PATH" if _is_win else "PATH"] = os.environ.get("Path" if _is_win else "PATH", "")
 
-        if is_windows:
+        if _is_win:
             # 合并系统 PATH 与用户 PATH，确保子进程能继承完整环境
             try:
                 import winreg
@@ -1057,12 +1057,12 @@ class OpenClawInstaller:
 
         def _verify_cmd(cmd: str) -> bool:
             """验证命令是否在 PATH 中可解析。"""
-            if is_windows:
+            if _is_win:
                 return _run(f"where {cmd}", timeout=TIMEOUT_NODE_MSI_INSTALL).returncode == 0
             return subprocess.run(["which", cmd], capture_output=True, timeout=TIMEOUT_SHORT_CMD).returncode == 0
 
         if not _verify_cmd("openclaw-cn") and not _verify_cmd("openclaw"):
-            if is_windows and npm_bin_dir:
+            if _is_win and npm_bin_dir:
                 # 尝试通过 setx 持久化 PATH（对当前进程无效，但下次启动生效）
                 try:
                     _run(f'setx PATH "%PATH%;{npm_bin_dir}"', timeout=TIMEOUT_NODE_MSI_INSTALL)
