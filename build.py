@@ -209,7 +209,7 @@ def build(output_dir: str = None):
     # 1. 打包安装器
     ok1 = _build_single(
         output_dir=output_dir,
-        entry_file="main.py",
+        entry_file="installer.py",
         app_name="OpenClaw安装器",
         bundle_id="com.openclaw.installer",
         launcher_script_name="双击运行-OpenClaw安装器",
@@ -219,7 +219,7 @@ def build(output_dir: str = None):
     # 2. 打包卸载器
     ok2 = _build_single(
         output_dir=output_dir,
-        entry_file="uninstall_main.py",
+        entry_file="uninstaller.py",
         app_name="OpenClaw卸载工具",
         bundle_id="com.openclaw.uninstaller",
         launcher_script_name="双击运行-OpenClaw卸载工具",

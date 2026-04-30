@@ -518,17 +518,24 @@ class OpenClawManager:
             self._log(f"Traceback: {traceback.format_exc()}")
             return False
 
+    # 禁止在 openclaw 命令中使用的 shell 元字符（防御注入）
+    _SHELL_METACHARS = re.compile(r"[;&|`$(){}[\]\n\r<>")
+
     def _run_openclaw_command(self, command: str) -> subprocess.CompletedProcess:
         """Execute openclaw command using PowerShell with hidden window"""
         import os
         import shutil
-        
+
+        if self._SHELL_METACHARS.search(command):
+            self._log(f"拒绝执行包含非法字符的命令: {command[:80]}")
+            return subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="命令包含非法字符",
+            )
+
         os_type = platform.system().lower()
-        env = os.environ.copy()
         cmd = self._resolve_openclaw_cmd()
-        
         env = self._build_clean_env()
-        
+
         # 如果全局命令找不到，但本地项目存在，使用项目内 pnpm
         local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
         local_fallback = (
@@ -538,16 +545,16 @@ class OpenClawManager:
             and local_project.exists()
             and (local_project / "package.json").exists()
         )
-        
+
         if os_type == "windows":
             if local_fallback:
                 ps_command = f'cd "{local_project}"; pnpm openclaw {command}'
             else:
                 ps_command = f'{cmd} {command}'
             full_command = f'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"'
-            
+
             self._log(f"Execute: {full_command[:100]}...")
-            
+
             result = subprocess.run(
                 full_command,
                 shell=True,
@@ -556,14 +563,18 @@ class OpenClawManager:
                 timeout=30,
                 env=env,
             )
-            
+
             return result
         else:
             if local_fallback:
-                full_command = f'cd "{local_project}" && pnpm openclaw {command}'
+                cwd = str(local_project)
+                full_command = f"pnpm openclaw {command}"
             else:
+                cwd = None
                 full_command = f"{cmd} {command}"
-            
+
+            self._log(f"Execute: {full_command[:100]}...")
+
             result = subprocess.run(
                 full_command,
                 shell=True,
@@ -571,54 +582,59 @@ class OpenClawManager:
                 text=True,
                 timeout=30,
                 env=env,
+                cwd=cwd,
             )
             return result
 
     def _kill_port_process(self, port: int):
         """Kill process occupying port"""
         try:
+            # 防御性校验：确保 port 是纯数字
+            port = int(port)
+            if not (1 <= port <= 65535):
+                self._log(f"Invalid port: {port}")
+                return
+
             os_type = platform.system().lower()
             if os_type == "windows":
                 result = subprocess.run(
-                    f'netstat -ano | findstr :{port}',
-                    shell=True,
+                    ["netstat", "-ano"],
                     capture_output=True,
-                    text=True
+                    text=True,
                 )
                 if result.returncode == 0 and result.stdout:
-                    lines = result.stdout.strip().split('\n')
-                    for line in lines:
-                        parts = line.strip().split()
-                        if len(parts) >= 5:
-                            pid = parts[-1]
+                    for line in result.stdout.strip().splitlines():
+                        if f":{port}" in line:
+                            parts = line.strip().split()
+                            if len(parts) >= 5:
+                                pid = parts[-1]
+                                if pid.isdigit():
+                                    try:
+                                        subprocess.run(
+                                            ["taskkill", "/PID", pid, "/F"],
+                                            capture_output=True,
+                                        )
+                                        self._log(f"Killed process PID: {pid}")
+                                    except Exception as e:
+                                        self._log(f"Kill process error: {e}")
+            else:
+                result = subprocess.run(
+                    ["lsof", "-ti", f":{port}"],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0 and result.stdout:
+                    for pid in result.stdout.strip().splitlines():
+                        pid = pid.strip()
+                        if pid.isdigit():
                             try:
                                 subprocess.run(
-                                    f'taskkill /PID {pid} /F',
-                                    shell=True,
-                                    capture_output=True
+                                    ["kill", "-9", pid],
+                                    capture_output=True,
                                 )
                                 self._log(f"Killed process PID: {pid}")
                             except Exception as e:
                                 self._log(f"Kill process error: {e}")
-            else:
-                result = subprocess.run(
-                    f'lsof -ti:{port}',
-                    shell=True,
-                    capture_output=True,
-                    text=True
-                )
-                if result.returncode == 0 and result.stdout:
-                    pids = result.stdout.strip().split('\n')
-                    for pid in pids:
-                        try:
-                            subprocess.run(
-                                f'kill -9 {pid}',
-                                shell=True,
-                                capture_output=True
-                            )
-                            self._log(f"Killed process PID: {pid}")
-                        except Exception as e:
-                            self._log(f"Kill process error: {e}")
         except Exception as e:
             self._log(f"Release port error: {e}")
 
