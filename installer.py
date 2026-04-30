@@ -25,6 +25,7 @@ from src.ui.startup_page import US06StartupPage
 from src.services.env_check_service import EnvCheckService
 from src.services.install_service import InstallService
 from src.core.openclaw_manager import OpenClawManager
+from src.models.constants import is_windows, is_macos, is_linux
 
 
 class StepIndicator(QWidget):
@@ -489,7 +490,7 @@ class InstallerWindow:
 
         import platform
         os_type = platform.system().lower()
-        if os_type == "darwin":
+        if is_macos():
             os_type = "macos"
 
         self.install_service.start_install(os_type)
@@ -604,7 +605,7 @@ class InstallerWindow:
         os_type = platform.system().lower()
         cmd_name = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
         try:
-            if os_type == "windows" or sys.platform == "win32":
+            if is_windows() or is_windows():
                 # 使用完整路径 + CREATE_NEW_CONSOLE 打开新窗口，避免 shell 字符串拼接
                 cmd_path = shutil.which(cmd_name)
                 if cmd_path:
@@ -614,7 +615,7 @@ class InstallerWindow:
                     )
                 else:
                     print(f"找不到 {cmd_name} 命令")
-            elif os_type == "darwin":
+            elif is_macos():
                 # macOS: use AppleScript to open Terminal
                 escaped = cmd_name.replace('"', '\\"')
                 script = f'tell application "Terminal" to do script "{escaped} config"'
@@ -743,7 +744,7 @@ class InstallerWindow:
         except Exception as e:
             print(f"打开浏览器失败: {e}")
 
-        if not opened and platform.system().lower() == "windows":
+        if not opened and is_windows():
             try:
                 os.system(f'start "" "{url}"')
                 opened = True

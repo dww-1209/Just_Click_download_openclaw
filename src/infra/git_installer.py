@@ -90,7 +90,7 @@ def download_file(
 
         ctx = ssl.create_default_context()
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, context=ctx, timeout=180) as resp:
+        with urllib.request.urlopen(req, context=ctx, timeout=TIMEOUT_DOWNLOAD) as resp:
             with open(dest_path, "wb") as f:
                 f.write(resp.read())
         if dest_path.exists() and dest_path.stat().st_size > 10 * 1024 * 1024:  # > 10MB

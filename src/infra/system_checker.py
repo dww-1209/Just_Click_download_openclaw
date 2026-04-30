@@ -28,6 +28,7 @@ from src.models.env_check import (
     BrowserResult,
     EnvCheckResult,
 )
+from src.models.constants import is_windows, is_macos, is_linux
 
 
 # 最小磁盘空间要求（GB）
@@ -214,10 +215,10 @@ def _ensure_local_bin_in_rc():
 def _resolve_openclaw_cmd(env: dict = None) -> str:
     """检测系统中可用的 openclaw 命令（优先 openclaw-cn，fallback openclaw）"""
     os_type = _get_os_type()
-    if os_type == "windows":
+    if is_windows():
         for cmd in ["openclaw-cn", "openclaw"]:
             result = subprocess.run(
-                ["where", cmd], shell=False, capture_output=True, timeout=5
+                ["where", cmd], shell=False, capture_output=True, timeout=TIMEOUT_SHORT_CMD
             )
             if result.returncode == 0:
                 return cmd
@@ -251,9 +252,9 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
     # Windows: 直接用 where 检测；Linux/macOS: 用 which
     cmd_found = False
     try:
-        if os_type == "windows":
+        if is_windows():
             result = subprocess.run(
-                ["where", cmd], shell=False, capture_output=True, text=True, timeout=5
+                ["where", cmd], shell=False, capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD
             )
             if result.returncode == 0:
                 exe_path = result.stdout.strip().split('\n')[0].strip()
@@ -261,7 +262,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
                 cmd_found = True
         else:
             result = subprocess.run(
-                ["which", cmd], capture_output=True, text=True, timeout=5, env=env
+                ["which", cmd], capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD, env=env
             )
             if result.returncode == 0:
                 exe_path = result.stdout.strip()
@@ -277,7 +278,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
                 shell = os.environ.get("SHELL", "/bin/bash")
                 ver_result = subprocess.run(
                     [shell, "-ilc", f"{cmd} --version"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD,
                 )
                 if ver_result.returncode != 0:
                     errors.append(f"{cmd} 命令存在但无法正常运行（可能缺少构建产物）")
@@ -297,7 +298,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
             )
 
     # 2. Windows 允许 fallback 检查安装目录；Linux/macOS 若命令不可用但目录存在，尝试自动修复 PATH
-    if os_type == "windows":
+    if is_windows():
         paths_to_check = _get_windows_install_paths()
         openclaw_indicators = [
             "openclaw.exe", "OpenClaw.exe", "openclaw", "openclaw-cn.exe", "openclaw-cn",
@@ -337,7 +338,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
                 ["which", cmd2],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=TIMEOUT_SHORT_CMD,
                 env=env,
             )
             if result.returncode == 0:
@@ -348,7 +349,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
                     [shell, "-ilc", f"{cmd2} --version"],
                     capture_output=True,
                     text=True,
-                    timeout=5,
+                    timeout=TIMEOUT_SHORT_CMD,
                 )
                 if ver_result.returncode == 0:
                     return OpenClawInstallResult(
@@ -380,7 +381,7 @@ def _check_browser() -> BrowserResult:
     found = []
     candidates = []
 
-    if os_type == "darwin":
+    if is_macos():
         # macOS
         candidates = [
             ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "Google Chrome"),

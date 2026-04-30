@@ -22,6 +22,7 @@ from src.models.config import (
     ConfigResult,
 )
 from src.infra import utils
+from src.models.constants import is_windows, is_macos, is_linux
 
 
 class OpenClawManager:
@@ -303,14 +304,14 @@ class OpenClawManager:
         """
         import shutil
         os_type = platform.system().lower()
-        if os_type == "windows":
+        if is_windows():
             # Windows 下使用 where 更可靠（能处理 %APPDATA% 等环境变量展开）
             for cmd in ["openclaw-cn", "openclaw"]:
                 result = subprocess.run(
                     ["where", cmd],
                     shell=False,
                     capture_output=True,
-                    timeout=5,
+                    timeout=TIMEOUT_SHORT_CMD,
                 )
                 if result.returncode == 0:
                     return cmd
@@ -333,7 +334,7 @@ class OpenClawManager:
         try:
             cmd = self._resolve_openclaw_cmd()
             os_type = platform.system().lower()
-            if os_type == "windows":
+            if is_windows():
                 # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
                 result = subprocess.run(
                     ["where", cmd],
@@ -354,7 +355,7 @@ class OpenClawManager:
                     ["which", cmd],
                     capture_output=True,
                     text=True,
-                    timeout=5,
+                    timeout=TIMEOUT_SHORT_CMD,
                     env=env,
                 )
                 return result.returncode == 0
@@ -557,7 +558,7 @@ class OpenClawManager:
                 "env": env,
             }
 
-            if os_type == "windows":
+            if is_windows():
                 if local_fallback:
                     full_cmd = ["pnpm", "openclaw", "gateway"]
                     popen_kwargs["cwd"] = str(local_project)
@@ -688,7 +689,7 @@ class OpenClawManager:
             and (local_project / "package.json").exists()
         )
 
-        if os_type == "windows":
+        if is_windows():
             if local_fallback:
                 # 在项目目录内执行 pnpm openclaw <args>
                 full_cmd = ["pnpm", "openclaw"] + args
@@ -709,7 +710,7 @@ class OpenClawManager:
                 shell=False,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=TIMEOUT_OPENCLAW_CMD,
                 env=env,
                 cwd=cwd,
                 startupinfo=startupinfo,
@@ -731,7 +732,7 @@ class OpenClawManager:
                 shell=False,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=TIMEOUT_OPENCLAW_CMD,
                 env=env,
                 cwd=cwd,
             )
@@ -755,7 +756,7 @@ class OpenClawManager:
                 return
 
             os_type = platform.system().lower()
-            if os_type == "windows":
+            if is_windows():
                 result = subprocess.run(
                     ["netstat", "-ano"],
                     capture_output=True,
@@ -886,13 +887,13 @@ class OpenClawManager:
         except Exception as e:
             self._log(f"webbrowser.open failed: {e}")
 
-        if platform.system().lower() == "windows":
+        if is_windows():
             try:
                 result = subprocess.run(
                     ["cmd", "/c", "start", "", url],
                     shell=False,
                     capture_output=True,
-                    timeout=5,
+                    timeout=TIMEOUT_SHORT_CMD,
                 )
                 if result.returncode == 0:
                     self._log("start command success")
@@ -901,9 +902,9 @@ class OpenClawManager:
                 self._log(f"start command failed: {e}")
 
         try:
-            if platform.system().lower() == "windows":
+            if is_windows():
                 os.system(f'start "" "{url}"')
-            elif platform.system().lower() == "darwin":
+            elif is_macos():
                 os.system(f'open "{url}"')
             else:
                 os.system(f'xdg-open "{url}"')
@@ -930,7 +931,7 @@ class OpenClawManager:
                 self._log(f"Terminating gateway process (PID: {self.process.pid})")
                 self.process.terminate()
                 try:
-                    self.process.wait(timeout=5)
+                    self.process.wait(timeout=TIMEOUT_SHORT_CMD)
                 except:
                     self._log("Force killing gateway process...")
                     self.process.kill()

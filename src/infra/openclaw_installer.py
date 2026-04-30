@@ -27,6 +27,7 @@ from src.models.install import (
 from src.infra.git_installer import ensure_git_installed
 from src.infra.shell_runner import run_shell, ShellResult
 from src.infra import utils
+from src.models.constants import is_windows, is_macos, is_linux
 
 
 class OpenClawInstaller:
@@ -46,7 +47,7 @@ class OpenClawInstaller:
                      会将 "darwin" 统一映射为 "macos"，简化后续分支判断。
         """
         self.os_type = os_type or platform.system().lower()
-        if self.os_type == "darwin":
+        if is_macos():
             self.os_type = "macos"
 
         self.process: Optional[subprocess.Popen] = None
@@ -91,7 +92,7 @@ class OpenClawInstaller:
             # ========================
             # 阶段 0：平台相关前置依赖检查
             # ========================
-            if self.os_type == "windows":
+            if is_windows():
                 # Windows：Git 是 clone 的必需工具；若未安装则尝试自动安装
                 self._log("检查 Git 安装状态...", on_log)
                 if not ensure_git_installed(on_log=lambda msg: self._log(msg, on_log)):
@@ -110,7 +111,7 @@ class OpenClawInstaller:
                 self._log("检查前置依赖 (git, curl)...", on_log)
                 for cmd, name in [("git", "Git"), ("curl", "curl")]:
                     try:
-                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=5)
+                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
                         if result.returncode != 0:
                             raise FileNotFoundError()
                     except FileNotFoundError:
@@ -135,7 +136,7 @@ class OpenClawInstaller:
                                     break
                                 time.sleep(5)
                                 try:
-                                    check = subprocess.run(["git", "--version"], capture_output=True, shell=False, timeout=5)
+                                    check = subprocess.run(["git", "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
                                     if check.returncode == 0:
                                         git_installed = True
                                         self._log("Git 安装完成", on_log)
@@ -186,7 +187,7 @@ class OpenClawInstaller:
                 missing_deps = []
                 for cmd, name in [("git", "Git"), ("curl", "curl")]:
                     try:
-                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=5)
+                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
                         if result.returncode != 0:
                             missing_deps.append(name)
                     except FileNotFoundError:
@@ -195,7 +196,7 @@ class OpenClawInstaller:
                 # 预检 Node.js 版本，满足 >=22 则跳过 pkexec 阶段，减少一次弹窗
                 node_ok_linux = False
                 try:
-                    node_result = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=5)
+                    node_result = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD)
                     if node_result.returncode == 0:
                         major = int(node_result.stdout.strip().lstrip("v").split(".")[0])
                         if major >= 22:
@@ -226,7 +227,7 @@ class OpenClawInstaller:
                         "'"
                     )
                     dep_result = subprocess.run(
-                        pkexec_dep_cmd, shell=True, capture_output=True, text=True, timeout=600
+                        pkexec_dep_cmd, shell=True, capture_output=True, text=True, timeout=TIMEOUT_GIT_INSTALL_MAX
                     )
                     if dep_result.stdout:
                         for line in dep_result.stdout.splitlines():
@@ -257,10 +258,10 @@ class OpenClawInstaller:
             # ========================
             # 避免旧版本文件与新构建产物冲突，尤其是 npm 全局包与本地仓库
             cleanup_dirs = [
-                os.path.expanduser("~\\openclaw") if self.os_type == "windows" else os.path.expanduser("~/.openclaw"),
-                os.path.expanduser("~\\openclaw-cn") if self.os_type == "windows" else os.path.expanduser("~/openclaw-cn"),
+                os.path.expanduser("~\\openclaw") if is_windows() else os.path.expanduser("~/.openclaw"),
+                os.path.expanduser("~\\openclaw-cn") if is_windows() else os.path.expanduser("~/openclaw-cn"),
             ]
-            if self.os_type == "windows":
+            if is_windows():
                 cleanup_dirs.extend([
                     os.path.expanduser(r"~\AppData\Local\openclaw"),
                     os.path.expanduser(r"~\AppData\Roaming\npm\node_modules\openclaw"),
@@ -277,7 +278,7 @@ class OpenClawInstaller:
             # ========================
             # 阶段 2：进入统一本地构建流程
             # ========================
-            target_dir = os.path.expanduser("~\\openclaw-cn") if self.os_type == "windows" else os.path.expanduser("~/openclaw-cn")
+            target_dir = os.path.expanduser("~\\openclaw-cn") if is_windows() else os.path.expanduser("~/openclaw-cn")
             return self._install_local_build(target_dir, on_progress, on_log)
 
         except Exception as e:
@@ -311,7 +312,7 @@ class OpenClawInstaller:
         Returns:
             InstallResult: 安装结果。
         """
-        is_windows = self.os_type == "windows"
+        is_windows = is_windows()
         startupinfo = None
         creationflags = 0
         if is_windows:
@@ -370,8 +371,8 @@ class OpenClawInstaller:
         def _which(cmd_name: str) -> bool:
             """检测命令是否在 PATH 中可用。"""
             if is_windows:
-                return _run(f"where {cmd_name}", timeout=5).returncode == 0
-            return subprocess.run(["which", cmd_name], capture_output=True, timeout=5).returncode == 0
+                return _run(f"where {cmd_name}", timeout=TIMEOUT_SHORT_CMD).returncode == 0
+            return subprocess.run(["which", cmd_name], capture_output=True, timeout=TIMEOUT_SHORT_CMD).returncode == 0
 
         # ========================
         # 步骤 0：卸载已有的全局 openclaw（兼容旧版）
@@ -383,7 +384,7 @@ class OpenClawInstaller:
             "npm unlink -g openclaw-cn",
             "npm uninstall -g openclaw-cn",
         ]:
-            _run(pkg_cmd, timeout=30)
+            _run(pkg_cmd, timeout=TIMEOUT_OPENCLAW_CMD)
 
         # ========================
         # 步骤 1：检查/安装 Node.js 22+
@@ -394,7 +395,7 @@ class OpenClawInstaller:
 
         self._log("检查 Node.js 环境...", on_log)
         node_ok = False
-        node_ver = _run("node -v", timeout=10)
+        node_ver = _run("node -v", timeout=TIMEOUT_NODE_MSI_INSTALL)
         if node_ver.returncode == 0:
             try:
                 major = int(node_ver.stdout.strip().lstrip("v").split(".")[0])
@@ -526,15 +527,15 @@ class OpenClawInstaller:
 
                 # 安装前自动修复 Windows Installer（解决常见 1603/2503 错误）
                 self._log("修复 Windows Installer 服务...", on_log)
-                run_shell("msiexec /unregister", timeout=30)
-                run_shell("msiexec /regserver", timeout=30)
+                run_shell("msiexec /unregister", timeout=TIMEOUT_OPENCLAW_CMD)
+                run_shell("msiexec /regserver", timeout=TIMEOUT_OPENCLAW_CMD)
                 self._log("Windows Installer 服务已修复", on_log)
 
                 # 安装前自动清理注册表残留（旧版本 Node.js 可能导致 MSI 冲突）
                 self._log("清理可能的 Node.js 注册表残留...", on_log)
                 reg_clean_result = run_shell(
                     'powershell -Command "Remove-Item -Path HKCU:\\Software\\Node.js -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Path HKLM:\\SOFTWARE\\Node.js -Recurse -Force -ErrorAction SilentlyContinue"',
-                    timeout=30,
+                    timeout=TIMEOUT_OPENCLAW_CMD,
                 )
                 if reg_clean_result.success:
                     self._log("注册表清理完成", on_log)
@@ -554,7 +555,7 @@ class OpenClawInstaller:
 
                     install_result = run_shell(
                         f'msiexec /i "{node_msi}" /qn /norestart /l*v "{msi_log}"',
-                        timeout=300,
+                        timeout=TIMEOUT_INSTALL_CMD,
                         context=f"安装 Node.js msi ({node_msi})",
                         stage="INSTALLING",
                     )
@@ -648,7 +649,7 @@ class OpenClawInstaller:
                         self._log(f"尝试下载 Node.js ({node_urls.index(url) + 1}/{len(node_urls)}): {url}", on_log)
                         result = run_shell(
                             f'curl -fsSL -o "{node_pkg}" "{url}"',
-                            timeout=300, shell=False,
+                            timeout=TIMEOUT_INSTALL_CMD, shell=False,
                             context=f"从 {url} 下载 Node.js pkg",
                             stage="DOWNLOADING",
                         )
@@ -702,7 +703,7 @@ class OpenClawInstaller:
                     install_script = f'do shell script "{cmd_str}" with administrator privileges'
                     result = run_shell(
                         f'osascript -e "{install_script}"',
-                        timeout=300, shell=False,
+                        timeout=TIMEOUT_INSTALL_CMD, shell=False,
                         context="通过 osascript 申请管理员权限安装系统依赖",
                         stage="INSTALLING",
                     )
@@ -758,7 +759,7 @@ class OpenClawInstaller:
                     install_script = 'do shell script "cd /tmp && export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && npm install -g pnpm" with administrator privileges'
                     pnpm_install = subprocess.run(
                         ["osascript", "-e", install_script],
-                        capture_output=True, text=True, timeout=300
+                        capture_output=True, text=True, timeout=TIMEOUT_INSTALL_CMD
                     )
 
             if pnpm_install.returncode != 0:
@@ -780,7 +781,7 @@ class OpenClawInstaller:
             # 否则新开的 shell 找不到 pnpm（安装程序本身不会自动重读注册表 PATH）
             if is_windows:
                 try:
-                    npm_bin_res = _run("npm bin -g", timeout=10)
+                    npm_bin_res = _run("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
                     if npm_bin_res.returncode == 0:
                         npm_bin_path = npm_bin_res.stdout.strip().strip('"').strip()
                         if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in env.get("PATH", ""):
@@ -800,7 +801,7 @@ class OpenClawInstaller:
                         self._log(f"已添加 fallback PATH: {fp}", on_log)
             elif self.os_type == "macos":
                 try:
-                    npm_bin_res = _run("npm bin -g", timeout=10)
+                    npm_bin_res = _run("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
                     if npm_bin_res.returncode == 0:
                         npm_bin_path = npm_bin_res.stdout.strip().strip()
                         if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in env.get("PATH", ""):
@@ -824,7 +825,7 @@ class OpenClawInstaller:
 
         clone_result = _run(
             f'git clone https://gitee.com/OpenClaw-CN/openclaw-cn.git "{project_dir}"',
-            timeout=300,
+            timeout=TIMEOUT_INSTALL_CMD,
         )
         if clone_result.stdout:
             for line in clone_result.stdout.splitlines()[-50:]:
@@ -850,7 +851,7 @@ class OpenClawInstaller:
         # ========================
         # 步骤 4：设置 pnpm 国内镜像
         # ========================
-        _run_in_project('pnpm config set registry https://registry.npmmirror.com/', timeout=30)
+        _run_in_project('pnpm config set registry https://registry.npmmirror.com/', timeout=TIMEOUT_OPENCLAW_CMD)
 
         # ========================
         # 步骤 5：pnpm install（安装项目依赖）
@@ -862,7 +863,7 @@ class OpenClawInstaller:
         self._log("正在安装依赖...", on_log)
         if on_progress:
             on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=35, message="正在安装依赖...", current_task="pnpm install"))
-        rc = _run_in_project("pnpm install", timeout=900)
+        rc = _run_in_project("pnpm install", timeout=TIMEOUT_BUILD_CMD)
         if rc != 0:
             # 从最近日志中提取错误上下文，帮助用户快速定位网络/镜像问题
             recent_logs = "\n".join(self.log_lines[-30:])
@@ -890,7 +891,7 @@ class OpenClawInstaller:
         self._log("正在构建前端界面...", on_log)
         if on_progress:
             on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=55, message="正在构建前端界面...", current_task="pnpm ui:build"))
-        rc = _run_in_project("pnpm ui:build", timeout=300)
+        rc = _run_in_project("pnpm ui:build", timeout=TIMEOUT_INSTALL_CMD)
         if rc != 0:
             recent_logs = "\n".join(self.log_lines[-20:])
             return InstallResult(
@@ -925,7 +926,7 @@ class OpenClawInstaller:
                 self._log(f"找到 Git bash: {bash_dir}", on_log)
                 env["PATH"] = bash_dir + os.pathsep + env.get("PATH", "")
             else:
-                where_bash = _run("where bash", timeout=5)
+                where_bash = _run("where bash", timeout=TIMEOUT_SHORT_CMD)
                 if where_bash.returncode == 0 and where_bash.stdout.strip():
                     bash_dir = os.path.dirname(where_bash.stdout.strip().splitlines()[0].strip())
                     if bash_dir:
@@ -935,7 +936,7 @@ class OpenClawInstaller:
         self._log("正在构建核心服务...", on_log)
         if on_progress:
             on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=70, message="正在构建核心服务...", current_task="pnpm build"))
-        rc = _run_in_project("pnpm build", timeout=300)
+        rc = _run_in_project("pnpm build", timeout=TIMEOUT_INSTALL_CMD)
         if rc != 0:
             recent_logs = "\n".join(self.log_lines[-20:])
             return InstallResult(
@@ -964,7 +965,7 @@ class OpenClawInstaller:
             on_progress(InstallProgress(stage=InstallStage.CONFIGURING, progress_percent=85, message="正在初始化配置...", current_task="pnpm openclaw onboard"))
         rc = _run_in_project(
             "pnpm openclaw onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon --node-manager pnpm --skip-channels",
-            timeout=300,
+            timeout=TIMEOUT_INSTALL_CMD,
         )
         if rc != 0:
             # onboard 非零退出有时只是部分警告，继续尝试启动，避免过度阻断
@@ -978,7 +979,7 @@ class OpenClawInstaller:
         if is_windows:
             # Windows：在 npm 全局 bin 目录下创建 .cmd 批处理脚本
             npm_bin_dir = ""
-            npm_bin_result = _run("npm.cmd bin -g", timeout=10)
+            npm_bin_result = _run("npm.cmd bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
             if npm_bin_result.returncode == 0 and npm_bin_result.stdout.strip():
                 npm_bin_dir = npm_bin_result.stdout.strip()
             else:
@@ -1052,14 +1053,14 @@ class OpenClawInstaller:
         def _verify_cmd(cmd: str) -> bool:
             """验证命令是否在 PATH 中可解析。"""
             if is_windows:
-                return _run(f"where {cmd}", timeout=10).returncode == 0
-            return subprocess.run(["which", cmd], capture_output=True, timeout=5).returncode == 0
+                return _run(f"where {cmd}", timeout=TIMEOUT_NODE_MSI_INSTALL).returncode == 0
+            return subprocess.run(["which", cmd], capture_output=True, timeout=TIMEOUT_SHORT_CMD).returncode == 0
 
         if not _verify_cmd("openclaw-cn") and not _verify_cmd("openclaw"):
             if is_windows and npm_bin_dir:
                 # 尝试通过 setx 持久化 PATH（对当前进程无效，但下次启动生效）
                 try:
-                    _run(f'setx PATH "%PATH%;{npm_bin_dir}"', timeout=10)
+                    _run(f'setx PATH "%PATH%;{npm_bin_dir}"', timeout=TIMEOUT_NODE_MSI_INSTALL)
                 except Exception:
                     pass
                 env["Path"] = os.environ.get("Path", "")
@@ -1160,12 +1161,12 @@ class OpenClawInstaller:
                     self._log(f"命令超过 {int(timeout)} 秒无输出，判定为卡住，强制终止...", on_log)
                     self._kill_process_tree(process)
                     break
-            process.wait(timeout=5)
+            process.wait(timeout=TIMEOUT_SHORT_CMD)
         except Exception as e:
             self._log(f"等待进程时出错: {e}", on_log)
             self._kill_process_tree(process)
 
-        t.join(timeout=5)
+        t.join(timeout=TIMEOUT_SHORT_CMD)
         return process.returncode if process.poll() is not None else -1
 
     def _kill_process_tree(self, process: subprocess.Popen):
@@ -1178,7 +1179,7 @@ class OpenClawInstaller:
             process.kill()
             # 等待进程退出，避免 PID 被回收后误杀其他进程（竞态条件修复）
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=TIMEOUT_SHORT_CMD)
             except Exception:
                 pass
         except Exception:
@@ -1188,7 +1189,7 @@ class OpenClawInstaller:
                 ["taskkill", "/F", "/T", "/PID", str(process.pid)],
                 shell=False,
                 capture_output=True,
-                timeout=10,
+                timeout=TIMEOUT_NODE_MSI_INSTALL,
             )
         except Exception:
             pass
@@ -1215,14 +1216,14 @@ class OpenClawInstaller:
         """
         if self.process and self.process.poll() is None:
             try:
-                if platform.system().lower() == "windows":
+                if is_windows():
                     self.process.terminate()
                 else:
                     self.process.send_signal(signal.SIGTERM)
 
                 # 等待进程结束
                 try:
-                    self.process.wait(timeout=5)
+                    self.process.wait(timeout=TIMEOUT_SHORT_CMD)
                 except subprocess.TimeoutExpired:
                     self.process.kill()
 

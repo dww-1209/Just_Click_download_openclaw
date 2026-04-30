@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
 from src.models.install import ErrorCategory, InstallErrorDetail
+from src.models.constants import is_windows, is_macos, is_linux
 
 
 @dataclass
@@ -71,7 +72,7 @@ def get_hidden_startupinfo():
         其他平台返回 None。
     """
     startupinfo = None
-    if platform.system().lower() == "windows":
+    if is_windows():
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -125,7 +126,7 @@ def run_shell(
     if env is not None:
         kwargs["env"] = env
 
-    if platform.system().lower() == "windows":
+    if is_windows():
         kwargs["startupinfo"] = get_hidden_startupinfo()
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
