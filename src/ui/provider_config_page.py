@@ -9,6 +9,7 @@
 """
 
 import json
+from typing import Any
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame,
@@ -571,7 +572,7 @@ class ProviderConfigPage(QWidget):
 
     # ─────────────────────────────── 供应商展开互斥
 
-    def _on_vendor_toggled(self, vendor_id: str):
+    def _on_vendor_toggled(self, vendor_id: str) -> None:
         """展开某个供应商时，折叠其他供应商，实现手风琴效果。
 
         设计原因：避免多个供应商同时展开导致页面过长、信息过载，
@@ -583,9 +584,9 @@ class ProviderConfigPage(QWidget):
 
     # ─────────────────────────────── 汇总刷新
 
-    def _refresh_summary(self):
+    def _refresh_summary(self) -> None:
         """刷新汇总区域：收集所有 VendorRow 的已选模型，更新汇总文本和默认模型下拉框。"""
-        all_models = []  # [(vendor_name, model_ref, model_name), ...]
+        all_models: list[tuple[str, str, str]] = []  # [(vendor_name, model_ref, model_name), ...]
 
         for vendor in VENDOR_REGISTRY:
             row = self.vendor_rows.get(vendor.id)
@@ -595,7 +596,7 @@ class ProviderConfigPage(QWidget):
             # 收集所有 key type 的已选模型
             all_refs = row.get_all_selected_models()
             # 为每个 ref 找显示名
-            preset_names = {}
+            preset_names: dict[str, str] = {}
             for kt in vendor.key_types:
                 for m in kt.models:
                     preset_names[m.ref] = m.name
@@ -614,7 +615,7 @@ class ProviderConfigPage(QWidget):
             self.default_model_combo.setEnabled(False)
             return
 
-        lines = []
+        lines: list[str] = []
         for vendor in VENDOR_REGISTRY:
             vm = [(ref, name) for vn, ref, name in all_models if vn == vendor.name]
             if vm:
@@ -644,7 +645,7 @@ class ProviderConfigPage(QWidget):
 
     # ─────────────────────────────── 保存
 
-    def _on_save_clicked(self):
+    def _on_save_clicked(self) -> None:
         """收集所有 VendorRow 的配置，组装为统一字典后发射 save_and_start_clicked 信号。
 
         数据结构：
@@ -654,7 +655,7 @@ class ProviderConfigPage(QWidget):
             "fallback_models": [str, ...],
         }
         """
-        configured = {}
+        configured: dict[str, dict[str, Any]] = {}
         for vendor_id, row in self.vendor_rows.items():
             for cfg in row.get_all_configs():
                 key_type = cfg.get("key_type", "")
@@ -665,13 +666,13 @@ class ProviderConfigPage(QWidget):
         global_model = self.default_model_combo.currentData()
 
         # 收集所有已选模型作为 fallback 候选
-        all_selected = set()
+        all_selected: set[str] = set()
         for row in self.vendor_rows.values():
             for ref in row.get_all_selected_models():
                 all_selected.add(ref)
 
         # fallback = 所有已选模型中排除默认模型
-        fallback_models = []
+        fallback_models: list[str] = []
         if global_model and global_model in all_selected:
             fallback_models = [ref for ref in all_selected if ref != global_model]
         elif all_selected:
@@ -685,9 +686,9 @@ class ProviderConfigPage(QWidget):
 
     # ─────────────────────────────── 配置导入/导出
 
-    def _on_export_config(self):
+    def _on_export_config(self) -> None:
         """导出当前配置到 JSON 文件，便于用户备份或迁移到其他机器。"""
-        configured = {}
+        configured: dict[str, dict[str, Any]] = {}
         for vendor_id, row in self.vendor_rows.items():
             for cfg in row.get_all_configs():
                 key_type = cfg.get("key_type", "")
@@ -697,7 +698,7 @@ class ProviderConfigPage(QWidget):
                     "selected_models": cfg["selected_models"],
                 }
 
-        data = {
+        data: dict[str, Any] = {
             "version": "1.0",
             "providers": configured,
             "global_default_model": self.default_model_combo.currentData() or "",
@@ -733,7 +734,7 @@ class ProviderConfigPage(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "导出失败", str(e))
 
-    def _on_import_config(self):
+    def _on_import_config(self) -> None:
         """从 JSON 文件导入配置，自动回填到对应 VendorRow 并刷新汇总。"""
         path, _ = QFileDialog.getOpenFileName(
             self, "导入配置", "", "JSON (*.json)"
@@ -743,7 +744,7 @@ class ProviderConfigPage(QWidget):
 
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                data: dict[str, Any] = json.load(f)
         except Exception as e:
             QMessageBox.warning(self, "导入失败", f"无法读取文件: {e}")
             return
@@ -784,7 +785,7 @@ class ProviderConfigPage(QWidget):
 
     # ─────────────────────────────── 重置 / 回填
 
-    def reset(self):
+    def reset(self) -> None:
         """清空所有供应商配置，恢复到初始状态。"""
         for row in self.vendor_rows.values():
             row.key_input.clear()
@@ -798,7 +799,7 @@ class ProviderConfigPage(QWidget):
                 row.collapse()
         self._refresh_summary()
 
-    def load_config(self, existing: dict):
+    def load_config(self, existing: dict[str, Any]) -> None:
         """回填已有配置（从 openclaw 现有配置文件中解析并映射到 UI）。"""
         env = existing.get("env", {})
         auth_profiles = existing.get("auth_profiles", {})
@@ -820,12 +821,12 @@ class ProviderConfigPage(QWidget):
         }
 
         # 收集所有已配置的 model ref（primary + fallbacks）
-        all_model_refs = set(fallback_models)
+        all_model_refs: set[str] = set(fallback_models)
         if primary_model:
             all_model_refs.add(primary_model)
 
         # 为每个 model_ref 确定所属的 vendor
-        def get_vendor_for_ref(model_ref: str):
+        def get_vendor_for_ref(model_ref: str) -> tuple[str | None, str | None]:
             """返回 (vendor_id, key_type_key)"""
             prefix_map = {
                 "moonshot/": ("kimi", "standard"),
@@ -845,7 +846,7 @@ class ProviderConfigPage(QWidget):
             return (None, None)
 
         # 按 vendor 分组 model refs
-        vendor_models: dict[str, list] = {}  # vendor_id -> [model_ref, ...]
+        vendor_models: dict[str, list[str]] = {}  # vendor_id -> [model_ref, ...]
         for ref in all_model_refs:
             vid, _ = get_vendor_for_ref(ref)
             if vid:
@@ -922,20 +923,20 @@ class ProviderConfigPage(QWidget):
 
     # ─────────────────────────────── 保存状态提示
 
-    def show_saving(self):
+    def show_saving(self) -> None:
         """保存中状态：禁用所有按钮并将主按钮文本改为「保存中...」，防止重复提交。"""
         self.save_button.setEnabled(False)
         self.save_button.setText("保存中...")
         self.skip_button.setEnabled(False)
         self.back_button.setEnabled(False)
 
-    def hide_saving(self):
+    def hide_saving(self) -> None:
         """恢复按钮可用状态。"""
         self.save_button.setEnabled(True)
         self.save_button.setText("保存并启动")
         self.skip_button.setEnabled(True)
         self.back_button.setEnabled(True)
 
-    def show_error(self, message: str):
+    def show_error(self, message: str) -> None:
         """弹出配置保存失败的警告对话框。"""
         QMessageBox.warning(self, "配置保存失败", message)
