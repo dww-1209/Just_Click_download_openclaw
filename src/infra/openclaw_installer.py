@@ -359,7 +359,7 @@ class OpenClawInstaller:
             安全策略：对 project_dir 进行校验，拒绝包含 shell 元字符的路径。
             """
             # 防御：project_dir 不应包含会导致命令注入的字符
-            if any(c in project_dir for c in '"&|;<>$`\\'):
+            if any(c in str(project_dir) for c in '"&|;<>$`\\'):
                 self._log(f"项目路径包含非法字符，安装终止: {project_dir}", on_log)
                 return 1
             if _is_win:
