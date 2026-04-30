@@ -5,9 +5,9 @@ from PySide6.QtCore import Qt
 from ui.welcome_page import WelcomePage
 from ui.env_check_page import EnvCheckPage
 from ui.installing_page import InstallingPage
-from ui.us05_config_page import US05ConfigPage
+from ui.default_config_page import US05ConfigPage
 from ui.provider_config_page import ProviderConfigPage
-from ui.us06_startup_page import US06StartupPage
+from ui.startup_page import US06StartupPage
 from services.env_check_service import EnvCheckService
 from services.install_service import InstallService
 from core.openclaw_manager import OpenClawManager
@@ -480,26 +480,10 @@ class InstallerWindow:
     # ========== US-05 Config ==========
     def _start_config(self):
         """Start configuration only"""
+        from services.workers import ConfigWorker
+
         self.config_page.reset()
         self.config_page.start_configuring()
-
-        from PySide6.QtCore import QThread, Signal
-
-        class ConfigWorker(QThread):
-            progress_updated = Signal(object)
-            log_line = Signal(str)
-            complete = Signal(object)
-
-            def __init__(self, manager):
-                super().__init__()
-                self.manager = manager
-
-            def run(self):
-                result = self.manager.configure_only(
-                    on_progress=self.progress_updated.emit,
-                    on_log=self.log_line.emit
-                )
-                self.complete.emit(result)
 
         self.config_worker = ConfigWorker(self.openclaw_manager)
         self.config_worker.progress_updated.connect(self._on_config_progress)
@@ -571,34 +555,10 @@ class InstallerWindow:
     # ========== US-06 Startup ==========
     def _start_startup(self, quick_start=False):
         """Start gateway and open browser"""
+        from services.workers import StartupWorker
+
         self.startup_page.reset()
         self.startup_page.start_startup()
-
-        from PySide6.QtCore import QThread, Signal
-
-        class StartupWorker(QThread):
-            progress_updated = Signal(object)
-            log_line = Signal(str)
-            complete = Signal(object)
-
-            def __init__(self, manager, quick_start=False):
-                super().__init__()
-                self.manager = manager
-                self.quick_start = quick_start
-
-            def run(self):
-                if self.quick_start:
-                    result = self.manager.startup_only(
-                        on_progress=self.progress_updated.emit,
-                        on_log=self.log_line.emit
-                    )
-                else:
-                    # Full flow: config done, just startup
-                    result = self.manager.startup_only(
-                        on_progress=self.progress_updated.emit,
-                        on_log=self.log_line.emit
-                    )
-                self.complete.emit(result)
 
         self.startup_worker = StartupWorker(self.openclaw_manager, quick_start=quick_start)
         self.startup_worker.progress_updated.connect(self._on_startup_progress)
@@ -635,29 +595,7 @@ class InstallerWindow:
 
     def _on_provider_config_save(self, payload: dict):
         """保存 Provider 配置并启动"""
-        from PySide6.QtCore import QThread, Signal
-
-        class ProviderConfigWorker(QThread):
-            progress_updated = Signal(object)
-            log_line = Signal(str)
-            complete = Signal(bool)
-
-            def __init__(self, manager, providers_config, global_default_model, fallback_models):
-                super().__init__()
-                self.manager = manager
-                self.providers_config = providers_config
-                self.global_default_model = global_default_model
-                self.fallback_models = fallback_models
-
-            def run(self):
-                ok = self.manager.configure_providers(
-                    self.providers_config,
-                    self.global_default_model,
-                    self.fallback_models,
-                    on_progress=self.progress_updated.emit,
-                    on_log=self.log_line.emit,
-                )
-                self.complete.emit(ok)
+        from services.workers import ProviderConfigWorker
 
         self.provider_config_page.show_saving()
         self._provider_config_worker = ProviderConfigWorker(

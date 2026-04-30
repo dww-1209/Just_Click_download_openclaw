@@ -277,7 +277,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         openclaw_indicators = [
             "openclaw.exe", "OpenClaw.exe", "openclaw", "openclaw-cn.exe", "openclaw-cn",
             "package.json", "server.js", "app.js",
-            "main.py", "config.json", ".openclaw",
+            "installer.py", "config.json", ".openclaw",
         ]
         for path in paths_to_check:
             if os.path.exists(path) and os.path.isdir(path):

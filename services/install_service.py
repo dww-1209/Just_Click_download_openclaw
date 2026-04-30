@@ -7,7 +7,7 @@ from models.install import (
     InstallProgress,
     InstallResult,
 )
-from infra.installer import OpenClawInstaller
+from infra.openclaw_installer import OpenClawInstaller
 
 
 class InstallWorker(QThread):
