@@ -82,7 +82,7 @@ class OpenClawConfig:
         """
         return f"http://{self.service_host}:{self.service_port}"
 
-    def save_to_file(self, file_path: str):
+    def save_to_file(self, file_path: str) -> None:
         """将配置保存为 JSON 文件。
 
         Args:
@@ -135,7 +135,7 @@ class ConfigResult:
     message: str = ""
     error_message: str = ""
     browser_opened: bool = False
-    log_lines: list = None  # 详细日志，用于排查问题
+    log_lines: list[str] = None  # 详细日志，用于排查问题
 
     def __post_init__(self):
         if self.log_lines is None:

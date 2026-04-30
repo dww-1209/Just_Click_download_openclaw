@@ -25,12 +25,12 @@ class StartupStepWidget(QFrame):
     两个阶段的流转情况。
     """
 
-    def __init__(self, step_name, parent=None):
+    def __init__(self, step_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.step_name = step_name
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         self.icon_label = QLabel("○")
@@ -43,22 +43,22 @@ class StartupStepWidget(QFrame):
         layout.addWidget(self.name_label)
         layout.addStretch(1)
 
-    def set_pending(self):
+    def set_pending(self) -> None:
         """步骤未开始：灰色空心圆圈"""
         self.icon_label.setText("○")
         self.icon_label.setStyleSheet("font-size: 18px; color: #bbb; min-width: 24px;")
 
-    def set_running(self):
+    def set_running(self) -> None:
         """步骤进行中：橙色实心圆点，表示正在处理"""
         self.icon_label.setText("●")
         self.icon_label.setStyleSheet("font-size: 18px; color: #f39c12; min-width: 24px;")
 
-    def set_completed(self):
+    def set_completed(self) -> None:
         """步骤完成：绿色对勾加粗"""
         self.icon_label.setText("✓")
         self.icon_label.setStyleSheet("font-size: 18px; color: #27ae60; font-weight: bold; min-width: 24px;")
 
-    def set_failed(self):
+    def set_failed(self) -> None:
         """步骤失败：红色叉号加粗"""
         self.icon_label.setText("✗")
         self.icon_label.setStyleSheet("font-size: 18px; color: #e74c3c; font-weight: bold; min-width: 24px;")
@@ -78,11 +78,11 @@ class US06StartupPage(QWidget):
     back_clicked = Signal()          # 用户点击「返回」，回到配置页
     open_webchat_clicked = Signal()  # 倒计时结束后用户点击「打开 WebChat」，触发打开系统浏览器
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         from PySide6.QtWidgets import QScrollArea
 
         # 主布局：上部为可滚动内容区，下部为固定按钮栏。
@@ -353,7 +353,7 @@ class US06StartupPage(QWidget):
         button_layout.setContentsMargins(40, 10, 40, 0)
         main_layout.addLayout(button_layout)
 
-    def _toggle_log(self):
+    def _toggle_log(self) -> None:
         if self.log_frame.isVisible():
             self.log_frame.hide()
             self.toggle_log_btn.setText("显示详细日志 ▼")
@@ -361,19 +361,19 @@ class US06StartupPage(QWidget):
             self.log_frame.show()
             self.toggle_log_btn.setText("隐藏详细日志 ▲")
 
-    def _copy_url(self):
+    def _copy_url(self) -> None:
         url = self.url_input.text()
         if url:
             clipboard = QApplication.clipboard()
             clipboard.setText(url)
             self.copy_button.setText("已复制!")
 
-    def add_log_line(self, line):
+    def add_log_line(self, line: str) -> None:
         self.log_text.append(line)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def start_startup(self):
+    def start_startup(self) -> None:
         """重置并进入启动中状态：恢复步骤显示、进度条、防火墙提示（Windows），
         隐藏成功/错误区域，重置日志。"""
         self.status_label.setText("正在启动网关服务...")
@@ -403,7 +403,7 @@ class US06StartupPage(QWidget):
         self.retry_button.hide()
         self.finish_button.hide()
 
-    def update_progress(self, progress):
+    def update_progress(self, progress: ConfigProgress) -> None:
         """根据后台线程发射的 ConfigProgress 更新进度条、任务文本和步骤状态。"""
         self.progress_bar.setValue(progress.progress_percent)
 
@@ -422,7 +422,7 @@ class US06StartupPage(QWidget):
             if not hasattr(self, '_failed_step_set'):
                 self.step_gateway.set_failed()
 
-    def startup_success(self, result):
+    def startup_success(self, result: ConfigResult) -> None:
         """启动成功回调：更新状态文本、隐藏进行中区域、展示成功卡片，
         并启动倒计时防抖后启用「打开 WebChat」按钮。"""
         self.status_label.setText("网关服务已启动")
@@ -459,7 +459,7 @@ class US06StartupPage(QWidget):
         # 启动倒计时，等待连接稳定后再允许打开 WebChat
         self._start_countdown()
 
-    def startup_failed(self, result):
+    def startup_failed(self, result: ConfigResult) -> None:
         """启动失败回调：展示错误卡片和日志摘要，显示「返回」「重试」按钮。"""
         self.status_label.setText("启动失败")
         self.status_label.setStyleSheet("color: red; font-weight: bold;")
@@ -479,7 +479,7 @@ class US06StartupPage(QWidget):
         self.retry_button.show()
         self.finish_button.hide()
 
-    def _start_countdown(self):
+    def _start_countdown(self) -> None:
         """启动 8 秒倒计时，等待网关连接稳定后再启用「打开 WebChat」按钮。
 
         设计原因：Gateway 进程启动后需要数秒完成初始化并注册路由，
@@ -495,7 +495,7 @@ class US06StartupPage(QWidget):
         self._countdown_timer.timeout.connect(self._update_countdown)
         self._countdown_timer.start(1000)  # 每秒更新一次
 
-    def _update_countdown(self):
+    def _update_countdown(self) -> None:
         """更新倒计时文本；归零后停止计时器并启用「打开 WebChat」按钮。"""
         self._countdown_value -= 1
         if self._countdown_value > 0:
@@ -507,7 +507,7 @@ class US06StartupPage(QWidget):
             self.countdown_label.hide()
             self.open_webchat_btn.setEnabled(True)
 
-    def reset(self):
+    def reset(self) -> None:
         """重置页面到初始状态，停止可能运行中的倒计时。"""
         self.step_gateway.set_pending()
         self.step_health.set_pending()

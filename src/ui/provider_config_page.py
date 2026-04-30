@@ -28,7 +28,7 @@ from src.models.provider_config import VENDOR_REGISTRY
 class PrimaryButton(QPushButton):
     """主操作按钮 —— 使用 primaryButton 样式，视觉上突出，用于「保存并启动」等关键操作。"""
 
-    def __init__(self, text: str, parent=None):
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setCursor(Qt.PointingHandCursor)
         self.setObjectName("primaryButton")
@@ -37,7 +37,7 @@ class PrimaryButton(QPushButton):
 class SecondaryButton(QPushButton):
     """次要操作按钮 —— 默认样式，用于「返回」「跳过」「导入/导出」等低频操作。"""
 
-    def __init__(self, text: str, parent=None):
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setCursor(Qt.PointingHandCursor)
 
@@ -58,18 +58,18 @@ class VendorRow(QFrame):
     toggled = Signal(str)           # 展开/折叠状态变化时触发，携带 vendor_id，用于父级实现互斥折叠
     model_selection_changed = Signal()  # 模型勾选状态变化时触发，用于刷新汇总区域
 
-    def __init__(self, vendor, parent=None):
+    def __init__(self, vendor, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.vendor = vendor
         self.is_expanded = False
-        self._key_type_state = {}     # {key_type_key: {"api_key": "", "selected": set()}}
-        self._custom_models = []      # [(model_ref, display_name, key_type_key), ...]
-        self._model_checkboxes = {}   # {model_ref: QCheckBox}
-        self._current_key_type = None
+        self._key_type_state: dict[str, dict[str, Any]] = {}     # {key_type_key: {"api_key": "", "selected": set()}}
+        self._custom_models: list[tuple[str, str, str]] = []      # [(model_ref, display_name, key_type_key), ...]
+        self._model_checkboxes: dict[str, QCheckBox] = {}   # {model_ref: QCheckBox}
+        self._current_key_type: str | None = None
 
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -177,28 +177,28 @@ class VendorRow(QFrame):
             self._current_key_type = self.vendor.key_types[0].key
         self._refresh_models()
 
-    def _toggle(self):
+    def _toggle(self) -> None:
         self.is_expanded = not self.is_expanded
         self.content.setVisible(self.is_expanded)
         self.arrow_label.setText("▼" if self.is_expanded else "▶")
         self.toggled.emit(self.vendor.id)
 
-    def collapse(self):
+    def collapse(self) -> None:
         self.is_expanded = False
         self.content.hide()
         self.arrow_label.setText("▶")
 
-    def _on_key_type_changed(self, index):
+    def _on_key_type_changed(self, index: int) -> None:
         self._save_current_state()
         key_type_key = self.key_type_combo.itemData(index)
         self._current_key_type = key_type_key
         self._refresh_models()
         self._restore_state()
 
-    def _save_current_state(self):
+    def _save_current_state(self) -> None:
         if not self._current_key_type:
             return
-        selected = set()
+        selected: set[str] = set()
         for ref, cb in self._model_checkboxes.items():
             if cb.isChecked():
                 selected.add(ref)
@@ -207,7 +207,7 @@ class VendorRow(QFrame):
             "selected": selected,
         }
 
-    def _restore_state(self):
+    def _restore_state(self) -> None:
         if not self._current_key_type:
             return
         state = self._key_type_state.get(self._current_key_type, {})
@@ -216,7 +216,7 @@ class VendorRow(QFrame):
         for ref, cb in self._model_checkboxes.items():
             cb.setChecked(ref in selected)
 
-    def _refresh_models(self):
+    def _refresh_models(self) -> None:
         while self.models_layout.count():
             item = self.models_layout.takeAt(0)
             if item.widget():
@@ -271,7 +271,7 @@ class VendorRow(QFrame):
 
         self._restore_state()
 
-    def _add_custom_model(self):
+    def _add_custom_model(self) -> None:
         text = self.custom_input.text().strip()
         if not text:
             return
@@ -292,21 +292,21 @@ class VendorRow(QFrame):
         self._refresh_models()
         self.model_selection_changed.emit()
 
-    def _remove_custom_model(self, ref):
+    def _remove_custom_model(self, ref: str) -> None:
         key_type = self._current_key_type or ""
         self._custom_models = [(r, n, k) for r, n, k in self._custom_models if not (r == ref and k == key_type)]
         self._save_current_state()
         self._refresh_models()
         self.model_selection_changed.emit()
 
-    def _on_model_changed(self):
+    def _on_model_changed(self) -> None:
         self.model_selection_changed.emit()
 
-    def has_any_config(self):
+    def has_any_config(self) -> bool:
         return bool(self.key_input.text().strip())
 
-    def get_all_selected_models(self):
-        all_selected = set()
+    def get_all_selected_models(self) -> list[str]:
+        all_selected: set[str] = set()
         for ref, cb in self._model_checkboxes.items():
             if cb.isChecked():
                 all_selected.add(ref)
@@ -314,8 +314,8 @@ class VendorRow(QFrame):
             all_selected.update(state.get("selected", set()))
         return list(all_selected)
 
-    def get_all_configs(self):
-        configs = []
+    def get_all_configs(self) -> list[dict[str, Any]]:
+        configs: list[dict[str, Any]] = []
         self._save_current_state()
         for key_type_key, state in self._key_type_state.items():
             api_key = state.get("api_key", "").strip()
@@ -340,7 +340,7 @@ class VendorRow(QFrame):
             })
         return configs
 
-    def load_config(self, api_key, selected_models, key_type):
+    def load_config(self, api_key: str, selected_models: list[str], key_type: str) -> None:
         matched_kt = None
         for i, kt in enumerate(self.vendor.key_types):
             if kt.key == key_type:
@@ -355,13 +355,13 @@ class VendorRow(QFrame):
 
         self.key_input.setText(api_key or "")
 
-        selected_set = set(selected_models) if selected_models else set()
+        selected_set: set[str] = set(selected_models) if selected_models else set()
         self._key_type_state[self._current_key_type] = {
             "api_key": api_key or "",
             "selected": selected_set,
         }
 
-        preset_refs = set()
+        preset_refs: set[str] = set()
         if matched_kt:
             for m in matched_kt.models:
                 preset_refs.add(m.ref)
@@ -376,7 +376,7 @@ class VendorRow(QFrame):
         self._key_type_state[self._current_key_type]["selected"] = selected_set
         self._refresh_models()
 
-    def _refresh_for_key_type(self, index):
+    def _refresh_for_key_type(self, index: int) -> None:
         if self.key_type_combo:
             self.key_type_combo.setCurrentIndex(index)
             key_type_key = self.key_type_combo.itemData(index)
@@ -400,12 +400,12 @@ class ProviderConfigPage(QWidget):
     skip_clicked = Signal()              # 用户点击「跳过」，跳过模型配置直接进入启动页
     save_and_start_clicked = Signal(dict)  # 用户点击「保存并启动」，携带完整配置字典发射
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.vendor_rows: dict[str, VendorRow] = {}
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         # 主布局：上部为可滚动内容区，下部为固定按钮栏。
         # 使用 QScrollArea 包裹供应商列表，避免供应商过多时页面无限伸长。
         main_layout = QVBoxLayout(self)

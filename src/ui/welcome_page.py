@@ -59,11 +59,11 @@ class WelcomePage(QWidget):
     next_clicked = Signal()   # 用户点击「开始安装」，触发进入环境检测页
     exit_clicked = Signal()   # 用户点击「退出」，触发关闭安装器
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         from PySide6.QtWidgets import QScrollArea
 
         # 主布局：采用上下结构，上部为可滚动内容区，下部为固定按钮栏。

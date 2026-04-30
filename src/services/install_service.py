@@ -22,7 +22,7 @@ class InstallWorker(QThread):
     install_complete = Signal(InstallResult)     # 安装完成（成功）
     install_failed = Signal(str)                 # 安装失败（异常信息）
 
-    def __init__(self, os_type: str = None, parent=None):
+    def __init__(self, os_type: str | None = None, parent: QObject | None = None) -> None:
         """初始化安装工作线程。
 
         Args:
@@ -33,7 +33,7 @@ class InstallWorker(QThread):
         self.os_type = os_type
         self.installer = OpenClawInstaller(os_type)
 
-    def run(self):
+    def run(self) -> None:
         """线程入口。调用 OpenClawInstaller 执行安装，并转发结果或异常。"""
         try:
             result = self.installer.install(
@@ -44,7 +44,7 @@ class InstallWorker(QThread):
         except Exception as e:
             self.install_failed.emit(str(e))
 
-    def _on_progress(self, progress: InstallProgress):
+    def _on_progress(self, progress: InstallProgress) -> None:
         """内部回调：将安装进度通过 Signal 发射出去。
 
         Args:
@@ -52,7 +52,7 @@ class InstallWorker(QThread):
         """
         self.progress_updated.emit(progress)
 
-    def _on_log(self, log_line: str):
+    def _on_log(self, log_line: str) -> None:
         """内部回调：将日志行通过 Signal 发射出去。
 
         Args:
@@ -60,7 +60,7 @@ class InstallWorker(QThread):
         """
         self.log_updated.emit(log_line)
 
-    def cancel(self):
+    def cancel(self) -> None:
         """请求取消安装。会转发给 OpenClawInstaller 的取消标志。"""
         self.installer.cancel()
 
@@ -78,17 +78,17 @@ class InstallService(QObject):
     install_complete = Signal(InstallResult)     # 安装完成
     install_failed = Signal(str)                 # 安装失败
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QObject | None = None) -> None:
         """初始化安装服务。
 
         Args:
             parent: Qt 父对象。
         """
         super().__init__(parent)
-        self.worker: InstallWorker = None
-        self.result: InstallResult = None
+        self.worker: InstallWorker | None = None
+        self.result: InstallResult | None = None
 
-    def start_install(self, os_type: str = None):
+    def start_install(self, os_type: str | None = None) -> None:
         """启动安装流程。
 
         创建 InstallWorker 并连接所有 Signal，然后启动线程。
@@ -103,7 +103,7 @@ class InstallService(QObject):
         self.worker.install_failed.connect(self._on_failed)
         self.worker.start()
 
-    def _on_progress(self, progress: InstallProgress):
+    def _on_progress(self, progress: InstallProgress) -> None:
         """内部槽：转发进度 Signal。
 
         Args:
@@ -111,7 +111,7 @@ class InstallService(QObject):
         """
         self.progress_updated.emit(progress)
 
-    def _on_log(self, log_line: str):
+    def _on_log(self, log_line: str) -> None:
         """内部槽：转发日志 Signal。
 
         Args:
@@ -119,7 +119,7 @@ class InstallService(QObject):
         """
         self.log_updated.emit(log_line)
 
-    def _on_complete(self, result: InstallResult):
+    def _on_complete(self, result: InstallResult) -> None:
         """内部槽：保存结果并转发完成 Signal。
 
         Args:
@@ -128,7 +128,7 @@ class InstallService(QObject):
         self.result = result
         self.install_complete.emit(result)
 
-    def _on_failed(self, error: str):
+    def _on_failed(self, error: str) -> None:
         """内部槽：转发失败 Signal。
 
         Args:
@@ -136,12 +136,12 @@ class InstallService(QObject):
         """
         self.install_failed.emit(error)
 
-    def cancel_install(self):
+    def cancel_install(self) -> None:
         """取消当前安装。仅设置取消标志，不强制终止线程。"""
         if self.worker:
             self.worker.cancel()
 
-    def stop(self):
+    def stop(self) -> None:
         """强制停止安装线程。先请求取消，再退出并等待线程结束。"""
         if self.worker and self.worker.isRunning():
             self.worker.cancel()

@@ -473,12 +473,12 @@ class InstallerWindow:
                             os.chmod(path, stat.S_IWRITE)
                             func(path)
                         shutil.rmtree(d, onerror=_remove_readonly)
-                    except Exception:
+                    except (OSError, shutil.Error):
                         pass
             # 清理全局 npm 包（兼容旧版直接 npm install -g 的情况）
             for pkg in ["openclaw-cn", "openclaw"]:
                 subprocess.run(["npm", "uninstall", "-g", pkg], shell=False, capture_output=True)
-        except Exception:
+        except (OSError, subprocess.SubprocessError, shutil.Error):
             pass
         self._on_env_check_next()
 
@@ -637,7 +637,7 @@ class InstallerWindow:
                         break
                 if not opened:
                     print(f"未找到可用的终端模拟器，请手动运行: {cmd_name} config")
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(f"打开终端失败: {e}")
 
     # ========== US-06 Startup ==========
@@ -741,14 +741,14 @@ class InstallerWindow:
         try:
             webbrowser.open(url, new=2)
             opened = True
-        except Exception as e:
+        except (OSError, webbrowser.Error) as e:
             print(f"打开浏览器失败: {e}")
 
         if not opened and is_windows():
             try:
                 os.system(f'start "" "{url}"')
                 opened = True
-            except Exception as e:
+            except OSError as e:
                 print(f"系统命令打开浏览器失败: {e}")
 
         if opened:

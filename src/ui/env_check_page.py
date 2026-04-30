@@ -28,12 +28,12 @@ class CheckItemWidget(QFrame):
     警告、失败三种结果，无需阅读英文日志。
     """
 
-    def __init__(self, name: str, parent=None):
+    def __init__(self, name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.name = name
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
 
@@ -47,7 +47,7 @@ class CheckItemWidget(QFrame):
         layout.addStretch(1)
         layout.addWidget(self.status_label)
 
-    def set_status(self, status: CheckStatus, message: str = ""):
+    def set_status(self, status: CheckStatus, message: str = "") -> None:
         """根据检测结果更新状态标签样式与文本。"""
         if status == CheckStatus.OK:
             tag = '<span style="background:#E8F5E9; color:#2E7D32; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">✓ OK</span>'
@@ -75,11 +75,11 @@ class OpenClawInstalledWidget(QWidget):
     manual_config_clicked = Signal()     # 用户点击「手动配置」——打开配置文件目录供用户手动编辑
     reinstall_clicked = Signal()         # 用户点击「重新下载」——删除旧版本后重新执行 US-04 安装流程
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         self.setObjectName("openclawInstalledWidget")
@@ -160,12 +160,12 @@ class EnvCheckPage(QWidget):
     openclaw_manual_config = Signal()    # 已安装场景：用户选择「手动配置」
     openclaw_reinstall = Signal()        # 已安装场景：用户选择「重新下载」
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
         self._hide_openclaw_widget()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         from PySide6.QtWidgets import QScrollArea
         from PySide6.QtCore import QSize
 
@@ -277,28 +277,28 @@ class EnvCheckPage(QWidget):
 
         main_layout.addLayout(button_layout)
 
-    def _hide_openclaw_widget(self):
+    def _hide_openclaw_widget(self) -> None:
         self.openclaw_widget.hide()
 
-    def _show_openclaw_widget(self):
+    def _show_openclaw_widget(self) -> None:
         self.openclaw_widget.show()
 
-    def start_checking(self):
+    def start_checking(self) -> None:
         self.progress_bar.setRange(0, 0)
         self.status_label.setText("正在检测您的系统环境，请稍后...")
         self.next_button.setEnabled(False)
         self.retry_button.hide()
         self._hide_openclaw_widget()
 
-    def update_os_result(self, os_type: str):
+    def update_os_result(self, os_type: str) -> None:
         os_name = {"windows": "Windows", "macos": "macOS", "linux": "Linux"}.get(
             os_type, os_type
         )
         self.os_item.set_status(CheckStatus.OK, os_name)
 
-    def update_disk_result(self, status: CheckStatus, message: str, path: str = None):
+    def update_disk_result(self, status: CheckStatus, message: str, path: str | None = None) -> None:
         """更新磁盘空间检测结果
-        
+
         Args:
             status: 检测状态
             message: 状态消息
@@ -315,10 +315,10 @@ class EnvCheckPage(QWidget):
     # def update_network_result(self, status: CheckStatus, message: str):
     #     self.network_item.set_status(status, message)
 
-    def update_permission_result(self, status: CheckStatus, message: str):
+    def update_permission_result(self, status: CheckStatus, message: str) -> None:
         self.permission_item.set_status(status, message)
 
-    def update_browser_result(self, result: BrowserResult):
+    def update_browser_result(self, result: BrowserResult) -> None:
         if result.status == CheckStatus.OK:
             self.browser_item.set_status(CheckStatus.OK, result.message)
         else:
@@ -327,7 +327,7 @@ class EnvCheckPage(QWidget):
                 f"{result.message}（建议安装以使用浏览器自动化）"
             )
 
-    def update_openclaw_result(self, status: OpenClawStatus, message: str):
+    def update_openclaw_result(self, status: OpenClawStatus, message: str) -> None:
         if status == OpenClawStatus.INSTALLED:
             self.openclaw_item.set_status(CheckStatus.OK, "已安装")
             self._show_openclaw_widget()
@@ -338,7 +338,7 @@ class EnvCheckPage(QWidget):
             self._hide_openclaw_widget()
             self.next_button.setEnabled(True)
 
-    def check_complete(self, is_ready: bool, message: str):
+    def check_complete(self, is_ready: bool, message: str) -> None:
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self.status_label.setText(message)
@@ -355,7 +355,7 @@ class EnvCheckPage(QWidget):
             self.hint_label.setText("[X] 环境检测未通过，请根据上方提示解决问题后重试")
             self.hint_label.setStyleSheet("color: red;")
 
-    def reset(self):
+    def reset(self) -> None:
         self.progress_bar.setRange(0, 0)
         self.next_button.setEnabled(False)
         self.retry_button.hide()

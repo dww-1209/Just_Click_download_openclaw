@@ -29,11 +29,11 @@ class InstallingPage(QWidget):
     back_clicked = Signal()    # 用户点击「返回」，可回到环境检测页（安装未开始时可用）
     cancel_clicked = Signal()  # 用户点击「退出」，触发关闭安装器
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         from PySide6.QtWidgets import QScrollArea
 
         # 主布局：上部为可滚动内容区，下部为固定按钮栏。
@@ -174,11 +174,11 @@ class InstallingPage(QWidget):
 
         main_layout.addLayout(button_layout)
 
-    def _on_cancel_clicked(self):
+    def _on_cancel_clicked(self) -> None:
         """处理退出/取消点击"""
         self.cancel_clicked.emit()
 
-    def start_installing(self):
+    def start_installing(self) -> None:
         """开始安装 - 重置界面状态"""
         self.status_label.setText("正在安装...")
         self.status_label.setStyleSheet("")
@@ -195,7 +195,7 @@ class InstallingPage(QWidget):
         self.retry_button.hide()
         self.next_button.hide()
 
-    def update_progress(self, progress: InstallProgress):
+    def update_progress(self, progress: InstallProgress) -> None:
         """更新进度"""
         self.progress_bar.setValue(progress.progress_percent)
 
@@ -216,17 +216,17 @@ class InstallingPage(QWidget):
         if progress.message:
             self._append_log(progress.message)
 
-    def _append_log(self, message: str):
+    def _append_log(self, message: str) -> None:
         """添加日志并自动滚动到底部"""
         self.log_text.appendPlainText(message)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def add_log_line(self, log_line: str):
+    def add_log_line(self, log_line: str) -> None:
         """添加日志行"""
         self._append_log(log_line)
 
-    def install_success(self, result: InstallResult):
+    def install_success(self, result: InstallResult) -> None:
         """安装成功"""
         self.status_label.setText("[OK] 安装成功！")
         self.status_label.setStyleSheet("color: green;")
@@ -243,7 +243,7 @@ class InstallingPage(QWidget):
         self.next_button.show()
         self.next_button.setEnabled(True)
 
-    def install_failed(self, result: InstallResult):
+    def install_failed(self, result: InstallResult) -> None:
         """安装失败
 
         改进后的错误显示逻辑：
@@ -313,7 +313,7 @@ class InstallingPage(QWidget):
         self.retry_button.show()
         self.next_button.hide()
 
-    def install_cancelled(self):
+    def install_cancelled(self) -> None:
         """安装已取消"""
         self.status_label.setText("安装已取消")
         self.status_label.setStyleSheet("color: orange;")
@@ -326,7 +326,7 @@ class InstallingPage(QWidget):
         self.retry_button.show()
         self.next_button.hide()
 
-    def reset(self):
+    def reset(self) -> None:
         """重置页面状态"""
         self.status_label.setText("准备安装...")
         self.status_label.setStyleSheet("")

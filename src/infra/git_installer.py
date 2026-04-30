@@ -53,11 +53,11 @@ def is_git_installed() -> bool:
                 )
                 if result.returncode == 0:
                     return True
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 continue
 
         return False
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -100,7 +100,7 @@ def download_file(
         else:
             actual = dest_path.stat().st_size if dest_path.exists() else 0
             log(f"Python 下载完成但文件过小 ({actual} 字节)，判定为失败")
-    except Exception as e:
+    except (OSError, urllib.error.URLError, ssl.SSLError, ValueError) as e:
         log(f"[Python 下载失败] {type(e).__name__}: {str(e)}")
 
     # 方法2：PowerShell fallback（Python SSL/网络受限时使用）
@@ -153,7 +153,7 @@ def download_file(
 
         return False
 
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         log(f"[下载异常] {type(e).__name__}: {str(e)}")
         return False
 
@@ -269,7 +269,7 @@ def install_git_windows(on_log: Optional[Callable[[str], None]] = None) -> bool:
                 log("=" * 50)
                 return False
 
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         log("=" * 50)
         log(f"[最终错误] 安装 Git 时发生未捕获异常: {type(e).__name__}: {str(e)}")
         log("=" * 50)

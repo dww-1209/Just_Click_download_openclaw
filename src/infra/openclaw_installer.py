@@ -202,7 +202,7 @@ class OpenClawInstaller:
                         if major >= 22:
                             node_ok_linux = True
                             self._log(f"Node.js {node_result.stdout.strip()} 已满足要求", on_log)
-                except Exception:
+                except (OSError, subprocess.SubprocessError, ValueError):
                     pass
 
                 if missing_deps:
@@ -272,7 +272,7 @@ class OpenClawInstaller:
                     try:
                         shutil.rmtree(d, onerror=utils.remove_readonly)
                         self._log(f"已清理残留目录: {d}", on_log)
-                    except Exception as e:
+                    except (OSError, shutil.Error) as e:
                         self._log(f"清理残留目录失败 {d}: {e}", on_log)
 
             # ========================
@@ -281,7 +281,8 @@ class OpenClawInstaller:
             target_dir = os.path.expanduser("~\\openclaw-cn") if is_windows() else os.path.expanduser("~/openclaw-cn")
             return self._install_local_build(target_dir, on_progress, on_log)
 
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
+            # 顶层容错：捕获安装主流程中所有已知运行时异常，防止 UI 崩溃
             error_msg = f"安装过程出错: {str(e)}"
             self._log(error_msg, on_log)
             return InstallResult(
@@ -339,13 +340,13 @@ class OpenClawInstaller:
                 )
             return None
 
-        def _run(cmd: str, timeout: float = 300) -> subprocess.CompletedProcess:
-            """在独立 shell 中执行命令，统一封装 Windows 隐藏窗口参数。"""
-            kw = {"shell": True, "capture_output": True, "text": True, "timeout": timeout, "env": env}
-            if is_windows:
-                kw["startupinfo"] = startupinfo
-                kw["creationflags"] = creationflags
-            return subprocess.run(cmd, **kw)
+        def _run(cmd: str, timeout: float = 300) -> ShellResult:
+            """在独立 shell 中执行命令，复用 run_shell 的错误分类与诊断能力。
+
+            run_shell 内部已统一处理 Windows 隐藏窗口参数（startupinfo +
+            CREATE_NO_WINDOW）以及编码、超时、异常捕获等逻辑，因此直接委托即可。
+            """
+            return run_shell(cmd, timeout=timeout, env=env)
 
         def _run_in_project(cmd: str, timeout: float = 300, progress: InstallProgress = None) -> int:
             """先 cd 到项目目录再执行命令，并可选地发送进度更新。
@@ -404,7 +405,7 @@ class OpenClawInstaller:
                     self._log(f"Node.js {node_ver.stdout.strip()} 已满足要求", on_log)
                 else:
                     self._log(f"检测到 Node.js v{major}，版本过低，正在为您升级...", on_log)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
         if not node_ok:
@@ -424,7 +425,7 @@ class OpenClawInstaller:
                             log_lines=self.log_lines.copy(),
                             duration_seconds=time.time() - self.start_time,
                         )
-                except Exception:
+                except (OSError, ImportError, AttributeError):
                     pass
 
                 # 多镜像源 fallback：优先国内镜像加速，最后回退到官方源
@@ -453,7 +454,7 @@ class OpenClawInstaller:
                             header = f.read(8)
                         # MSI 文件头魔数: D0 CF 11 E0 A1 B1 1A E1
                         return header == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-                    except Exception:
+                    except (OSError, ValueError):
                         return False
 
                 for url in node_urls:
@@ -477,7 +478,7 @@ class OpenClawInstaller:
                         else:
                             actual = node_msi.stat().st_size if node_msi.exists() else 0
                             self._log(f"下载完成但文件校验失败 ({actual} 字节)，判定为失败", on_log)
-                    except Exception as e:
+                    except (OSError, urllib.error.URLError, ssl.SSLError, ValueError) as e:
                         self._log(f"[Python 下载失败] {type(e).__name__}: {str(e)}", on_log)
 
                     # 方法2：PowerShell fallback（某些环境 urllib 被防火墙拦截，PowerShell 反而能走系统代理）
@@ -573,7 +574,7 @@ class OpenClawInstaller:
                             all_lines = log_content.splitlines()
                             # 输出日志最后 100 行
                             self._log(f"[MSI 安装日志 最后 {min(len(all_lines), 100)} 行]\n" + "\n".join(all_lines[-100:]), on_log)
-                        except Exception as e:
+                        except (OSError, ValueError) as e:
                             self._log(f"[读取 MSI 日志失败] {e}", on_log)
 
                     if attempt == 0 and install_result.returncode == 1603:
@@ -610,7 +611,7 @@ class OpenClawInstaller:
                     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
                         sys_path, _ = winreg.QueryValueEx(key, "Path")
                     os.environ["Path"] = sys_path + ";" + os.environ.get("Path", "")
-                except Exception:
+                except (OSError, ImportError):
                     pass
                 node_path = r"C:\Program Files\nodejs"
                 if os.path.exists(node_path):
@@ -621,7 +622,7 @@ class OpenClawInstaller:
                     if node_msi.exists():
                         node_msi.unlink()
                         self._log("已清理 Node.js 安装临时文件", on_log)
-                except Exception:
+                except OSError:
                     pass
 
             elif self.os_type == "macos":
@@ -711,7 +712,7 @@ class OpenClawInstaller:
                     if node_pkg and node_pkg.exists():
                         try:
                             node_pkg.unlink()
-                        except Exception:
+                        except OSError:
                             pass
                     if not result.success:
                         err_detail = result.error_detail
@@ -787,7 +788,7 @@ class OpenClawInstaller:
                         if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in env.get("PATH", ""):
                             env["PATH"] = npm_bin_path + os.pathsep + env.get("PATH", "")
                             self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}", on_log)
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"获取 npm 全局 bin 路径失败: {e}", on_log)
                 # fallback: 尝试常见的默认路径（用户级安装 vs 系统级安装）
                 appdata = os.environ.get("APPDATA", "")
@@ -807,7 +808,7 @@ class OpenClawInstaller:
                         if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in env.get("PATH", ""):
                             env["PATH"] = npm_bin_path + ":" + env.get("PATH", "")
                             self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}", on_log)
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"获取 npm 全局 bin 路径失败: {e}", on_log)
         else:
             self._log("pnpm 已存在", on_log)
@@ -996,7 +997,7 @@ class OpenClawInstaller:
                 try:
                     wrapper_path.write_text(wrapper_content, encoding="utf-8")
                     self._log(f"已创建全局命令: {wrapper_path}", on_log)
-                except Exception as e:
+                except OSError as e:
                     self._log(f"创建全局命令失败 {wrapper_path}: {e}", on_log)
         else:
             # macOS / Linux：在 ~/.local/bin 下创建 shell 脚本，符合 XDG 规范
@@ -1014,7 +1015,7 @@ class OpenClawInstaller:
                     wrapper_path.write_text(wrapper_content, encoding="utf-8")
                     wrapper_path.chmod(0o755)
                     self._log(f"已创建全局命令: {wrapper_path}", on_log)
-                except Exception as e:
+                except OSError as e:
                     self._log(f"创建全局命令失败 {wrapper_path}: {e}", on_log)
             npm_bin_dir = str(local_bin)
             self._ensure_local_bin_in_path(on_log)
@@ -1047,7 +1048,7 @@ class OpenClawInstaller:
                         merged_paths.append(p_strip)
                 os.environ["Path"] = ";".join(merged_paths)
                 env["Path"] = os.environ["Path"]
-            except Exception as e:
+            except (OSError, ImportError) as e:
                 self._log(f"刷新 PATH 时出错（非致命）: {e}", on_log)
 
         def _verify_cmd(cmd: str) -> bool:
@@ -1061,7 +1062,7 @@ class OpenClawInstaller:
                 # 尝试通过 setx 持久化 PATH（对当前进程无效，但下次启动生效）
                 try:
                     _run(f'setx PATH "%PATH%;{npm_bin_dir}"', timeout=TIMEOUT_NODE_MSI_INSTALL)
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
                     pass
                 env["Path"] = os.environ.get("Path", "")
                 if not _verify_cmd("openclaw-cn") and not _verify_cmd("openclaw"):
@@ -1141,7 +1142,7 @@ class OpenClawInstaller:
                         if stripped:
                             self._log(stripped, on_log)
                             last_output_time[0] = time.time()
-            except Exception:
+            except (OSError, ValueError):
                 pass
 
         t = threading.Thread(target=reader, daemon=True)
@@ -1162,7 +1163,7 @@ class OpenClawInstaller:
                     self._kill_process_tree(process)
                     break
             process.wait(timeout=TIMEOUT_SHORT_CMD)
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self._log(f"等待进程时出错: {e}", on_log)
             self._kill_process_tree(process)
 
@@ -1180,9 +1181,9 @@ class OpenClawInstaller:
             # 等待进程退出，避免 PID 被回收后误杀其他进程（竞态条件修复）
             try:
                 process.wait(timeout=TIMEOUT_SHORT_CMD)
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 pass
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
         try:
             subprocess.run(
@@ -1191,7 +1192,7 @@ class OpenClawInstaller:
                 capture_output=True,
                 timeout=TIMEOUT_NODE_MSI_INSTALL,
             )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
     def _log(self, message: str, on_log: Callable[[str], None] = None):
@@ -1227,7 +1228,7 @@ class OpenClawInstaller:
                 except subprocess.TimeoutExpired:
                     self.process.kill()
 
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 pass
 
     def _ensure_local_bin_in_path(self, on_log: Callable[[str], None] = None):
@@ -1253,7 +1254,7 @@ class OpenClawInstaller:
                     with open(rc_path, "a", encoding="utf-8") as f:
                         f.write(f"\n# Added by OpenClaw Installer\n{path_export}\n")
                     self._log(f"已将 {local_bin} 添加到 {rc_file}", on_log)
-                except Exception as e:
+                except OSError as e:
                     self._log(f"修改 {rc_file} 失败: {e}", on_log)
 
     def cancel(self):

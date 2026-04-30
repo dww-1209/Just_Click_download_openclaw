@@ -193,7 +193,9 @@ def run_shell(
             command=command,
         )
 
-    except Exception as e:
+    except (OSError, ValueError, TypeError, RuntimeError) as e:
+        # subprocess.run 已单独处理 TimeoutExpired/FileNotFoundError/PermissionError
+        # 此处捕获其他已知的运行时异常，避免过于宽泛的 except Exception
         result.elapsed_seconds = time.time() - start_time
         result.error_detail = _build_error_detail(
             category=ErrorCategory.UNKNOWN,

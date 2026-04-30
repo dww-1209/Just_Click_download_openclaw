@@ -16,7 +16,7 @@ class EnvCheckWorker(QThread):
     check_complete = Signal(EnvCheckResult) # 检测完成（携带完整结果）
     check_failed = Signal(str)              # 检测过程抛出异常
 
-    def __init__(self, install_path: str = None, parent=None):
+    def __init__(self, install_path: str | None = None, parent: QObject | None = None) -> None:
         """初始化环境检测工作线程。
 
         Args:
@@ -47,17 +47,17 @@ class EnvCheckService(QObject):
     check_complete = Signal(EnvCheckResult)  # 检测完成
     check_failed = Signal(str)               # 检测失败
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QObject | None = None) -> None:
         """初始化环境检测服务。
 
         Args:
             parent: Qt 父对象。
         """
         super().__init__(parent)
-        self.worker: EnvCheckWorker = None
-        self.result: EnvCheckResult = None
+        self.worker: EnvCheckWorker | None = None
+        self.result: EnvCheckResult | None = None
 
-    def start_check(self, install_path: str = None):
+    def start_check(self, install_path: str | None = None) -> None:
         """启动环境检测流程。
 
         创建 EnvCheckWorker 并连接所有 Signal，然后启动线程。
@@ -71,7 +71,7 @@ class EnvCheckService(QObject):
         self.worker.check_failed.connect(self._on_service_failed)
         self.worker.start()
 
-    def _on_service_complete(self, result: EnvCheckResult):
+    def _on_service_complete(self, result: EnvCheckResult) -> None:
         """内部槽：保存检测结果并转发完成 Signal。
 
         Args:
@@ -80,7 +80,7 @@ class EnvCheckService(QObject):
         self.result = result
         self.check_complete.emit(result)
 
-    def _on_service_failed(self, error: str):
+    def _on_service_failed(self, error: str) -> None:
         """内部槽：转发失败 Signal。
 
         Args:
@@ -88,7 +88,7 @@ class EnvCheckService(QObject):
         """
         self.check_failed.emit(error)
 
-    def _on_started(self):
+    def _on_started(self) -> None:
         """内部槽：检测开始时的占位回调（当前无额外逻辑）。"""
         pass
 
@@ -102,7 +102,7 @@ class EnvCheckService(QObject):
             return self.result.openclaw_install.status == OpenClawStatus.INSTALLED
         return False
 
-    def stop(self):
+    def stop(self) -> None:
         """停止环境检测线程。请求退出并等待线程结束。"""
         if self.worker and self.worker.isRunning():
             self.worker.quit()

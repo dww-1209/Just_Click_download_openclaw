@@ -135,7 +135,8 @@ class OpenClawManager:
                 log_lines=self._log_lines.copy(),
             )
 
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
+            # 顶层容错：捕获配置过程中所有已知运行时异常，防止 UI 崩溃
             self._log(f"Exception: {type(e).__name__}: {e}")
             import traceback
             self._log(f"Traceback: {traceback.format_exc()}")
@@ -250,7 +251,8 @@ class OpenClawManager:
                 log_lines=self._log_lines.copy(),
             )
 
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
+            # 顶层容错：捕获启动过程中所有已知运行时异常，防止 UI 崩溃
             self._log(f"Exception: {type(e).__name__}: {e}")
             import traceback
             self._log(f"Traceback: {traceback.format_exc()}")
@@ -359,7 +361,7 @@ class OpenClawManager:
                     env=env,
                 )
                 return result.returncode == 0
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             return False
 
     def _setup_default_config(self) -> bool:
@@ -392,7 +394,7 @@ class OpenClawManager:
                         self._log(f"Set {key} failed: rc={result.returncode}")
                         if result.stderr:
                             self._log(f"  stderr: {result.stderr[:200]}")
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"Set {key} error: {e}")
                     continue
 
@@ -421,7 +423,7 @@ class OpenClawManager:
                     else:
                         self._log("onboard failed and no config exists")
                         onboard_ok = False
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 self._log(f"onboard error: {e}")
                 onboard_ok = False
 
@@ -432,7 +434,7 @@ class OpenClawManager:
 
             return True
 
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
             self._log(f"Setup config error: {e}")
             return False
 
@@ -521,7 +523,7 @@ class OpenClawManager:
                     if result.returncode == 0 and "running" in result.stdout.lower():
                         self._log("Gateway already running")
                         return True
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"Check status error: {e}")
                 time.sleep(0.5)
 
@@ -584,7 +586,7 @@ class OpenClawManager:
                 try:
                     self._kill_process_tree(self.process)
                     self._log("已终止旧的 Gateway 进程")
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
                     pass
                 self.process = None
 
@@ -630,7 +632,7 @@ class OpenClawManager:
                             return True
                         else:
                             self._log(f"Status output: {result.stdout[:200]}")
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"Status check error: {e}")
 
                 # 检查端口是否已开放（兜底判断）
@@ -645,7 +647,8 @@ class OpenClawManager:
             self._log("Gateway start timeout")
             return False
 
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
+            # 顶层容错：捕获网关启动过程中所有已知运行时异常，防止 UI 崩溃
             self._log(f"Start gateway error: {type(e).__name__}: {e}")
             import traceback
             self._log(f"Traceback: {traceback.format_exc()}")
@@ -775,7 +778,7 @@ class OpenClawManager:
                                             capture_output=True,
                                         )
                                         self._log(f"Killed process PID: {pid}")
-                                    except Exception as e:
+                                    except (OSError, subprocess.SubprocessError) as e:
                                         self._log(f"Kill process error: {e}")
             else:
                 result = subprocess.run(
@@ -793,9 +796,9 @@ class OpenClawManager:
                                     capture_output=True,
                                 )
                                 self._log(f"Killed process PID: {pid}")
-                            except Exception as e:
+                            except (OSError, subprocess.SubprocessError) as e:
                                 self._log(f"Kill process error: {e}")
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
             self._log(f"Release port error: {e}")
 
     def _is_port_open(self, port: int) -> bool:
@@ -812,7 +815,7 @@ class OpenClawManager:
         try:
             sock.settimeout(2)
             return sock.connect_ex(("localhost", port)) == 0
-        except Exception:
+        except (OSError, socket.error):
             return False
         finally:
             sock.close()
@@ -854,7 +857,7 @@ class OpenClawManager:
                 else:
                     self._log(f"dashboard return code: {result.returncode}")
 
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError, re.error) as e:
                 self._log(f"Get URL error: {type(e).__name__}: {e}")
 
             # 最后一次不再等待
@@ -884,7 +887,7 @@ class OpenClawManager:
             webbrowser.open(url, new=2)
             self._log("webbrowser.open success")
             return True
-        except Exception as e:
+        except (OSError, webbrowser.Error) as e:
             self._log(f"webbrowser.open failed: {e}")
 
         if is_windows():
@@ -898,7 +901,7 @@ class OpenClawManager:
                 if result.returncode == 0:
                     self._log("start command success")
                     return True
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 self._log(f"start command failed: {e}")
 
         try:
@@ -910,7 +913,7 @@ class OpenClawManager:
                 os.system(f'xdg-open "{url}"')
             self._log("os.system executed")
             return True
-        except Exception as e:
+        except OSError as e:
             self._log(f"os.system failed: {e}")
 
         return False
@@ -939,11 +942,11 @@ class OpenClawManager:
             # 同时尝试命令行 stop 并释放端口 18789（兜底）
             try:
                 self._run_openclaw_command(["gateway", "stop"])
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 self._log(f"gateway stop command error: {e}")
 
             self._kill_port_process(18789)
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self._log(f"Stop gateway error: {e}")
 
     def read_existing_provider_config(self) -> dict:
@@ -1121,7 +1124,7 @@ class OpenClawManager:
                                 safe_stderr = safe_stderr.replace(sensitive, "***")
                         self._log(f"    stderr: {safe_stderr}")
                     all_ok = False
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 self._log(f"  Set env.{env_var} error: {e}")
                 all_ok = False
 
@@ -1131,7 +1134,7 @@ class OpenClawManager:
                     result = self._run_openclaw_command(["config", "set", f"env.{fallback_env_var}", api_key])
                     if result.returncode == 0:
                         self._log(f"  Set env.{fallback_env_var} OK")
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"  Set env.{fallback_env_var} error: {e}")
 
             # 3. 如有 auth_choice，执行 onboard（设置 provider baseUrl 等元信息）
@@ -1160,14 +1163,14 @@ class OpenClawManager:
                                 providers = cfg.get("models", {}).get("providers", {})
                                 if vendor_id in providers:
                                     provider_exists = True
-                        except Exception:
+                        except (OSError, json.JSONDecodeError, ValueError):
                             pass
                         if provider_exists:
                             self._log(f"  onboard returned non-zero but provider {vendor_id} exists, treating as OK")
                         else:
                             self._log(f"  onboard FAILED, provider config may be incomplete")
                             all_ok = False
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"  onboard error: {e}")
                     all_ok = False
 
@@ -1177,7 +1180,7 @@ class OpenClawManager:
             try:
                 self._set_model_config(global_default_model, fallback_models)
                 self._log("  Set model config OK")
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError) as e:
                 self._log(f"  Set model config error: {e}")
                 all_ok = False
 
@@ -1187,7 +1190,7 @@ class OpenClawManager:
             if selected_models:
                 try:
                     self._update_provider_models(config_key, cfg)
-                except Exception as e:
+                except (OSError, ValueError, RuntimeError) as e:
                     self._log(f"  Update provider models {config_key} error: {e}")
                     all_ok = False
 
@@ -1198,7 +1201,7 @@ class OpenClawManager:
             if not auth_choice and base_url:
                 try:
                     self._configure_custom_provider(config_key, cfg)
-                except Exception as e:
+                except (OSError, ValueError, RuntimeError) as e:
                     self._log(f"  Configure custom provider {config_key} error: {e}")
                     all_ok = False
 
@@ -1458,7 +1461,7 @@ class OpenClawManager:
             self._stop_gateway()
             if on_log:
                 on_log("已停止 OpenClaw Gateway")
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             if on_log:
                 on_log(f"停止 Gateway 失败（可能未运行）: {e}")
 
@@ -1473,7 +1476,7 @@ class OpenClawManager:
                     shutil.rmtree(d, onerror=utils.remove_readonly)
                     if on_log:
                         on_log(f"已删除: {d}")
-                except Exception as e:
+                except (OSError, shutil.Error) as e:
                     if on_log:
                         on_log(f"删除 {d} 失败: {e}")
                     all_ok = False
@@ -1490,7 +1493,7 @@ class OpenClawManager:
                         on_log(f"已卸载 npm 包: {pkg}")
                 elif on_log:
                     on_log(f"npm 包 {pkg} 可能未全局安装，跳过")
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 if on_log:
                     on_log(f"卸载 {pkg} 出错: {e}")
 
@@ -1509,7 +1512,7 @@ class OpenClawManager:
                     os.remove(wpath)
                     if on_log:
                         on_log(f"已删除命令: {wpath}")
-                except Exception as e:
+                except OSError as e:
                     if on_log:
                         on_log(f"删除 {wpath} 失败: {e}")
 

@@ -143,7 +143,7 @@ def _check_disk_space() -> DiskSpaceResult:
                 path=display_path,
             )
             
-    except Exception as e:
+    except (OSError, ValueError, TypeError) as e:
         return DiskSpaceResult(
             status=CheckStatus.FAILED,
             available_gb=0,
@@ -184,7 +184,7 @@ def _check_permission() -> PermissionResult:
             message=f"文件系统错误: {str(e)}",
             error_detail=error_msg
         )
-    except Exception as e:
+    except (ValueError, TypeError, RuntimeError) as e:
         error_msg = f"权限检测异常: {type(e).__name__}: {str(e)}"
         return PermissionResult(
             status=CheckStatus.WARNING,
@@ -208,7 +208,7 @@ def _ensure_local_bin_in_rc():
                     continue
                 with open(rc_path, "a", encoding="utf-8") as f:
                     f.write(f"\n# Added by OpenClaw Installer\n{path_export}\n")
-            except Exception:
+            except (OSError, ValueError):
                 pass
 
 
@@ -268,7 +268,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
                 exe_path = result.stdout.strip()
                 install_path = os.path.dirname(exe_path)
                 cmd_found = True
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         errors.append(f"检测命令异常: {type(e).__name__}: {str(e)}")
 
     if cmd_found:
@@ -288,7 +288,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
                     install_path=install_path,
                     message=f"已安装: {install_path}",
                 )
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             errors.append(f"验证命令异常: {type(e).__name__}: {str(e)}")
 
         if not errors:
@@ -420,7 +420,7 @@ def _check_browser() -> BrowserResult:
             for exe, name in path_candidates.items():
                 if shutil.which(exe) and name not in found:
                     found.append(name)
-        except Exception:
+        except (OSError, ValueError):
             pass
     else:
         # Linux

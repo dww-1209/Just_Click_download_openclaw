@@ -114,7 +114,7 @@ class UninstallerWindow:
                 try:
                     self.manager._stop_gateway()
                     self.log_line.emit("✓ 已停止 OpenClaw Gateway")
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     self.log_line.emit(f"⚠ 停止 Gateway 失败（可能未运行）: {e}")
 
                 if self._cancelled:
@@ -127,7 +127,7 @@ class UninstallerWindow:
                     try:
                         shutil.rmtree(src_dir, onerror=utils.remove_readonly)
                         self.log_line.emit(f"✓ 已删除: {src_dir}")
-                    except Exception as e:
+                    except (OSError, shutil.Error) as e:
                         self.log_line.emit(f"✗ 删除 {src_dir} 失败: {e}")
                         failed_items.append("程序文件")
                 else:
@@ -143,7 +143,7 @@ class UninstallerWindow:
                     try:
                         shutil.rmtree(cfg_dir, onerror=utils.remove_readonly)
                         self.log_line.emit(f"✓ 已删除: {cfg_dir}")
-                    except Exception as e:
+                    except (OSError, shutil.Error) as e:
                         self.log_line.emit(f"✗ 删除 {cfg_dir} 失败: {e}")
                         failed_items.append("配置文件")
                 else:
@@ -164,7 +164,7 @@ class UninstallerWindow:
                             self.log_line.emit(f"✓ 已卸载 npm 包: {pkg}")
                         else:
                             self.log_line.emit(f"ℹ npm 包 {pkg} 未安装或已卸载")
-                    except Exception as e:
+                    except (OSError, subprocess.SubprocessError) as e:
                         self.log_line.emit(f"⚠ 卸载 {pkg} 出错: {e}")
 
                 if self._cancelled:
@@ -185,7 +185,7 @@ class UninstallerWindow:
                         try:
                             os.remove(wpath)
                             self.log_line.emit(f"✓ 已删除命令: {wpath}")
-                        except Exception as e:
+                        except OSError as e:
                             self.log_line.emit(f"✗ 删除 {wpath} 失败: {e}")
                             failed_items.append("命令行工具")
 

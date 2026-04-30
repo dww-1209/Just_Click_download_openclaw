@@ -6,7 +6,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 
 @dataclass
@@ -50,7 +50,7 @@ class KeyTypeInfo:
     base_url: Optional[str] = None      # 特殊 baseUrl（可选，大多数不需要）
     auth_choice: Optional[str] = None   # onboard auth choice
     model_prefix: str = ""      # model ref 前缀提示
-    models: List[ModelInfo] = field(default_factory=list)
+    models: list[ModelInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -67,14 +67,14 @@ class VendorInfo:
     id: str                   # 内部标识
     name: str                 # 显示名称
     icon: str = ""
-    key_types: List[KeyTypeInfo] = field(default_factory=list)
+    key_types: list[KeyTypeInfo] = field(default_factory=list)
 
 
 # ============================================================
 # 供应商配置注册表（来自 openclaw-cn 源码支持的供应商列表）
 # ============================================================
 
-VENDOR_REGISTRY: List[VendorInfo] = [
+VENDOR_REGISTRY: list[VendorInfo] = [
     VendorInfo(
         id="kimi",
         name="Kimi (Moonshot)",

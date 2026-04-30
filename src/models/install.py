@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Any
 
 
 class InstallStatus(Enum):
@@ -132,7 +132,7 @@ class InstallResult:
     status: InstallStatus
     message: str = ""
     error_message: str = ""
-    log_lines: List[str] = field(default_factory=list)
+    log_lines: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
     error_detail: Optional[InstallErrorDetail] = None
 

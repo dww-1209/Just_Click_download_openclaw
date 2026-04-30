@@ -31,12 +31,12 @@ class ConfigStepWidget(QFrame):
     两个阶段的流转情况。
     """
 
-    def __init__(self, step_name: str, parent=None):
+    def __init__(self, step_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.step_name = step_name
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
 
@@ -50,22 +50,22 @@ class ConfigStepWidget(QFrame):
         layout.addWidget(self.name_label)
         layout.addStretch(1)
 
-    def set_pending(self):
+    def set_pending(self) -> None:
         """步骤未开始：灰色空心圆圈"""
         self.icon_label.setText("○")
         self.icon_label.setStyleSheet("font-size: 16px; color: #999;")
 
-    def set_running(self):
+    def set_running(self) -> None:
         """步骤进行中：橙色省略号，表示正在处理"""
         self.icon_label.setText("...")
         self.icon_label.setStyleSheet("font-size: 16px; color: orange;")
 
-    def set_completed(self):
+    def set_completed(self) -> None:
         """步骤完成：绿色对勾"""
         self.icon_label.setText("✓")
         self.icon_label.setStyleSheet("font-size: 16px; color: green;")
 
-    def set_failed(self):
+    def set_failed(self) -> None:
         """步骤失败：红色叉号"""
         self.icon_label.setText("✗")
         self.icon_label.setStyleSheet("font-size: 16px; color: red;")
@@ -85,11 +85,11 @@ class US05ConfigPage(QWidget):
     back_clicked = Signal()          # 用户点击「返回」，回到安装进度页
     manual_config_clicked = Signal() # 用户点击「手动配置」，打开配置文件目录供手动编辑
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         from PySide6.QtWidgets import QScrollArea
 
         # 主布局：上部为可滚动内容区，下部为固定按钮栏。
@@ -270,7 +270,7 @@ class US05ConfigPage(QWidget):
         button_layout.setContentsMargins(40, 10, 40, 0)
         main_layout.addLayout(button_layout)
 
-    def _toggle_log(self):
+    def _toggle_log(self) -> None:
         """切换日志显示"""
         if self.log_frame.isVisible():
             self.log_frame.hide()
@@ -279,14 +279,14 @@ class US05ConfigPage(QWidget):
             self.log_frame.show()
             self.toggle_log_btn.setText("隐藏详细日志")
 
-    def add_log_line(self, line: str):
+    def add_log_line(self, line: str) -> None:
         """添加日志行"""
         self.log_text.append(line)
         # 滚动到底部
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def start_configuring(self):
+    def start_configuring(self) -> None:
         """开始配置 - 重置状态"""
         self.status_label.setText("正在为您自动配置 OpenClaw，请稍候...")
         self.status_label.setStyleSheet("")
@@ -310,7 +310,7 @@ class US05ConfigPage(QWidget):
         self.retry_button.hide()
         self.next_button.hide()
 
-    def update_progress(self, progress: ConfigProgress):
+    def update_progress(self, progress: ConfigProgress) -> None:
         """更新进度"""
         self.progress_bar.setValue(progress.progress_percent)
 
@@ -325,7 +325,7 @@ class US05ConfigPage(QWidget):
         elif progress.stage == ConfigStatus.FAILED:
             self.step_config.set_failed()
 
-    def config_success(self, result: ConfigResult):
+    def config_success(self, result: ConfigResult) -> None:
         """配置成功"""
         self.status_label.setText("✓ 配置完成")
         self.status_label.setStyleSheet("color: green; font-weight: bold;")
@@ -345,7 +345,7 @@ class US05ConfigPage(QWidget):
         self.retry_button.hide()
         self.next_button.show()
 
-    def config_failed(self, result: ConfigResult):
+    def config_failed(self, result: ConfigResult) -> None:
         """配置失败"""
         self.status_label.setText("✗ 配置失败")
         self.status_label.setStyleSheet("color: red; font-weight: bold;")
@@ -356,13 +356,13 @@ class US05ConfigPage(QWidget):
         # 显示友好的错误信息
         error_text = result.error_message or "配置过程中发生错误"
         self.error_label.setText(error_text)
-        
+
         # 显示详细日志
         if result.log_lines:
             detail = "\n".join(result.log_lines[-20:])  # 显示最后20行
             self.error_detail_label.setText(detail)
             self.error_detail_label.show()
-        
+
         self.error_frame.show()
         self.success_frame.hide()
 
@@ -372,7 +372,7 @@ class US05ConfigPage(QWidget):
         self.retry_button.show()
         self.next_button.hide()
 
-    def reset(self):
+    def reset(self) -> None:
         """重置页面"""
         self.step_install.set_pending()
         self.step_config.set_pending()

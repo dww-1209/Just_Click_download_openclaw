@@ -1,3 +1,5 @@
+from typing import Any
+
 from PySide6.QtCore import QThread, Signal
 
 from src.core.openclaw_manager import OpenClawManager
@@ -15,7 +17,7 @@ class ConfigWorker(QThread):
     log_line = Signal(str)             # 单行日志输出
     complete = Signal(object)          # 配置完成（携带 ConfigResult 对象）
 
-    def __init__(self, manager: OpenClawManager):
+    def __init__(self, manager: OpenClawManager) -> None:
         """初始化配置工作线程。
 
         Args:
@@ -24,7 +26,7 @@ class ConfigWorker(QThread):
         super().__init__()
         self.manager = manager
 
-    def run(self):
+    def run(self) -> None:
         """线程入口。调用 OpenClawManager.configure_only 执行配置，并发射结果。"""
         result = self.manager.configure_only(
             on_progress=self.progress_updated.emit,
@@ -45,7 +47,7 @@ class StartupWorker(QThread):
     log_line = Signal(str)             # 单行日志输出
     complete = Signal(object)          # 启动完成（携带 ConfigResult 对象）
 
-    def __init__(self, manager: OpenClawManager, quick_start: bool = False):
+    def __init__(self, manager: OpenClawManager, quick_start: bool = False) -> None:
         """初始化启动工作线程。
 
         Args:
@@ -56,7 +58,7 @@ class StartupWorker(QThread):
         self.manager = manager
         self.quick_start = quick_start
 
-    def run(self):
+    def run(self) -> None:
         """线程入口。调用 OpenClawManager.startup_only 执行启动，并发射结果。"""
         result = self.manager.startup_only(
             on_progress=self.progress_updated.emit,
@@ -80,10 +82,10 @@ class ProviderConfigWorker(QThread):
     def __init__(
         self,
         manager: OpenClawManager,
-        providers_config: dict,
+        providers_config: dict[str, Any],
         global_default_model: str,
-        fallback_models: list,
-    ):
+        fallback_models: list[str],
+    ) -> None:
         """初始化 Provider 配置工作线程。
 
         Args:
@@ -98,7 +100,7 @@ class ProviderConfigWorker(QThread):
         self.global_default_model = global_default_model
         self.fallback_models = fallback_models
 
-    def run(self):
+    def run(self) -> None:
         """线程入口。调用 OpenClawManager.configure_providers 写入配置，并发射布尔结果。"""
         ok = self.manager.configure_providers(
             self.providers_config,

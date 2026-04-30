@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List
+from typing import Optional
 
 
 class CheckStatus(Enum):
@@ -104,7 +104,7 @@ class BrowserResult:
     """
 
     status: CheckStatus
-    found_browsers: List[str]
+    found_browsers: list[str]
     message: str = ""
 
 
