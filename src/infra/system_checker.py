@@ -28,7 +28,7 @@ from src.models.env_check import (
     BrowserResult,
     EnvCheckResult,
 )
-from src.models.constants import is_windows, is_macos, is_linux
+from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_SHORT_CMD
 
 
 # 最小磁盘空间要求（GB）
