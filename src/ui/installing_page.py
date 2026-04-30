@@ -251,7 +251,7 @@ class InstallingPage(QWidget):
         2. 如果没有 error_detail，回退到旧的关键词匹配逻辑
         3. 在日志区域追加完整的原始错误信息，方便高级用户排查
         """
-        from models.user_messages import UserMessageHelper
+        from src.models.user_messages import UserMessageHelper
 
         self.status_label.setText("[X] 安装失败")
         self.status_label.setStyleSheet("color: red;")

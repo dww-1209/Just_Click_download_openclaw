@@ -505,7 +505,7 @@ class InstallerWindow:
 
     def _on_install_complete(self, result):
         """安装完成回调：成功则显示下一步按钮，失败则显示重试按钮"""
-        from models.install import InstallStatus
+        from src.models.install import InstallStatus
         if result.status == InstallStatus.SUCCESS:
             self.installing_page.install_success(result)
         else:
@@ -513,7 +513,7 @@ class InstallerWindow:
 
     def _on_install_failed(self, error):
         """安装服务异常回调（非安装流程内部失败）：包装为 InstallResult 后显示"""
-        from models.install import InstallResult, InstallStatus
+        from src.models.install import InstallResult, InstallStatus
 
         result = InstallResult(
             status=InstallStatus.FAILED, error_message=error, message="Install error"
@@ -564,7 +564,7 @@ class InstallerWindow:
 
     def _on_config_complete(self, result):
         """配置完成回调：成功则进入 Provider 配置，失败则显示重试"""
-        from models.config import ConfigStatus
+        from src.models.config import ConfigStatus
         if result.status == ConfigStatus.COMPLETED:
             self.config_page.config_success(result)
         else:
@@ -664,7 +664,7 @@ class InstallerWindow:
 
     def _on_startup_complete(self, result):
         """启动完成回调：成功则显示 WebChat 地址和打开浏览器按钮，失败则显示重试"""
-        from models.config import ConfigStatus
+        from src.models.config import ConfigStatus
         if result.status == ConfigStatus.COMPLETED:
             self.startup_page.startup_success(result)
         else:
