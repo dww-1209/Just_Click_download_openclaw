@@ -1,3 +1,10 @@
+"""
+OpenClaw 安装器主入口
+
+提供 6 步安装流程：欢迎 → 环境检测 → 安装 → 配置 → 模型 → 启动
+通过 QStackedWidget 管理页面切换，所有耗时操作均在 QThread 中执行。
+"""
+
 import sys
 from pathlib import Path
 
@@ -21,7 +28,11 @@ from src.core.openclaw_manager import OpenClawManager
 
 
 class StepIndicator(QWidget):
-    """全局步骤指示器 — 显示在窗口顶部，所有页面共享"""
+    """全局步骤指示器 — 显示在窗口顶部，所有页面共享
+
+    用 QLabel 展示 6 个步骤名称，通过 set_current_step() 高亮当前步骤，
+    已完成步骤显示绿色勾，未完成步骤置灰。
+    """
 
     def __init__(self, steps, parent=None):
         super().__init__(parent)
@@ -74,6 +85,12 @@ class StepIndicator(QWidget):
 
 
 class InstallerWindow:
+    """安装器主窗口控制器
+
+    管理 6 个页面的生命周期、信号连接和状态流转。
+    所有耗时操作都委托给 Service/Worker，自身不阻塞主线程。
+    """
+
     def __init__(self):
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("OpenClaw Installer")
@@ -244,10 +261,14 @@ class InstallerWindow:
         """
 
     def _setup_window(self):
+        """初始化主窗口 UI
+
+        布局从上到下：步骤指示器 → 分割线 → QStackedWidget（6 个页面）
+        窗口默认 800x700，最小 700x600，高度自适应不超过屏幕 85%。
+        """
         from PySide6.QtCore import QSize
         from PySide6.QtWidgets import QVBoxLayout, QFrame
 
-        # 主窗口容器（步骤指示器 + stacked_widget）
         self.main_window = QWidget()
         self.main_window.setWindowTitle("OpenClaw One-Click Installer")
         main_layout = QVBoxLayout(self.main_window)
@@ -267,7 +288,7 @@ class InstallerWindow:
         separator.setFixedHeight(1)
         main_layout.addWidget(separator)
 
-        # Stacked widget
+        # Stacked widget 管理 6 个页面，通过 setCurrentIndex 切换
         self.stacked_widget = QStackedWidget()
 
         self.welcome_page = WelcomePage()
@@ -287,6 +308,7 @@ class InstallerWindow:
         self.stacked_widget.currentChanged.connect(self._on_page_changed)
         main_layout.addWidget(self.stacked_widget, 1)
 
+        # 根据主屏幕高度自适应窗口尺寸
         screen = QApplication.primaryScreen().geometry()
         window_width = 800
         window_height = min(700, int(screen.height() * 0.85))
@@ -296,6 +318,12 @@ class InstallerWindow:
         self._connect_signals()
 
     def _connect_signals(self):
+        """连接所有页面和服务的信号与槽
+
+        按用户故事分组：US-01 欢迎页、US-02 环境检测、US-04 安装、
+        US-05 配置、Provider 配置、US-06 启动。保持信号连接集中管理，
+        便于排查页面跳转问题。
+        """
         # US-01 Welcome page
         self.welcome_page.next_clicked.connect(self._on_welcome_next)
         self.welcome_page.exit_clicked.connect(self._on_exit)
@@ -310,6 +338,7 @@ class InstallerWindow:
         self.env_check_page.openclaw_manual_config.connect(self._on_openclaw_manual_config)
         self.env_check_page.openclaw_reinstall.connect(self._on_openclaw_reinstall)
 
+        # 环境检测服务信号：结果反馈到 env_check_page
         self.env_check_service.check_complete.connect(self._on_env_check_complete)
         self.env_check_service.check_failed.connect(self._on_env_check_failed)
 
@@ -319,6 +348,7 @@ class InstallerWindow:
         self.installing_page.cancel_clicked.connect(self._on_install_cancel)
         self.installing_page.next_clicked.connect(self._on_install_next)
 
+        # 安装服务信号：进度、日志、完成/失败
         self.install_service.progress_updated.connect(self._on_install_progress)
         self.install_service.log_updated.connect(self._on_install_log)
         self.install_service.install_complete.connect(self._on_install_complete)
@@ -343,19 +373,26 @@ class InstallerWindow:
 
     # ========== US-01 Welcome Page ==========
     def _on_welcome_next(self):
+        """欢迎页点击'下一步'：进入环境检测阶段"""
         self.current_stage = "env_check"
         self.stacked_widget.setCurrentIndex(1)
         self._start_env_check()
 
     # ========== US-02 Environment Check ==========
     def _start_env_check(self):
+        """启动环境检测后台线程，同时更新 UI 为检测中状态"""
         self.env_check_page.start_checking()
         self.env_check_service.start_check()
 
     def _on_env_check_complete(self, result):
+        """环境检测完成回调：将检测结果分发到各检测项 UI
+
+        Args:
+            result: EnvCheckResult，包含 OS、磁盘、权限、浏览器、OpenClaw 状态
+        """
         self.env_check_page.update_os_result(result.os_type)
         self.env_check_page.update_disk_result(
-            result.disk_space.status, 
+            result.disk_space.status,
             result.disk_space.message,
             result.disk_space.path
         )
@@ -369,36 +406,40 @@ class InstallerWindow:
         self.env_check_page.check_complete(result.is_ready, result.message)
 
     def _on_env_check_failed(self, error):
+        """环境检测异常回调：显示错误并提供重试"""
         self.env_check_page.status_label.setText(f"Check failed: {error}")
         self.env_check_page.retry_button.show()
 
     def _on_env_check_retry(self):
+        """环境检测页点击'重试'：重新执行检测"""
         self._start_env_check()
 
     def _on_env_check_back(self):
+        """环境检测页点击'返回'：回到欢迎页"""
         self.current_stage = "welcome"
         self.stacked_widget.setCurrentIndex(0)
 
     def _on_env_check_next(self):
+        """环境检测页点击'下一步'：进入安装阶段"""
         self.current_stage = "installing"
         self.stacked_widget.setCurrentIndex(2)
         self._start_install()
 
     # ========== OpenClaw Already Installed ==========
     def _on_openclaw_quick_start(self):
-        # Quick start - skip config, go directly to startup
+        """已安装分支 — 快速启动：跳过配置，直接进入启动页"""
         self.current_stage = "startup"
         self.stacked_widget.setCurrentIndex(5)
         self._start_startup(quick_start=True)
 
     def _on_openclaw_config_and_start(self):
-        # Config and start - go to US-05 config page
+        """已安装分支 — 重新配置并启动：进入默认配置页"""
         self.current_stage = "configuring"
         self.stacked_widget.setCurrentIndex(3)
         self._start_config()
 
     def _on_openclaw_provider_config(self):
-        # Directly go to provider config page
+        """已安装分支 — 配置模型：直接进入 Provider 配置页并加载已有配置"""
         self.current_stage = "provider_config"
         self.stacked_widget.setCurrentIndex(4)
         self.provider_config_page.reset()
@@ -406,16 +447,22 @@ class InstallerWindow:
         self.provider_config_page.load_config(existing)
 
     def _on_openclaw_manual_config(self):
+        """已安装分支 — 手动配置：打开系统终端执行 openclaw config"""
         self._open_manual_config_terminal()
         self.env_check_page.status_label.setText("请完成手动配置后，点击'重新配置并启动'")
 
     def _on_openclaw_reinstall(self):
+        """已安装分支 — 重新下载：清理旧安装后重新执行完整安装流程
+
+        清理内容包括：停止 Gateway、删除源码和配置目录、卸载全局 npm 包。
+        完成后自动跳转到 US-04 安装阶段。
+        """
         try:
             import subprocess
             import shutil
             import os
-            cmd = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
-            subprocess.run(f"{cmd} gateway stop", shell=True, capture_output=True)
+            cmd_name = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
+            subprocess.run([cmd_name, "gateway", "stop"], shell=False, capture_output=True)
             # 清理本地构建目录
             for d in [os.path.expanduser("~/openclaw-cn"), os.path.expanduser("~/.openclaw")]:
                 if os.path.exists(d):
@@ -427,15 +474,16 @@ class InstallerWindow:
                         shutil.rmtree(d, onerror=_remove_readonly)
                     except Exception:
                         pass
-            # 清理全局 npm 包（兼容旧版）
+            # 清理全局 npm 包（兼容旧版直接 npm install -g 的情况）
             for pkg in ["openclaw-cn", "openclaw"]:
-                subprocess.run(f"npm uninstall -g {pkg}", shell=True, capture_output=True)
+                subprocess.run(["npm", "uninstall", "-g", pkg], shell=False, capture_output=True)
         except Exception:
             pass
         self._on_env_check_next()
 
     # ========== US-04 Install ==========
     def _start_install(self):
+        """启动安装后台线程，传入当前操作系统类型"""
         self.installing_page.reset()
         self.installing_page.start_installing()
 
@@ -447,12 +495,15 @@ class InstallerWindow:
         self.install_service.start_install(os_type)
 
     def _on_install_progress(self, progress):
+        """安装进度回调：更新进度条和状态文本"""
         self.installing_page.update_progress(progress)
 
     def _on_install_log(self, log_line):
+        """安装日志回调：追加到日志区域并自动滚动到底部"""
         self.installing_page.add_log_line(log_line)
 
     def _on_install_complete(self, result):
+        """安装完成回调：成功则显示下一步按钮，失败则显示重试按钮"""
         from models.install import InstallStatus
         if result.status == InstallStatus.SUCCESS:
             self.installing_page.install_success(result)
@@ -460,6 +511,7 @@ class InstallerWindow:
             self.installing_page.install_failed(result)
 
     def _on_install_failed(self, error):
+        """安装服务异常回调（非安装流程内部失败）：包装为 InstallResult 后显示"""
         from models.install import InstallResult, InstallStatus
 
         result = InstallResult(
@@ -468,25 +520,32 @@ class InstallerWindow:
         self.installing_page.install_failed(result)
 
     def _on_install_back(self):
+        """安装页点击'返回'：取消当前安装，回到环境检测页"""
         self.install_service.cancel_install()
         self.current_stage = "env_check"
         self.stacked_widget.setCurrentIndex(1)
 
     def _on_install_retry(self):
+        """安装页点击'重试'：重新启动安装流程"""
         self._start_install()
 
     def _on_install_cancel(self):
+        """安装页点击'取消'：取消安装并更新 UI 为已取消状态"""
         self.install_service.cancel_install()
         self.installing_page.install_cancelled()
 
     def _on_install_next(self):
+        """安装页点击'完成'（安装成功后）：进入默认配置阶段"""
         self.current_stage = "configuring"
         self.stacked_widget.setCurrentIndex(3)
         self._start_config()
 
     # ========== US-05 Config ==========
     def _start_config(self):
-        """Start configuration only"""
+        """启动默认配置后台线程（ConfigWorker）
+
+        执行内容：验证安装 → 设置 Gateway 默认参数 → onboard 初始化。
+        """
         from services.workers import ConfigWorker
 
         self.config_page.reset()
@@ -499,9 +558,11 @@ class InstallerWindow:
         self.config_worker.start()
 
     def _on_config_progress(self, progress):
+        """配置进度回调：更新配置页进度条"""
         self.config_page.update_progress(progress)
 
     def _on_config_complete(self, result):
+        """配置完成回调：成功则进入 Provider 配置，失败则显示重试"""
         from models.config import ConfigStatus
         if result.status == ConfigStatus.COMPLETED:
             self.config_page.config_success(result)
@@ -509,10 +570,11 @@ class InstallerWindow:
             self.config_page.config_failed(result)
 
     def _on_config_retry(self):
+        """配置页点击'重试'：重新执行配置"""
         self._start_config()
 
     def _on_config_next(self):
-        # Config done, go to provider config
+        """配置页点击'下一步'：进入 Provider 模型配置页并加载已有配置"""
         self.current_stage = "provider_config"
         self.stacked_widget.setCurrentIndex(4)
         self.provider_config_page.reset()
@@ -520,34 +582,52 @@ class InstallerWindow:
         self.provider_config_page.load_config(existing)
 
     def _on_config_back(self):
+        """配置页点击'返回'：回到环境检测页"""
         self.current_stage = "env_check"
         self.stacked_widget.setCurrentIndex(1)
 
     def _on_config_manual(self):
+        """配置页点击'手动配置'：打开系统终端"""
         self._open_manual_config_terminal()
 
     def _open_manual_config_terminal(self):
-        """跨平台打开终端并执行 openclaw config"""
+        """跨平台打开终端并执行 openclaw config
+
+        Windows: cmd /k
+        macOS: AppleScript 唤起 Terminal
+        Linux: 依次尝试 gnome-terminal、xterm、konsole
+        """
         import subprocess
         import platform
         import shutil
 
         os_type = platform.system().lower()
-        cmd = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
+        cmd_name = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
         try:
             if os_type == "windows" or sys.platform == "win32":
-                subprocess.Popen(f"start cmd /k {cmd} config", shell=True)
+                # 使用完整路径 + CREATE_NEW_CONSOLE 打开新窗口，避免 shell 字符串拼接
+                cmd_path = shutil.which(cmd_name)
+                if cmd_path:
+                    subprocess.Popen(
+                        [cmd_path, "config"],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    )
+                else:
+                    print(f"找不到 {cmd_name} 命令")
             elif os_type == "darwin":
                 # macOS: use AppleScript to open Terminal
-                script = f'tell application "Terminal" to do script "{cmd} config"'
+                escaped = cmd_name.replace('"', '\\"')
+                script = f'tell application "Terminal" to do script "{escaped} config"'
                 subprocess.Popen(["osascript", "-e", script])
             else:
-                # Linux: try common terminals
+                # Linux: try common terminals（使用 shlex.quote 防止命令注入）
+                import shlex
+                cmd_quoted = shlex.quote(cmd_name)
                 opened = False
                 terminals = [
-                    ["gnome-terminal", "--", "bash", "-c", f"{cmd} config; exec bash"],
-                    ["xterm", "-e", f"bash -c '{cmd} config; exec bash'"],
-                    ["konsole", "-e", "bash", "-c", f"{cmd} config; exec bash"],
+                    ["gnome-terminal", "--", "bash", "-c", f"{cmd_quoted} config; exec bash"],
+                    ["xterm", "-e", "bash", "-c", f"{cmd_quoted} config; exec bash"],
+                    ["konsole", "-e", "bash", "-c", f"{cmd_quoted} config; exec bash"],
                 ]
                 for term_cmd in terminals:
                     if shutil.which(term_cmd[0]):
@@ -555,13 +635,17 @@ class InstallerWindow:
                         opened = True
                         break
                 if not opened:
-                    print(f"未找到可用的终端模拟器，请手动运行: {cmd} config")
+                    print(f"未找到可用的终端模拟器，请手动运行: {cmd_name} config")
         except Exception as e:
             print(f"打开终端失败: {e}")
 
     # ========== US-06 Startup ==========
     def _start_startup(self, quick_start=False):
-        """Start gateway and open browser"""
+        """启动 Gateway 后台线程（StartupWorker）
+
+        Args:
+            quick_start: 若为 True，表示从已安装分支快速启动，跳过配置检查。
+        """
         from services.workers import StartupWorker
 
         self.startup_page.reset()
@@ -574,9 +658,11 @@ class InstallerWindow:
         self.startup_worker.start()
 
     def _on_startup_progress(self, progress):
+        """启动进度回调：更新启动页进度条"""
         self.startup_page.update_progress(progress)
 
     def _on_startup_complete(self, result):
+        """启动完成回调：成功则显示 WebChat 地址和打开浏览器按钮，失败则显示重试"""
         from models.config import ConfigStatus
         if result.status == ConfigStatus.COMPLETED:
             self.startup_page.startup_success(result)
@@ -584,24 +670,32 @@ class InstallerWindow:
             self.startup_page.startup_failed(result)
 
     def _on_startup_retry(self):
+        """启动页点击'重试'：以 quick_start 模式重新启动 Gateway"""
         self._start_startup(quick_start=True)
 
     def _on_startup_back(self):
+        """启动页点击'返回'：回到环境检测页"""
         self.current_stage = "env_check"
         self.stacked_widget.setCurrentIndex(1)
 
     # ========== Provider Config ==========
     def _on_provider_config_back(self):
+        """Provider 配置页点击'返回'：回到环境检测页"""
         self.current_stage = "env_check"
         self.stacked_widget.setCurrentIndex(1)
 
     def _on_provider_config_skip(self):
+        """Provider 配置页点击'跳过'：跳过模型配置，直接启动（使用 onboard 默认）"""
         self.current_stage = "startup"
         self.stacked_widget.setCurrentIndex(5)
         self._start_startup(quick_start=False)
 
     def _on_provider_config_save(self, payload: dict):
-        """保存 Provider 配置并启动"""
+        """Provider 配置页点击'保存并启动'：保存配置后启动 Gateway
+
+        Args:
+            payload: 包含 providers、global_default_model、fallback_models
+        """
         from services.workers import ProviderConfigWorker
 
         self.provider_config_page.show_saving()
@@ -615,6 +709,11 @@ class InstallerWindow:
         self._provider_config_worker.start()
 
     def _on_provider_config_complete(self, ok: bool):
+        """Provider 配置保存完成回调
+
+        Args:
+            ok: True 表示全部配置写入成功，进入启动页；False 则提示用户重试。
+        """
         self.provider_config_page.hide_saving()
         if ok:
             self.current_stage = "startup"
@@ -624,39 +723,48 @@ class InstallerWindow:
             self.provider_config_page.show_error("配置保存失败，请检查 API Key 和网络连接后重试。")
 
     def _on_open_webchat(self):
-        """User clicked 'Open WebChat' button"""
+        """启动页点击'打开 WebChat'：尝试用多种方式打开系统浏览器
+
+        优先使用 Python webbrowser 模块，Windows 失败时 fallback 到 os.system start。
+        """
         import webbrowser
         import os
         import platform
-        
+
         url = self.startup_page.url_input.text()
         if not url:
             self.startup_page.browser_hint.setText("地址为空，无法打开浏览器")
             return
-        
+
         opened = False
         try:
             webbrowser.open(url, new=2)
             opened = True
         except Exception as e:
             print(f"打开浏览器失败: {e}")
-        
+
         if not opened and platform.system().lower() == "windows":
             try:
                 os.system(f'start "" "{url}"')
                 opened = True
             except Exception as e:
                 print(f"系统命令打开浏览器失败: {e}")
-        
+
         if opened:
             self.startup_page.browser_hint.setText("浏览器已打开，如果未显示请检查是否被拦截")
         else:
             self.startup_page.browser_hint.setText("未能自动打开浏览器，请复制上方地址手动访问")
 
     def _on_startup_finish(self):
+        """启动页点击'完成'：退出程序"""
         self._on_exit()
 
     def _on_exit(self):
+        """统一退出处理：根据当前阶段释放对应资源
+
+        环境检测阶段停止检测服务；安装阶段取消安装；
+        配置/启动阶段停止 Gateway 服务。
+        """
         if self.current_stage == "env_check":
             self.env_check_service.stop()
         elif self.current_stage == "installing":
@@ -666,22 +774,27 @@ class InstallerWindow:
         self.main_window.close()
 
     def _on_page_changed(self, index):
+        """StackedWidget 页面切换回调：同步更新步骤指示器高亮"""
         if hasattr(self, 'step_indicator'):
             self.step_indicator.set_current_step(index)
 
     def show(self):
+        """显示主窗口"""
         self.main_window.show()
 
     def run(self):
+        """进入 Qt 事件循环"""
         return self.app.exec()
 
     def cleanup(self):
+        """程序退出前清理：停止所有后台服务和进程"""
         self.env_check_service.stop()
         self.install_service.stop()
         self.openclaw_manager.stop()
 
 
 def main():
+    """程序入口：创建安装器实例并启动事件循环"""
     installer = InstallerWindow()
     installer.show()
     try:

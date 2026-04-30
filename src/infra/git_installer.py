@@ -28,7 +28,11 @@ def _get_hidden_startupinfo():
 
 
 def is_git_installed() -> bool:
-    """检查 Git 是否已安装"""
+    """检查 Git 是否已安装
+
+    按优先级检测：系统 PATH 中的 git → 常见安装路径（Program Files）。
+    适用于 Windows 安装前预检和安装后验证。
+    """
     try:
         git_paths = [
             "git",
@@ -42,7 +46,7 @@ def is_git_installed() -> bool:
                 result = subprocess.run(
                     [git_cmd, "--version"],
                     capture_output=True,
-                    shell=True,
+                    shell=False,
                     timeout=5,
                     startupinfo=_get_hidden_startupinfo(),
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -61,6 +65,10 @@ def download_file(
     url: str, dest_path: Path, on_log: Optional[Callable[[str], None]] = None
 ) -> bool:
     """下载文件（优先 Python 原生请求，避免 PowerShell 管理员网络上下文断裂）
+
+    为什么优先 Python urllib：
+    PowerShell 在管理员上下文中可能继承不到当前进程的代理/网络配置，
+    导致下载失败。Python 原生请求继承当前进程的完整网络上下文，更可靠。
 
     失败时会通过 on_log 输出完整的诊断信息，包括：
     - 错误分类（网络超时 / DNS / SSL / HTTP 错误等）
@@ -153,8 +161,12 @@ def download_file(
 def install_git_windows(on_log: Optional[Callable[[str], None]] = None) -> bool:
     """在 Windows 上静默安装 Git
 
+    流程：从多个国内镜像依次下载 Git 安装包 → 校验文件大小 → 静默安装。
     安装失败时会输出完整的诊断链：
-    哪个镜像源失败 → 什么类型的错误 → 用户应该怎么做
+    哪个镜像源失败 → 什么类型的错误 → 用户应该怎么做。
+
+    为什么需要多个镜像：GitHub Release 在国内可能不可用，
+    使用 npmmirror / tuna / nju / aliyun 等镜像提高下载成功率。
     """
 
     def log(msg: str):

@@ -1,6 +1,7 @@
 """带完整诊断信息的子进程执行器
 
-将技术错误按类型分类，保留完整的原始输出，并生成用户友好的提示。
+职责：封装 subprocess 调用，统一处理超时、编码、平台差异，
+并将技术错误按类型分类，保留完整的原始输出，最终生成用户友好的提示。
 """
 
 import subprocess
@@ -15,7 +16,19 @@ from src.models.install import ErrorCategory, InstallErrorDetail
 
 @dataclass
 class ShellResult:
-    """子进程执行结果（带完整诊断信息）"""
+    """子进程执行结果（带完整诊断信息）
+
+    Attributes:
+        command: 执行的原始命令字符串。
+        returncode: 进程返回码，默认 -1 表示未正常结束。
+        stdout: 标准输出内容。
+        stderr: 标准错误内容。
+        elapsed_seconds: 实际执行耗时（秒）。
+        timed_out: 是否因超时终止。
+        process_not_found: 是否因找不到可执行文件而失败。
+        permission_denied: 是否因权限不足而失败。
+        error_detail: 结构化错误详情，供 UI 展示友好提示。
+    """
 
     command: str
     returncode: int = -1
@@ -29,10 +42,15 @@ class ShellResult:
 
     @property
     def success(self) -> bool:
+        """判断命令是否成功执行
+
+        成功条件：返回码为 0 且未超时、未出现进程未找到错误。
+        """
         return self.returncode == 0 and not self.timed_out and not self.process_not_found
 
     @property
     def combined_output(self) -> str:
+        """合并 stdout 和 stderr 的输出（去除首尾空白）"""
         parts = []
         if self.stdout.strip():
             parts.append(self.stdout.strip())
@@ -42,7 +60,16 @@ class ShellResult:
 
 
 def get_hidden_startupinfo():
-    """获取用于隐藏窗口的 startupinfo（Windows 专用）"""
+    """获取用于隐藏窗口的 startupinfo（Windows 专用）
+
+    在 Windows 上，子进程默认会弹出控制台窗口；通过设置 STARTUPINFO
+    的 STARTF_USESHOWWINDOW 标志并指定 SW_HIDE，可避免安装过程中
+    出现闪黑的命令行窗口，提升用户体验。
+
+    Returns:
+        subprocess.STARTUPINFO or None: Windows 返回配置好的 startupinfo，
+        其他平台返回 None。
+    """
     startupinfo = None
     if platform.system().lower() == "windows":
         startupinfo = subprocess.STARTUPINFO()
@@ -63,15 +90,27 @@ def run_shell(
 ) -> ShellResult:
     """执行 shell 命令，返回带完整诊断信息的结果
 
+    平台差异处理：
+    - Windows 自动附加 startupinfo 和 CREATE_NO_WINDOW 标志以隐藏窗口。
+    - 统一使用 utf-8 编码并设置 errors="replace"，避免非 ASCII 输出导致解码异常崩溃。
+
+    异常处理：
+    - TimeoutExpired：记录已收集的输出并分类为 PROCESS_TIMEOUT。
+    - FileNotFoundError：分类为 PROCESS_NOT_FOUND。
+    - PermissionError：分类为 PERMISSION_DENIED。
+
     Args:
-        command: 要执行的命令
-        timeout: 超时时间（秒）
-        env: 环境变量
-        cwd: 工作目录
-        shell: 是否通过 shell 执行
-        capture_output: 是否捕获输出
-        context: 错误上下文描述（如"正在下载 Node.js"）
-        stage: 当前阶段（如 DOWNLOADING, INSTALLING）
+        command: 要执行的命令字符串。
+        timeout: 超时时间（秒），默认 300 秒。
+        env: 额外的环境变量字典，会合并到当前进程环境中。
+        cwd: 子进程工作目录。
+        shell: 是否通过系统 shell 执行（默认 True，支持管道、重定向等）。
+        capture_output: 是否捕获 stdout/stderr（默认 True）。
+        context: 错误上下文描述（如"正在下载 Node.js"），用于生成用户友好提示。
+        stage: 当前阶段标识（如 DOWNLOADING, INSTALLING），用于错误分类统计。
+
+    Returns:
+        ShellResult: 包含返回码、输出、耗时及结构化错误详情的执行结果。
     """
     start_time = time.time()
     kwargs = {
@@ -90,7 +129,8 @@ def run_shell(
         kwargs["startupinfo"] = get_hidden_startupinfo()
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-    # 编码设置：使用 replace 避免解码失败导致异常
+    # 编码设置：使用 replace 避免解码失败导致异常崩溃
+    # 某些工具（如旧版 Git for Windows）可能输出 GBK 或混合编码，replace 策略可保证程序不中断
     kwargs["text"] = True
     kwargs["encoding"] = "utf-8"
     kwargs["errors"] = "replace"
@@ -106,6 +146,7 @@ def run_shell(
         result.elapsed_seconds = time.time() - start_time
 
     except subprocess.TimeoutExpired as e:
+        # 超时后仍尝试读取已产生的输出，避免信息丢失
         result.timed_out = True
         result.elapsed_seconds = time.time() - start_time
         if e.stdout:
@@ -161,7 +202,7 @@ def run_shell(
             command=command,
         )
 
-    # 如果命令执行了但返回非零，尝试分类错误
+    # 如果命令执行了但返回非零，尝试根据输出内容进一步分类错误
     if result.error_detail is None and result.returncode != 0:
         result.error_detail = classify_shell_error(result, context, stage)
 
@@ -171,11 +212,23 @@ def run_shell(
 def classify_shell_error(
     result: ShellResult, context: str = "", stage: str = ""
 ) -> Optional[InstallErrorDetail]:
-    """根据 shell 结果分类错误"""
+    """根据 shell 输出内容和返回码对错误进行分类
+
+    分类优先级：网络超时 > DNS > SSL > HTTP 错误 > 权限 > 磁盘满 > MSI 特定错误 >
+    PowerShell 策略 > 未知。
+
+    Args:
+        result: ShellResult 实例，包含 stdout、stderr 和 returncode。
+        context: 错误上下文描述。
+        stage: 当前阶段标识。
+
+    Returns:
+        InstallErrorDetail or None: 结构化错误详情；若 returncode 为 0 则返回 None。
+    """
     combined = (result.stdout + result.stderr).lower()
     returncode = result.returncode
 
-    # 网络相关错误码和特征
+    # 网络相关错误码和特征（按优先级排序）
     if any(k in combined for k in ["timeout", "timed out", "连接超时", "无法连接"]):
         return _build_error_detail(
             category=ErrorCategory.NETWORK_TIMEOUT,
@@ -221,7 +274,7 @@ def classify_shell_error(
             returncode=returncode,
         )
 
-    # 权限相关
+    # 权限相关（EACCES 为 Linux/macOS 权限不足的系统错误码）
     if any(
         k in combined
         for k in ["access denied", "permission denied", "拒绝访问", "权限不足", "eacces"]
@@ -249,7 +302,7 @@ def classify_shell_error(
             returncode=returncode,
         )
 
-    # msiexec 特定错误码
+    # msiexec 特定错误码（Windows 安装包常见错误）
     if "msiexec" in result.command.lower() or returncode in [1603, 1618, 1619, 1620, 1625, 1633]:
         if returncode == 1603:
             return _build_error_detail(
@@ -279,7 +332,7 @@ def classify_shell_error(
                 returncode=returncode,
             )
 
-    # PowerShell 特定错误
+    # PowerShell 特定错误（执行策略拦截脚本运行）
     if "powershell" in result.command.lower():
         if "execution policy" in combined:
             return _build_error_detail(
@@ -291,7 +344,7 @@ def classify_shell_error(
                 returncode=returncode,
             )
 
-    # 默认：根据 returncode 判断
+    # 默认：根据非零 returncode 归为未知错误
     if returncode != 0:
         return _build_error_detail(
             category=ErrorCategory.UNKNOWN,
@@ -313,7 +366,19 @@ def _build_error_detail(
     command: str = "",
     returncode: Optional[int] = None,
 ) -> InstallErrorDetail:
-    """构建 InstallErrorDetail，同时生成 user_message 和 suggestion"""
+    """构建 InstallErrorDetail，同时生成 user_message 和 suggestion
+
+    Args:
+        category: 错误分类枚举。
+        stage: 当前阶段标识。
+        context: 错误上下文描述。
+        raw_error: 原始错误输出（供技术人员查看）。
+        command: 触发错误的命令（可选）。
+        returncode: 进程返回码（可选）。
+
+    Returns:
+        InstallErrorDetail: 包含分类、用户友好消息、建议及原始错误的结构化对象。
+    """
     user_message = _get_user_message(category, context)
     suggestion = _get_suggestion(category)
 
@@ -330,7 +395,15 @@ def _build_error_detail(
 
 
 def _get_user_message(category: ErrorCategory, context: str) -> str:
-    """根据错误分类生成用户友好的消息"""
+    """根据错误分类生成用户友好的消息
+
+    Args:
+        category: 错误分类。
+        context: 上下文描述，若有值则追加到消息中。
+
+    Returns:
+        str: 本地化后的用户提示消息。
+    """
     messages = {
         ErrorCategory.NETWORK_TIMEOUT: "下载超时：连接服务器响应过慢",
         ErrorCategory.NETWORK_DNS: "DNS 解析失败：无法找到服务器地址",
@@ -354,7 +427,17 @@ def _get_user_message(category: ErrorCategory, context: str) -> str:
 
 
 def _get_suggestion(category: ErrorCategory) -> str:
-    """根据错误分类生成建议"""
+    """根据错误分类生成可操作建议
+
+    每条建议针对对应错误场景给出最常见的排查/解决步骤，
+    在 UI 中以弹窗或提示区形式展示给用户。
+
+    Args:
+        category: 错误分类。
+
+    Returns:
+        str: 多行建议文本。
+    """
     suggestions = {
         ErrorCategory.NETWORK_TIMEOUT: (
             "1. 检查网络连接是否稳定\n"

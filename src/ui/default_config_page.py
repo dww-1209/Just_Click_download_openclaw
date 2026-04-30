@@ -1,4 +1,8 @@
-"""US-05 配置页面 - 仅执行配置"""
+"""US-05 配置页面 —— 执行 OpenClaw 的初始化配置（onboarding）。
+
+职责：在安装完成后，调用 openclaw onboard --non-interactive 自动生成默认配置文件，
+并展示配置步骤的进度与结果。支持「重试」「手动配置」「下一步」三种用户分支。
+"""
 
 import sys
 
@@ -20,7 +24,12 @@ from src.models.config import ConfigStatus, ConfigProgress, ConfigResult
 
 
 class ConfigStepWidget(QFrame):
-    """配置步骤显示组件"""
+    """配置步骤显示组件。
+
+    职责：以图标（○ / ... / ✓ / ✗）+ 文字的形式展示单一步骤的状态。
+    用于 US05ConfigPage 的步骤列表，让用户直观看到「安装完成 → 初始化配置」
+    两个阶段的流转情况。
+    """
 
     def __init__(self, step_name: str, parent=None):
         super().__init__(parent)
@@ -42,29 +51,39 @@ class ConfigStepWidget(QFrame):
         layout.addStretch(1)
 
     def set_pending(self):
+        """步骤未开始：灰色空心圆圈"""
         self.icon_label.setText("○")
         self.icon_label.setStyleSheet("font-size: 16px; color: #999;")
 
     def set_running(self):
+        """步骤进行中：橙色省略号，表示正在处理"""
         self.icon_label.setText("...")
         self.icon_label.setStyleSheet("font-size: 16px; color: orange;")
 
     def set_completed(self):
+        """步骤完成：绿色对勾"""
         self.icon_label.setText("✓")
         self.icon_label.setStyleSheet("font-size: 16px; color: green;")
 
     def set_failed(self):
+        """步骤失败：红色叉号"""
         self.icon_label.setText("✗")
         self.icon_label.setStyleSheet("font-size: 16px; color: red;")
 
 
 class US05ConfigPage(QWidget):
-    """US-05 配置页面 - 仅执行配置"""
+    """US-05 配置页面 —— 执行 OpenClaw 初始化配置（onboarding）。
 
-    retry_clicked = Signal()  # 重试配置
-    next_clicked = Signal()   # 配置完成，进入下一步
-    back_clicked = Signal()   # 返回上一页
-    manual_config_clicked = Signal()  # 手动配置
+    职责：在安装完成后，通过后台线程调用 openclaw onboard --non-interactive
+    生成默认配置文件，并实时展示步骤进度（安装完成 → 初始化配置）。
+    支持「重试」「手动配置」「下一步」三种用户分支，以及可折叠的详细日志区域
+    供技术人员排查问题。
+    """
+
+    retry_clicked = Signal()         # 配置失败后用户点击「重试」，触发重新执行 onboarding
+    next_clicked = Signal()          # 配置成功后用户点击「下一步」，触发进入启动页
+    back_clicked = Signal()          # 用户点击「返回」，回到安装进度页
+    manual_config_clicked = Signal() # 用户点击「手动配置」，打开配置文件目录供手动编辑
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,18 +92,17 @@ class US05ConfigPage(QWidget):
     def _setup_ui(self):
         from PySide6.QtWidgets import QScrollArea
 
-        # 主布局
+        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
+        # 使用 QScrollArea 保证在小屏设备上所有步骤、日志和提示信息均可完整浏览。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
 
-        # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 内容容器
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         layout.setSpacing(15)
@@ -98,12 +116,12 @@ class US05ConfigPage(QWidget):
         title_font.setBold(True)
         title.setFont(title_font)
 
-        # 状态说明
+        # 状态说明：动态更新，配置中/成功/失败时分别改变文本与颜色
         self.status_label = QLabel("正在为您自动配置 OpenClaw，请稍候...")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setWordWrap(True)
 
-        # 步骤显示区域
+        # 步骤显示区域：使用浅色卡片包裹，突出两个阶段的流转状态
         steps_frame = QFrame()
         steps_frame.setStyleSheet(
             "background-color: #f9f9f9; border-radius: 8px; padding: 10px;"
@@ -117,18 +135,20 @@ class US05ConfigPage(QWidget):
         steps_layout.addWidget(self.step_install)
         steps_layout.addWidget(self.step_config)
 
-        # 进度条
+        # 进度条：0-100，与 ConfigProgress.progress_percent 同步
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setMinimumHeight(25)
 
-        # 当前任务
+        # 当前任务：展示更细粒度的子任务文本
         self.task_label = QLabel("")
         self.task_label.setAlignment(Qt.AlignCenter)
         self.task_label.setStyleSheet("color: #666;")
 
         # 日志显示区域（可折叠，用于排查问题）
+        # 设计意图：默认隐藏，避免非技术用户被大量日志干扰；
+        # 出现问题后由用户或技术支持手动展开查看最后 N 行输出。
         self.log_frame = QFrame()
         self.log_frame.setStyleSheet(
             "background-color: #1e1e1e; border-radius: 8px; padding: 10px;"
@@ -151,7 +171,7 @@ class US05ConfigPage(QWidget):
         self.toggle_log_btn.setStyleSheet("color: #666; font-size: 11px;")
         self.toggle_log_btn.clicked.connect(self._toggle_log)
 
-        # 成功提示
+        # 成功提示：绿色卡片，仅在配置完成后显示
         self.success_frame = QFrame()
         self.success_frame.setStyleSheet(
             "background-color: #e8f4e8; border-radius: 8px; padding: 15px;"
@@ -166,7 +186,7 @@ class US05ConfigPage(QWidget):
         success_layout.addWidget(success_title)
         success_layout.addWidget(success_desc)
 
-        # 错误提示区域
+        # 错误提示区域：黄色警告卡片，包含友好错误文本和可选的原始错误输出
         self.error_frame = QFrame()
         self.error_frame.setStyleSheet(
             "background-color: #fff3cd; border-radius: 8px; padding: 15px;"
@@ -179,20 +199,24 @@ class US05ConfigPage(QWidget):
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #856404;")
-        
-        # 原始错误输出
+
+        # 原始错误输出：等宽字体小字，默认折叠，供技术人员定位根因
         self.error_detail_label = QLabel("")
         self.error_detail_label.setWordWrap(True)
         self.error_detail_label.setStyleSheet(
             "color: #856404; font-family: monospace; font-size: 10px; background-color: #fff8e1; padding: 5px;"
         )
         self.error_detail_label.hide()
-        
+
         error_layout.addWidget(self.error_title)
         error_layout.addWidget(self.error_label)
         error_layout.addWidget(self.error_detail_label)
 
         # 按钮区域
+        # 按钮状态机：
+        #   - 配置中：仅显示「返回」
+        #   - 配置成功：隐藏「返回/重试/手动配置」，显示「下一步」
+        #   - 配置失败：显示「返回」「手动配置」「重试」，隐藏「下一步」
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
 

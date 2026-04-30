@@ -2,10 +2,14 @@
 """
 OpenClaw 安装器打包脚本
 
+一次构建同时产出两个桌面程序：安装器 + 卸载工具。
+使用 PyInstaller 打包为单文件可执行程序（--onefile --windowed），
+并针对不同平台做特殊处理：
+- Windows：包含 OpenSSL DLL、禁用 UPX 压缩
+- macOS：生成 .command 辅助启动脚本绕过 Gatekeeper
+
 使用方法:
     uv run python build.py
-
-打包完成后，可执行文件位于 dist/ 目录
 
 说明:
 - sys.platform == "win32" 适用于所有 Windows（包括 64 位）
@@ -21,7 +25,7 @@ from pathlib import Path
 
 def is_windows() -> bool:
     """检查是否为 Windows 系统
-    
+
     注意: sys.platform 在 Windows 上总是返回 "win32"，
     无论 32 位还是 64 位系统。这是 Python 的历史遗留命名。
     """
@@ -41,41 +45,46 @@ def is_64bit() -> bool:
 
 def get_pyinstaller_cmd() -> list:
     """获取 PyInstaller 命令
-    
-    优先使用 uv run，如果没有 uv 则直接使用 pyinstaller
+
+    优先使用 uv run，如果没有 uv 则直接使用 pyinstaller，
+    最后 fallback 到 python -m PyInstaller。
     """
     # 检查是否可以使用 uv
     uv_path = shutil.which("uv")
     if uv_path:
         return [uv_path, "run", "pyinstaller"]
-    
+
     # 检查 pyinstaller 是否可用
     pyinstaller_path = shutil.which("pyinstaller")
     if pyinstaller_path:
         return [pyinstaller_path]
-    
+
     # 都没找到，尝试用 python -m
     return [sys.executable, "-m", "PyInstaller"]
 
 
 def clean_build():
-    """清理之前的构建文件"""
+    """清理之前的构建文件
+
+    删除 build/、dist/、所有 __pycache__ 目录以及 .spec 文件，
+    确保下次构建从干净状态开始。
+    """
     dirs_to_remove = ['build', 'dist']
     for dir_name in dirs_to_remove:
         if os.path.exists(dir_name):
             print(f"清理 {dir_name}/...")
             shutil.rmtree(dir_name)
-    
+
     # 清理 __pycache__
     for pycache in Path('.').rglob('__pycache__'):
         if pycache.exists():
             shutil.rmtree(pycache)
-    
+
     # 清理 .spec 文件
     for spec_file in Path('.').glob('*.spec'):
         if spec_file.exists():
             spec_file.unlink()
-    
+
     print("清理完成")
 
 
@@ -88,7 +97,11 @@ def _build_single(
     launcher_display_name: str = None,
 ):
     """打包单个程序
-    
+
+    根据当前平台自动添加平台特定的 PyInstaller 参数：
+    - Windows：包含 app.manifest、OpenSSL DLL、禁用 UPX
+    - macOS：设置 bundle identifier，构建后删除 Unix 可执行文件并生成 .command 脚本
+
     Args:
         output_dir: 输出目录
         entry_file: 入口 py 文件
@@ -188,7 +201,11 @@ echo "正在启动 {launcher_display_name}..."
 
 
 def build(output_dir: str = None):
-    """使用 PyInstaller 打包安装器 + 卸载器"""
+    """使用 PyInstaller 打包安装器 + 卸载器
+
+    依次调用 _build_single 打包两个程序，构建完成后输出文件大小和平台提示。
+    任一失败时会返回错误码 1。
+    """
     if output_dir is None:
         output_dir = "dist"
     os.makedirs(output_dir, exist_ok=True)
@@ -269,9 +286,9 @@ def build(output_dir: str = None):
 
 
 def main():
-    """主函数"""
+    """命令行入口：解析参数并执行打包或清理"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description="OpenClaw 安装器打包工具",
         epilog="示例: uv run python build.py"
@@ -291,16 +308,16 @@ def main():
         default="dist",
         help="输出目录 (默认: dist)",
     )
-    
+
     args = parser.parse_args()
-    
+
     if args.clean_only:
         clean_build()
         return
-    
+
     if not args.no_clean:
         clean_build()
-    
+
     build(output_dir=args.output)
 
 

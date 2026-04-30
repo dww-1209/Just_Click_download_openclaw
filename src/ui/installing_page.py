@@ -17,12 +17,17 @@ from src.models.install import InstallStatus, InstallStage, InstallProgress, Ins
 
 
 class InstallingPage(QWidget):
-    """安装进度页面 - US-04"""
+    """安装进度页面（US-04）—— 在线下载、构建与安装 OpenClaw。
 
-    retry_clicked = Signal()
-    next_clicked = Signal()
-    back_clicked = Signal()
-    cancel_clicked = Signal()
+    职责：展示 Node.js 安装、Git 克隆、pnpm install/build 等长耗时任务的实时进度。
+    页面通过 QThread 后台 worker 接收信号，更新进度条、状态文本和日志区域。
+    同时提供结构化错误分类展示，将技术错误翻译为面向非技术用户的友好提示。
+    """
+
+    retry_clicked = Signal()   # 安装失败后用户点击「重试」，触发重新执行安装流程
+    next_clicked = Signal()    # 安装成功后用户点击「完成」，触发进入配置页
+    back_clicked = Signal()    # 用户点击「返回」，可回到环境检测页（安装未开始时可用）
+    cancel_clicked = Signal()  # 用户点击「退出」，触发关闭安装器
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,18 +36,17 @@ class InstallingPage(QWidget):
     def _setup_ui(self):
         from PySide6.QtWidgets import QScrollArea
 
-        # 主布局
+        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
+        # 使用 QScrollArea 包裹内容，确保在小屏设备上日志区域不会挤占按钮空间。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
 
-        # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 内容容器
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         layout.setSpacing(12)
@@ -56,25 +60,27 @@ class InstallingPage(QWidget):
         title_font.setBold(True)
         title.setFont(title_font)
 
-        # 状态标签
+        # 状态标签：显示当前阶段（下载/安装/配置/完成）
         self.status_label = QLabel("准备安装...")
         self.status_label.setAlignment(Qt.AlignCenter)
         status_font = QFont()
         status_font.setPointSize(11)
         self.status_label.setFont(status_font)
 
-        # 当前任务
+        # 当前任务：展示更细粒度的子任务文本，如「正在克隆仓库...」
         self.task_label = QLabel("")
         self.task_label.setAlignment(Qt.AlignCenter)
         self.task_label.setStyleSheet("color: #666;")
 
-        # 耗时提示
+        # 耗时提示：提前告知用户 10-20 分钟的预期，减少中途关闭的概率
         self.time_hint_label = QLabel("预计耗时 10-20 分钟，请保持网络畅通并耐心等待")
         self.time_hint_label.setAlignment(Qt.AlignCenter)
         self.time_hint_label.setStyleSheet("color: #e67e22; font-size: 12px; padding: 6px;")
         self.time_hint_label.setWordWrap(True)
 
-        # Windows 系统授权提示（Git 安装时可能触发 Defender / SmartScreen）
+        # Windows 系统授权提示：Git / Node.js 安装器在 Windows 上可能触发
+        # Windows Defender SmartScreen 或 UAC 弹窗。若用户未点击「允许」，
+        # 子进程会被静默拦截，导致安装卡住。因此非 Windows 平台直接隐藏该提示。
         self.security_hint = QLabel(
             "⚠️ Windows 可能会弹出安全授权窗口，请点击\"允许\"或\"是\"，否则安装无法继续"
         )
@@ -87,7 +93,7 @@ class InstallingPage(QWidget):
         if sys.platform != "win32":
             self.security_hint.hide()
 
-        # 进度条
+        # 进度条：范围 0-100，与 InstallProgress.progress_percent 同步
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -95,16 +101,17 @@ class InstallingPage(QWidget):
         self.progress_bar.setFormat("%p%")
         self.progress_bar.setMinimumHeight(22)
 
-        # 日志区域
+        # 日志区域：只读文本框，最大保留 100 个 block，防止内存无限增长。
+        # 日志内容来自后台 shell_runner 的标准输出/错误流。
         log_label = QLabel("安装日志:")
 
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumBlockCount(100)  # 限制日志行数
+        self.log_text.setMaximumBlockCount(100)
         self.log_text.setMinimumHeight(100)
         self.log_text.setObjectName("logArea")
 
-        # 提示信息
+        # 提示信息：安装失败时展示友好错误提示（黄色背景卡片），平时隐藏
         self.hint_label = QLabel("")
         self.hint_label.setWordWrap(True)
         self.hint_label.setStyleSheet("color: #666;")
@@ -132,6 +139,10 @@ class InstallingPage(QWidget):
         main_layout.addWidget(scroll_area, 1)
 
         # 按钮区域（固定在底部）
+        # 按钮状态机：
+        #   - 安装前/安装中：back 可用，cancel 显示「退出」，retry/next 隐藏
+        #   - 安装成功：显示 next（完成），隐藏 cancel/retry
+        #   - 安装失败：显示 retry（重试），隐藏 next
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(40, 10, 40, 0)
         button_layout.addStretch(1)
@@ -177,10 +188,10 @@ class InstallingPage(QWidget):
         self.log_text.clear()
         self.hint_label.hide()
 
-        # 按钮状态 - 安装过程中禁用所有按钮
+        # 按钮状态 - 安装过程中禁用所有按钮，防止用户误操作导致状态混乱
         self.back_button.setEnabled(False)
         self.cancel_button.setText("退出")
-        self.cancel_button.setEnabled(False)  # 安装中禁止退出
+        self.cancel_button.setEnabled(False)  # 安装中禁止退出，避免子进程孤儿化
         self.retry_button.hide()
         self.next_button.hide()
 
@@ -206,9 +217,8 @@ class InstallingPage(QWidget):
             self._append_log(progress.message)
 
     def _append_log(self, message: str):
-        """添加日志"""
+        """添加日志并自动滚动到底部"""
         self.log_text.appendPlainText(message)
-        # 滚动到底部
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -227,11 +237,11 @@ class InstallingPage(QWidget):
 
         # 按钮状态 - 安装成功，显示下一步按钮，等待用户点击
         self.back_button.setEnabled(True)
-        self.cancel_button.setEnabled(True)  # 重新启用退出按钮
-        self.cancel_button.hide()  # 隐藏退出按钮
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.hide()
         self.retry_button.hide()
         self.next_button.show()
-        self.next_button.setEnabled(True)  # 启用下一步按钮
+        self.next_button.setEnabled(True)
 
     def install_failed(self, result: InstallResult):
         """安装失败

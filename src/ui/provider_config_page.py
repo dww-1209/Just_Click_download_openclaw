@@ -1,4 +1,12 @@
-"""Provider 配置页面 - 多选模型 + 汇总选默认 + 配置导入导出"""
+"""Provider 配置页面（US-03）—— 多选模型 + 汇总选默认 + 配置导入导出。
+
+职责：为用户提供可视化的 AI 模型提供商配置界面，支持：
+1. 展开/折叠各供应商卡片，填写 API Key 并多选模型；
+2. 添加自定义模型（兼容官方最新未预设模型）；
+3. 汇总已选模型并指定全局默认模型；
+4. 配置的 JSON 导入/导出，便于备份与迁移。
+该页面既可在安装流程中作为 US-03 使用，也可在已安装场景下通过环境检测页进入。
+"""
 
 import json
 
@@ -18,7 +26,7 @@ from src.models.provider_config import VENDOR_REGISTRY
 # ═══════════════════════════════════════════════════════════════════
 
 class PrimaryButton(QPushButton):
-    """主操作按钮"""
+    """主操作按钮 —— 使用 primaryButton 样式，视觉上突出，用于「保存并启动」等关键操作。"""
 
     def __init__(self, text: str, parent=None):
         super().__init__(text, parent)
@@ -27,7 +35,7 @@ class PrimaryButton(QPushButton):
 
 
 class SecondaryButton(QPushButton):
-    """次要操作按钮"""
+    """次要操作按钮 —— 默认样式，用于「返回」「跳过」「导入/导出」等低频操作。"""
 
     def __init__(self, text: str, parent=None):
         super().__init__(text, parent)
@@ -35,18 +43,28 @@ class SecondaryButton(QPushButton):
 
 
 class VendorRow(QFrame):
-    """供应商配置行 — 可展开/折叠"""
+    """供应商配置行 —— 可展开/折叠的卡片式组件。
 
-    toggled = Signal(str)
-    model_selection_changed = Signal()
+    职责：封装单个供应商（如 Kimi、DeepSeek）的全部配置交互，包括：
+    - Key Type 切换（标准 API / Coding Plan 等）
+    - API Key 输入（密码模式，防止旁窥）
+    - 预设模型多选（带推理标签）
+    - 自定义模型添加/删除
+
+    设计采用「手风琴」交互：同一时刻 ProviderConfigPage 只允许一个 VendorRow 展开，
+    避免多个供应商同时展开导致页面过长、信息过载。
+    """
+
+    toggled = Signal(str)           # 展开/折叠状态变化时触发，携带 vendor_id，用于父级实现互斥折叠
+    model_selection_changed = Signal()  # 模型勾选状态变化时触发，用于刷新汇总区域
 
     def __init__(self, vendor, parent=None):
         super().__init__(parent)
         self.vendor = vendor
         self.is_expanded = False
-        self._key_type_state = {}  # {key_type_key: {"api_key": "", "selected": set()}}
-        self._custom_models = []   # [(model_ref, display_name, key_type_key), ...]
-        self._model_checkboxes = {}  # {model_ref: QCheckBox}
+        self._key_type_state = {}     # {key_type_key: {"api_key": "", "selected": set()}}
+        self._custom_models = []      # [(model_ref, display_name, key_type_key), ...]
+        self._model_checkboxes = {}   # {model_ref: QCheckBox}
         self._current_key_type = None
 
         self._setup_ui()
@@ -56,7 +74,8 @@ class VendorRow(QFrame):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 标题行
+        # 标题行（可点击展开/折叠）
+        # 使用浅灰背景 + 圆角边框，与白色内容区形成层次对比
         self.header = QFrame()
         self.header.setStyleSheet(
             "QFrame { background-color: #f8f9fa; border-radius: 6px; "
@@ -82,7 +101,8 @@ class VendorRow(QFrame):
         header_layout.addStretch(1)
         header_layout.addWidget(self.arrow_label)
 
-        # 内容区域
+        # 内容区域（默认折叠）
+        # 白色背景 + 略深的边框，视觉上从标题行「下沉」一层
         self.content = QFrame()
         self.content.setStyleSheet(
             "QFrame { background-color: #ffffff; border-radius: 6px; "
@@ -92,7 +112,8 @@ class VendorRow(QFrame):
         content_layout.setContentsMargins(14, 14, 14, 14)
         content_layout.setSpacing(10)
 
-        # Key Type 选择
+        # Key Type 选择：仅当供应商提供多种 Key 类型（如标准 API vs Coding Plan）时显示下拉框。
+        # 不同 Key Type 对应不同的 base_url、env_var 和模型列表，必须严格区分，避免混用。
         if len(self.vendor.key_types) > 1:
             kt_layout = QHBoxLayout()
             kt_label = QLabel("Key 类型:")
@@ -107,7 +128,7 @@ class VendorRow(QFrame):
         else:
             self.key_type_combo = None
 
-        # API Key
+        # API Key 输入：使用 Password 模式隐藏明文，防止屏幕共享或旁窥时泄露
         key_layout = QHBoxLayout()
         key_label = QLabel("API Key:")
         key_label.setStyleSheet("font-weight: bold; color: #555;")
@@ -118,7 +139,7 @@ class VendorRow(QFrame):
         key_layout.addWidget(self.key_input, 1)
         content_layout.addLayout(key_layout)
 
-        # 模型列表
+        # 模型列表：多选框形式，每个模型显示名称 + ref，推理模型额外标注 [推理]
         models_label = QLabel("选择模型（可多选）:")
         models_label.setStyleSheet("font-weight: bold; color: #555;")
         content_layout.addWidget(models_label)
@@ -129,7 +150,8 @@ class VendorRow(QFrame):
         self.models_layout.setSpacing(4)
         content_layout.addWidget(self.models_container)
 
-        # 自定义模型
+        # 自定义模型：允许用户输入官方最新但未在预设列表中的模型 ID。
+        # 自动补全 vendor prefix（如 moonshot/），减少用户输入错误。
         custom_layout = QHBoxLayout()
         custom_label = QLabel("自定义模型:")
         custom_label.setStyleSheet("font-weight: bold; color: #555;")
@@ -150,7 +172,7 @@ class VendorRow(QFrame):
         main_layout.addWidget(self.content)
         self.content.hide()
 
-        # 初始化
+        # 初始化：默认选中第一个 Key Type 并加载对应模型列表
         if self.vendor.key_types:
             self._current_key_type = self.vendor.key_types[0].key
         self._refresh_models()
@@ -366,11 +388,17 @@ class VendorRow(QFrame):
 
 
 class ProviderConfigPage(QWidget):
-    """Provider 配置页面 - 多选模型 + 汇总选默认"""
+    """Provider 配置页面（US-03）—— 多选模型 + 汇总选默认 + 配置导入导出。
 
-    back_clicked = Signal()
-    skip_clicked = Signal()
-    save_and_start_clicked = Signal(dict)
+    职责：为用户提供可视化的 AI 模型提供商配置界面，支持展开/折叠供应商卡片、
+    填写 API Key、多选预设模型、添加自定义模型、指定全局默认模型，以及配置的
+    JSON 导入/导出。该页面既可在安装流程中作为 US-03 使用，也可在已安装场景下
+    通过环境检测页进入。
+    """
+
+    back_clicked = Signal()              # 用户点击「返回」，回到上一页
+    skip_clicked = Signal()              # 用户点击「跳过」，跳过模型配置直接进入启动页
+    save_and_start_clicked = Signal(dict)  # 用户点击「保存并启动」，携带完整配置字典发射
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -378,6 +406,8 @@ class ProviderConfigPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
+        # 使用 QScrollArea 包裹供应商列表，避免供应商过多时页面无限伸长。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
@@ -392,7 +422,7 @@ class ProviderConfigPage(QWidget):
         layout.setSpacing(12)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # 标题
+        # 标题与说明
         title = QLabel("配置 AI 模型提供商")
         title.setAlignment(Qt.AlignCenter)
         title_font = QFont()
@@ -405,7 +435,9 @@ class ProviderConfigPage(QWidget):
         desc.setWordWrap(True)
         desc.setStyleSheet("color: #666; font-size: 12px;")
 
-        # 提示标语
+        # 提示标语：黄色警告卡片，强调 Key 类型与模型不可混用。
+        # 设计原因：实际支持中频繁出现用户将 Coding Plan Key 用于标准模型，
+        # 导致请求 401/403，因此用醒目的顶部横幅提前预警。
         hint_frame = QFrame()
         hint_frame.setStyleSheet(
             "QFrame { background-color: #fff8e1; border-radius: 6px; "
@@ -434,7 +466,8 @@ class ProviderConfigPage(QWidget):
         hint_layout.addWidget(hint_icon)
         hint_layout.addWidget(hint_text, 1)
 
-        # 供应商列表
+        # 供应商列表：遍历 VENDOR_REGISTRY 为每个供应商创建 VendorRow 卡片。
+        # 手风琴交互由 _on_vendor_toggled 实现互斥折叠。
         list_frame = QFrame()
         list_layout = QVBoxLayout(list_frame)
         list_layout.setSpacing(8)
@@ -447,7 +480,8 @@ class ProviderConfigPage(QWidget):
             self.vendor_rows[vendor.id] = row
             list_layout.addWidget(row)
 
-        # 汇总区域
+        # 汇总区域：蓝色卡片，展示所有供应商已选模型的汇总列表，
+        # 并提供全局默认模型下拉框。fallback 模型自动从非默认已选模型中推导。
         self.summary_frame = QFrame()
         self.summary_frame.setStyleSheet(
             "QFrame { background-color: #f3f8ff; border-radius: 8px; border: 1px solid #c5d8f0; }"
@@ -501,6 +535,8 @@ class ProviderConfigPage(QWidget):
         main_layout.addWidget(scroll_area, 1)
 
         # 底部按钮
+        # 布局顺序：返回 | 导入 | 导出 | 跳过 | 保存并启动
+        # 主操作「保存并启动」放在最右侧，符合用户从左到右的扫描习惯。
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(10, 10, 10, 0)
         btn_layout.addStretch(1)
@@ -536,7 +572,11 @@ class ProviderConfigPage(QWidget):
     # ─────────────────────────────── 供应商展开互斥
 
     def _on_vendor_toggled(self, vendor_id: str):
-        """展开某个供应商时，折叠其他供应商"""
+        """展开某个供应商时，折叠其他供应商，实现手风琴效果。
+
+        设计原因：避免多个供应商同时展开导致页面过长、信息过载，
+        同时减少用户在不同供应商间来回滚动查找的成本。
+        """
         for vid, row in self.vendor_rows.items():
             if vid != vendor_id and row.is_expanded:
                 row.collapse()
@@ -544,7 +584,7 @@ class ProviderConfigPage(QWidget):
     # ─────────────────────────────── 汇总刷新
 
     def _refresh_summary(self):
-        """刷新汇总区域"""
+        """刷新汇总区域：收集所有 VendorRow 的已选模型，更新汇总文本和默认模型下拉框。"""
         all_models = []  # [(vendor_name, model_ref, model_name), ...]
 
         for vendor in VENDOR_REGISTRY:
@@ -605,6 +645,15 @@ class ProviderConfigPage(QWidget):
     # ─────────────────────────────── 保存
 
     def _on_save_clicked(self):
+        """收集所有 VendorRow 的配置，组装为统一字典后发射 save_and_start_clicked 信号。
+
+        数据结构：
+        {
+            "providers": { "vendor_id:key_type": {...}, ... },
+            "global_default_model": str,
+            "fallback_models": [str, ...],
+        }
+        """
         configured = {}
         for vendor_id, row in self.vendor_rows.items():
             for cfg in row.get_all_configs():
@@ -637,7 +686,7 @@ class ProviderConfigPage(QWidget):
     # ─────────────────────────────── 配置导入/导出
 
     def _on_export_config(self):
-        """导出当前配置到 JSON 文件"""
+        """导出当前配置到 JSON 文件，便于用户备份或迁移到其他机器。"""
         configured = {}
         for vendor_id, row in self.vendor_rows.items():
             for cfg in row.get_all_configs():
@@ -659,6 +708,24 @@ class ProviderConfigPage(QWidget):
             self, "导出配置", "openclaw-config.json", "JSON (*.json)"
         )
         if path:
+            # 检查是否包含 API Key，若有则弹窗警告敏感信息泄露风险
+            has_api_key = any(
+                cfg.get("api_key", "").strip()
+                for cfg in configured.values()
+            )
+            if has_api_key:
+                reply = QMessageBox.warning(
+                    self,
+                    "敏感信息警告",
+                    "导出的配置文件中包含明文 API Key，请妥善保管，\n"
+                    "不要上传到公共仓库或发送给不信任的第三方。\n\n"
+                    "确认继续导出？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
@@ -667,7 +734,7 @@ class ProviderConfigPage(QWidget):
                 QMessageBox.warning(self, "导出失败", str(e))
 
     def _on_import_config(self):
-        """从 JSON 文件导入配置"""
+        """从 JSON 文件导入配置，自动回填到对应 VendorRow 并刷新汇总。"""
         path, _ = QFileDialog.getOpenFileName(
             self, "导入配置", "", "JSON (*.json)"
         )
@@ -718,6 +785,7 @@ class ProviderConfigPage(QWidget):
     # ─────────────────────────────── 重置 / 回填
 
     def reset(self):
+        """清空所有供应商配置，恢复到初始状态。"""
         for row in self.vendor_rows.values():
             row.key_input.clear()
             row.custom_input.clear()
@@ -731,7 +799,7 @@ class ProviderConfigPage(QWidget):
         self._refresh_summary()
 
     def load_config(self, existing: dict):
-        """回填已有配置"""
+        """回填已有配置（从 openclaw 现有配置文件中解析并映射到 UI）。"""
         env = existing.get("env", {})
         auth_profiles = existing.get("auth_profiles", {})
         primary_model = existing.get("primary_model", "")
@@ -855,16 +923,19 @@ class ProviderConfigPage(QWidget):
     # ─────────────────────────────── 保存状态提示
 
     def show_saving(self):
+        """保存中状态：禁用所有按钮并将主按钮文本改为「保存中...」，防止重复提交。"""
         self.save_button.setEnabled(False)
         self.save_button.setText("保存中...")
         self.skip_button.setEnabled(False)
         self.back_button.setEnabled(False)
 
     def hide_saving(self):
+        """恢复按钮可用状态。"""
         self.save_button.setEnabled(True)
         self.save_button.setText("保存并启动")
         self.skip_button.setEnabled(True)
         self.back_button.setEnabled(True)
 
     def show_error(self, message: str):
+        """弹出配置保存失败的警告对话框。"""
         QMessageBox.warning(self, "配置保存失败", message)

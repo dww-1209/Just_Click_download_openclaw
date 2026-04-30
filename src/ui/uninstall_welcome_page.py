@@ -1,4 +1,11 @@
-"""卸载工具 — 确认/检测页面"""
+"""卸载工具 —— 确认/检测页面。
+
+职责：卸载流程的第一页。检测用户系统中是否存在 OpenClaw 安装记录
+（程序目录 ~/openclaw-cn 与配置目录 ~/.openclaw），并根据检测结果展示
+不同的状态卡片与操作按钮：
+- 已安装：展示警告清单，提供「确认卸载」按钮
+- 未安装：提示无需卸载，仅提供「退出」按钮
+"""
 
 import os
 
@@ -11,10 +18,17 @@ from PySide6.QtGui import QFont
 
 
 class UninstallWelcomePage(QWidget):
-    """检测 OpenClaw 安装状态并请求用户确认卸载"""
+    """卸载工具欢迎页 —— 检测 OpenClaw 安装状态并请求用户确认卸载。
 
-    confirm_clicked = Signal()
-    cancel_clicked = Signal()
+    职责：作为卸载流程的第一页，在初始化时自动检测系统中是否存在 OpenClaw
+    安装记录（程序目录 ~/openclaw-cn 与配置目录 ~/.openclaw）。根据检测结果
+    动态切换 UI：
+    - 已安装：展示红色状态卡片 + 警告清单，提供「确认卸载」按钮
+    - 未安装：展示绿色状态卡片，仅提供「退出」按钮
+    """
+
+    confirm_clicked = Signal()  # 用户点击「确认卸载」，触发进入卸载进度页
+    cancel_clicked = Signal()   # 用户点击「取消/退出」，触发关闭卸载工具
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -23,6 +37,8 @@ class UninstallWelcomePage(QWidget):
         self._check_installation()
 
     def _setup_ui(self):
+        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
+        # 使用 QScrollArea 保证在小屏设备上警告清单不会被截断。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
@@ -45,7 +61,8 @@ class UninstallWelcomePage(QWidget):
         tf.setBold(True)
         title.setFont(tf)
 
-        # 状态区域
+        # 状态区域：动态展示检测中 / 已安装 / 未安装三种状态
+        # 使用浅灰背景卡片，与页面底色形成层次对比
         self.status_frame = QFrame()
         self.status_frame.setStyleSheet(
             "QFrame { background-color: #f8f9fa; border-radius: 8px; }"
@@ -76,6 +93,8 @@ class UninstallWelcomePage(QWidget):
         sf_layout.addWidget(self.status_detail)
 
         # 警告区域（仅已安装时显示）
+        # 使用红色背景卡片，明确告知用户卸载的不可逆后果，
+        # 尤其强调 API Key 等敏感配置的删除，避免用户事后追责。
         self.warning_frame = QFrame()
         self.warning_frame.setStyleSheet(
             "QFrame { background-color: #fff3f3; border-radius: 8px; }"
@@ -110,6 +129,9 @@ class UninstallWelcomePage(QWidget):
         main_layout.addWidget(scroll, 1)
 
         # 按钮区域
+        # 按钮状态机：
+        #   - 检测中 / 未安装：仅显示「退出」
+        #   - 已安装：显示「取消」+「确认卸载」（dangerButton 样式）
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(40, 10, 40, 0)
         btn_layout.addStretch(1)
@@ -131,6 +153,7 @@ class UninstallWelcomePage(QWidget):
         main_layout.addLayout(btn_layout)
 
     def _check_installation(self):
+        """检测用户主目录下是否存在 OpenClaw 程序与配置目录，并据此刷新 UI 状态。"""
         home = os.path.expanduser("~")
         has_src = os.path.exists(os.path.join(home, "openclaw-cn"))
         has_cfg = os.path.exists(os.path.join(home, ".openclaw"))

@@ -1,4 +1,4 @@
-# 产品需求文档：OpenClaw 一键安装启动器 - V1.1
+# 产品需求文档：OpenClaw 一键安装启动器 - V1.2
 
 ## 1. 综述 (Overview)
 
@@ -44,7 +44,7 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 1. **启动与欢迎阶段（US-01）** — 展示产品简介，用户点击"下一步"进入流程
 2. **环境检测阶段（US-02）** — 自动检查操作系统、磁盘空间、权限、浏览器支持、OpenClaw 安装状态
 3. **下载与安装阶段（US-04）** — 后台静默安装 Node.js 22 + pnpm，从 Gitee 克隆源码并本地构建
-4. **加载默认配置阶段（US-05）** — 自动执行 onboard，写入默认配置
+4. **加载默认配置阶段（US-05）** — 设置 Gateway 默认参数（mode=local, bind=loopback, port=18789），执行 onboard 初始化
 5. **Provider 模型配置阶段（US-05b）** — 用户选择 AI 模型提供商、填写 API Key、多选模型、设置默认模型
 6. **启动服务与 WebChat 阶段（US-06）** — 启动 Gateway 服务，自动打开浏览器访问 WebChat
 
@@ -56,12 +56,12 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 | 名称 | 类型 | 说明 | 来源故事 | 备注 |
 |---|---|---|---|---|
-| `stage` | enum | 当前安装阶段 | 全局 | `welcome / env_check / installing / configuring / provider_config / startup / error` |
+| `stage` | enum | 当前安装阶段 | 全局 | `welcome / env_check / installing / configuring / provider_config / startup` |
 | `installStatus` | enum | 安装任务状态 | 全局 | `idle / running / success / failed / cancelled` |
 | `checkStatus` | enum | 环境检测状态 | US-02 | `ok / warning / failed` |
 | `osType` | enum | 操作系统类型 | US-02 / US-04 | `windows / macos / linux` |
 | `serviceHost` | string | Web 服务地址主机 | US-06 | 默认 `localhost` |
-| `servicePort` | number | Web 服务端口 | US-06 | 默认 `1606` |
+| `servicePort` | number | Web 服务端口 | US-06 | 默认 `18789` |
 | `webchatUrl` | string | WebChat 访问地址 | US-06 | 由服务启动结果生成 |
 | `logLines` | array[string] | 安装与配置日志 | US-04 / US-05 / US-06 | 仅用于界面展示与排障 |
 | `providersConfig` | dict | Provider 配置 | US-05b | `{vendor_id:key_type: {api_key, selected_models, ...}}` |
@@ -74,8 +74,8 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 | 程序 | 入口文件 | 功能 | 目标用户 |
 |---|---|---|---|
-| **OpenClaw 安装器** | `main.py` | 环境检测、安装、配置、启动 | 首次安装用户 |
-| **OpenClaw 卸载工具** | `uninstall_main.py` | 检测、卸载、清理 | 需要移除 OpenClaw 的用户 |
+| **OpenClaw 安装器** | `installer.py` | 环境检测、安装、配置、启动 | 首次安装用户 |
+| **OpenClaw 卸载工具** | `uninstaller.py` | 检测、卸载、清理 | 需要移除 OpenClaw 的用户 |
 
 两个程序通过 `build.py` 统一打包，macOS 平台为每个程序生成对应的 `.command` 辅助启动脚本以绕过 Gatekeeper。
 
@@ -129,7 +129,7 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 技术实现概要
 
-- 影响范围：`ui/welcome_page.py`
+- 影响范围：`src/ui/welcome_page.py`
 - 前端：QLabel 展示产品名称和简介，QPushButton 提供"下一步"和"退出"
 - 后端：本阶段无远程后端
 
@@ -206,7 +206,7 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 技术实现概要
 
-- 影响范围：`ui/env_check_page.py`、`infra/system_checker.py`、`models/env_check.py`
+- 影响范围：`src/ui/env_check_page.py`、`src/infra/system_checker.py`、`src/models/env_check.py`
 - 前端：展示检测进度和每项结果，控制"下一步"按钮状态
 - 后端：通过本地系统 API 读取系统信息
 
@@ -252,14 +252,13 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 2. 安装方式
    - **不使用 npm install -g**，而是采用**本地构建**方式：
-     1. 检查/安装 Node.js 22
-     2. 安装 pnpm
+     1. 检查/安装 Node.js 22（Windows 通过 MSI，macOS 通过 PKG，Linux 通过系统包管理器）
+     2. 检查/安装 pnpm（全局）
      3. 从 Gitee 克隆 `openclaw-cn` 到 `~/openclaw-cn`
      4. `pnpm install` 安装依赖
-     5. `pnpm ui:build` 构建前端
-     6. `pnpm build` 构建核心
-     7. `pnpm openclaw onboard` 初始化
-     8. 创建命令包装器（`openclaw` / `openclaw-cn`）
+     5. `pnpm build` 构建核心（包含前端）
+     6. `pnpm openclaw onboard --non-interactive ...` 初始化默认配置
+     7. 创建命令包装器脚本（Windows: `%APPDATA%\npm\openclaw.cmd`，macOS/Linux: `~/.local/bin/openclaw`）
    - 安装路径固定为 `~/openclaw-cn`，**不支持用户自定义路径**
 
 3. 关键约束
@@ -267,9 +266,9 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
    - 实时捕获输出并更新界面进度
    - 支持取消操作
 
-4. 异常处理
-   - 下载失败：提示网络问题并提供重试
-   - 构建失败：展示简化错误信息和日志
+4. 异常处理与错误分类
+   - 所有子进程失败均通过 `ErrorCategory` 枚举分类：`network_timeout`、`network_dns`、`network_ssl`、`permission_denied`、`disk_full`、`antivirus_blocked`、`dependency_missing`、`process_crashed` 等
+   - UI 根据分类展示本地化错误描述和修复建议，而非原始 stderr
    - 用户取消：安全终止流程
 
 ### 验收标准
@@ -292,9 +291,10 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 技术实现概要
 
-- 影响范围：`ui/installing_page.py`、`infra/installer.py`
+- 影响范围：`src/ui/installing_page.py`、`src/infra/openclaw_installer.py`
 - 前端：进度条、状态文本、日志区域
-- 后端：QThread 后台执行安装命令，Signal 反馈进度
+- 后端：`InstallWorker` (QThread) 执行 `OpenClawInstaller.install()`，通过 `Signal` 反馈进度与日志
+- 平台差异：Windows 自动安装 Git（若缺失）；macOS 自动弹出 Xcode Command Line Tools 安装对话框并轮询等待；Linux 使用 `pkexec` 安装系统依赖
 
 ### 页面布局
 
@@ -336,8 +336,9 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
    - OpenClaw 已安装成功
 
 2. 配置内容
-   - 执行 `openclaw onboard --non-interactive ...` 初始化
-   - 写入默认环境变量和基础配置
+   - 验证 OpenClaw 命令是否可用
+   - 设置默认 Gateway 配置：`gateway.mode=local`、`gateway.bind=loopback`、`gateway.port=18789`
+   - 执行 `openclaw onboard --non-interactive --accept-risk --mode local ...` 初始化
    - 不要求用户填写任何配置项
 
 3. 操作流程
@@ -360,9 +361,9 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 技术实现概要
 
-- 影响范围：`ui/us05_config_page.py`、`core/openclaw_manager.py`
+- 影响范围：`src/ui/default_config_page.py`、`src/core/openclaw_manager.py`
 - 前端：进度条、日志区域、重试/下一步按钮
-- 后端：QThread 执行 `configure_only()`
+- 后端：`ConfigWorker` (QThread) 执行 `OpenClawManager.configure_only()`
 
 ---
 
@@ -433,7 +434,7 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 技术实现概要
 
-- 影响范围：`ui/provider_config_page.py`、`models/provider_config.py`、`core/openclaw_manager.py`
+- 影响范围：`src/ui/provider_config_page.py`、`src/models/provider_config.py`、`src/core/openclaw_manager.py`
 - 前端：可展开的供应商卡片（VendorRow）、模型多选 CheckBox、自定义模型输入、汇总下拉框
 - 后端：`read_existing_provider_config()` 读取已有配置，`configure_providers()` 写入配置
 
@@ -513,9 +514,9 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 技术实现概要
 
-- 影响范围：`ui/us06_startup_page.py`、`core/openclaw_manager.py`
+- 影响范围：`src/ui/startup_page.py`、`src/core/openclaw_manager.py`
 - 前端：进度显示、日志区域、URL 输入框、打开浏览器按钮
-- 后端：`_start_gateway()`、`_health_check()`、`_open_browser()`
+- 后端：`StartupWorker` (QThread) 执行 `OpenClawManager.startup_only()`，内部调用 `_start_gateway()`、`_health_check()`、`_open_browser()`
 
 ### 页面布局
 
@@ -529,12 +530,12 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 |                                                      |
 |   日志:                                              |
 |   ----------------------------------------------     |
-|   > Gateway started on port 1606                   |
-|   > WebUI available at http://localhost:1606       |
+|   > Gateway started on port 18789                  |
+|   > WebUI available at http://localhost:18789       |
 |   ----------------------------------------------     |
 |                                                      |
 |   服务已启动！                                       |
-|   访问地址: http://localhost:1606?token=xxx          |
+|   访问地址: http://localhost:18789?token=xxx          |
 |                                                      |
 |                    [ 打开浏览器 ]                     |
 |                              [ 返回 ]   [ 完成 ]     |
@@ -568,9 +569,9 @@ OpenClaw 的官方使用方式依赖命令行下载与配置。对于熟悉终�
 
 ### 3.3 技术实现
 
-- 入口：`uninstall_main.py`
-- UI 页面：`ui/uninstall_welcome_page.py`、`ui/uninstall_progress_page.py`、`ui/uninstall_done_page.py`
-- 卸载逻辑：`core/openclaw_manager.uninstall()`
+- 入口：`uninstaller.py`
+- UI 页面：`src/ui/uninstall_welcome_page.py`、`src/ui/uninstall_progress_page.py`、`src/ui/uninstall_done_page.py`
+- 卸载逻辑：`src/core/openclaw_manager`（内联 UninstallWorker）
 
 ---
 
@@ -603,32 +604,37 @@ dist/
 ## 5. 项目结构
 
 ```
-├── main.py                    # 安装器入口
-├── uninstall_main.py          # 卸载工具入口
+├── installer.py               # 安装器入口
+├── uninstaller.py             # 卸载工具入口
 ├── build.py                   # 打包脚本（双程序）
-├── core/
-│   └── openclaw_manager.py    # OpenClaw 服务管理器
-├── infra/
-│   ├── installer.py           # 安装逻辑
-│   └── system_checker.py      # 系统环境检测
-├── models/
-│   ├── env_check.py           # 环境检测数据模型
-│   ├── install.py             # 安装状态数据模型
-│   ├── config.py              # 配置状态数据模型
-│   └── provider_config.py     # Provider 数据定义
-├── services/
-│   ├── env_check_service.py   # 环境检测服务
-│   └── install_service.py     # 安装服务
-├── ui/
-│   ├── welcome_page.py        # US-01 欢迎页
-│   ├── env_check_page.py      # US-02 环境检测页
-│   ├── installing_page.py     # US-04 安装页
-│   ├── us05_config_page.py    # US-05 默认配置页
-│   ├── provider_config_page.py # US-05b 模型配置页
-│   ├── us06_startup_page.py   # US-06 启动页
-│   ├── uninstall_welcome_page.py   # 卸载-检测页
-│   ├── uninstall_progress_page.py  # 卸载-进度页
-│   └── uninstall_done_page.py      # 卸载-完成页
+├── src/                       # 源码包
+│   ├── core/
+│   │   └── openclaw_manager.py    # OpenClaw 服务管理器
+│   ├── infra/
+│   │   ├── openclaw_installer.py  # 安装逻辑
+│   │   ├── git_installer.py       # Git 安装器（Windows/macOS）
+│   │   ├── shell_runner.py        # Shell 命令执行
+│   │   └── system_checker.py      # 系统环境检测
+│   ├── models/
+│   │   ├── constants.py           # 项目常量（Node.js 版本、镜像、端口等）
+│   │   ├── env_check.py           # 环境检测数据模型
+│   │   ├── install.py             # 安装状态数据模型
+│   │   ├── config.py              # 配置状态数据模型
+│   │   └── provider_config.py     # Provider 数据定义
+│   ├── services/
+│   │   ├── env_check_service.py   # 环境检测服务
+│   │   ├── install_service.py     # 安装服务
+│   │   └── workers.py             # QThread Worker（ConfigWorker、StartupWorker 等）
+│   └── ui/
+│       ├── welcome_page.py            # US-01 欢迎页
+│       ├── env_check_page.py          # US-02 环境检测页
+│       ├── installing_page.py         # US-04 安装页
+│       ├── default_config_page.py     # US-05 默认配置页
+│       ├── provider_config_page.py    # US-05b 模型配置页
+│       ├── startup_page.py            # US-06 启动页
+│       ├── uninstall_welcome_page.py  # 卸载-检测页
+│       ├── uninstall_progress_page.py # 卸载-进度页
+│       └── uninstall_done_page.py     # 卸载-完成页
 └── .gitignore
 ```
 
@@ -654,7 +660,7 @@ dist/
 1. US-01 启动与欢迎
 2. US-02 环境检测（含浏览器检测、OpenClaw 已安装分支）
 3. US-04 下载与安装（pnpm 本地构建）
-4. US-05 加载默认配置（onboard）
+4. US-05 加载默认配置（Gateway 参数 + onboard）
 5. US-05b Provider 模型配置（多供应商、多选模型、API Key）
 6. US-06 启动服务与 WebChat
 

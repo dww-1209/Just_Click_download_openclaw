@@ -1,7 +1,14 @@
+"""OpenClaw 生命周期管理器
+
+职责：封装 OpenClaw 的安装后配置、网关启停、健康检查、WebUI 地址获取、
+Provider 配置以及卸载等核心操作。所有耗时操作均通过回调函数向 UI 层汇报进度。
+"""
+
 import subprocess
 import platform
 import time
 import os
+import shutil
 import signal
 import webbrowser
 import re
@@ -14,10 +21,19 @@ from src.models.config import (
     ConfigProgress,
     ConfigResult,
 )
+from src.infra import utils
 
 
 class OpenClawManager:
-    """OpenClaw Service Manager"""
+    """OpenClaw 服务管理器
+
+    管理 OpenClaw 网关进程的完整生命周期，包括：
+    - 配置初始化（config set / onboard）
+    - 网关启动/停止/健康检查
+    - Provider 与模型配置
+    - 浏览器打开 WebUI
+    - 完全卸载
+    """
 
     def __init__(self):
         self.process: Optional[subprocess.Popen] = None
@@ -25,9 +41,13 @@ class OpenClawManager:
         self._webui_url: Optional[str] = None
         self._log_lines: list = []
         self._on_log: Optional[Callable[[str], None]] = None
-    
+
     def _log(self, message: str):
-        """Log message"""
+        """记录日志并回调 UI
+
+        Args:
+            message: 日志内容，会自动追加时间戳。
+        """
         timestamp = time.strftime("%H:%M:%S")
         log_line = f"[{timestamp}] {message}"
         self._log_lines.append(log_line)
@@ -40,10 +60,20 @@ class OpenClawManager:
         on_progress: Callable[[ConfigProgress], None] = None,
         on_log: Callable[[str], None] = None,
     ) -> ConfigResult:
-        """US-05: Configure only, do not start gateway"""
+        """仅执行配置，不启动网关（US-05）
+
+        流程：检测安装 → 设置默认配置（gateway.mode/local 等）→ 执行 onboard → 注入浏览器配置。
+
+        Args:
+            on_progress: 进度回调，用于驱动 UI 进度条。
+            on_log: 日志回调，用于在 UI 中展示实时日志。
+
+        Returns:
+            ConfigResult: 包含状态、服务状态、消息及完整日志行列表。
+        """
         self._log_lines = []
         self._on_log = on_log
-        
+
         try:
             self._log("Checking OpenClaw installation...")
             if on_progress:
@@ -123,10 +153,21 @@ class OpenClawManager:
         on_progress: Callable[[ConfigProgress], None] = None,
         on_log: Callable[[str], None] = None,
     ) -> ConfigResult:
-        """US-06: Start gateway and open browser only"""
+        """仅启动网关并获取 WebUI 地址，不自动打开浏览器（US-06）
+
+        流程：启动网关 → 健康检查（端口 18789）→ 获取 dashboard URL。
+        浏览器不再自动打开，由用户在 UI 中手动点击按钮。
+
+        Args:
+            on_progress: 进度回调。
+            on_log: 日志回调。
+
+        Returns:
+            ConfigResult: 若成功则包含 webchat_url 和 RUNNING 状态。
+        """
         self._log_lines = []
         self._on_log = on_log
-        
+
         try:
             self._log("Starting gateway...")
             if on_progress:
@@ -198,14 +239,13 @@ class OpenClawManager:
                     )
                 )
 
-            # Note: Browser is NOT opened automatically anymore
-            # User will manually click "Open WebChat" button
+            # 注意：不再自动打开浏览器，由用户在 UI 中手动点击 "打开 WebChat" 按钮
             return ConfigResult(
                 status=ConfigStatus.COMPLETED,
                 service_status=ServiceStatus.RUNNING,
                 webchat_url=webui_url or "http://127.0.0.1:18789",
                 message='网关服务已启动，请点击"打开 WebChat"按钮',
-                browser_opened=False,  # Not auto-opened
+                browser_opened=False,  # 不自动打开
                 log_lines=self._log_lines.copy(),
             )
 
@@ -229,32 +269,46 @@ class OpenClawManager:
         on_progress: Callable[[ConfigProgress], None] = None,
         on_log: Callable[[str], None] = None,
     ) -> ConfigResult:
-        """Quick start - skip config, directly start gateway"""
+        """快速启动：跳过配置，直接启动网关
+
+        本质上是 startup_only 的别名，用于已配置过的场景。
+        """
         return self.startup_only(on_progress=on_progress, on_log=on_log)
 
     def setup_and_start(
         self,
         on_progress: Callable[[ConfigProgress], None] = None,
     ) -> ConfigResult:
-        """Legacy: Setup and start service (config + startup)"""
-        # First configure
+        """旧版入口：先配置再启动（config + startup）
+
+        先调用 configure_only，若成功再调用 startup_only。
+        """
+        # 先执行配置
         config_result = self.configure_only(on_progress=on_progress)
         if config_result.status != ConfigStatus.COMPLETED:
             return config_result
-        
-        # Then startup
+
+        # 再启动网关
         return self.startup_only(on_progress=on_progress)
 
     def _resolve_openclaw_cmd(self) -> str:
-        """检测系统中可用的 openclaw 命令（优先 openclaw-cn，fallback openclaw）"""
+        """检测系统中可用的 openclaw 命令
+
+        优先检测 openclaw-cn，fallback 到 openclaw。
+        Windows 使用 where 命令（能正确处理 %APPDATA% 等环境变量展开），
+        Linux/macOS 使用 shutil.which。
+
+        Returns:
+            str: 检测到的命令名（如 "openclaw-cn"），若都未找到则返回 "openclaw"。
+        """
         import shutil
         os_type = platform.system().lower()
         if os_type == "windows":
             # Windows 下使用 where 更可靠（能处理 %APPDATA% 等环境变量展开）
             for cmd in ["openclaw-cn", "openclaw"]:
                 result = subprocess.run(
-                    f"where {cmd}",
-                    shell=True,
+                    ["where", cmd],
+                    shell=False,
                     capture_output=True,
                     timeout=5,
                 )
@@ -267,22 +321,30 @@ class OpenClawManager:
         return "openclaw"
 
     def _check_openclaw_installed(self) -> bool:
-        """Check if openclaw command is available"""
+        """检查 openclaw 命令是否可用
+
+        Windows 使用 where 检测（避免某些 CLI 不支持 --version 导致误判）；
+        Linux/macOS 使用 which 检测，并显式将 ~/.local/bin 加入 PATH，
+        以确保用户通过安装器创建的 wrapper 能被找到。
+
+        Returns:
+            bool: 命令是否可用。
+        """
         try:
             cmd = self._resolve_openclaw_cmd()
             os_type = platform.system().lower()
             if os_type == "windows":
                 # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
                 result = subprocess.run(
-                    f"where {cmd}",
-                    shell=True,
+                    ["where", cmd],
+                    shell=False,
                     capture_output=True,
                     text=True,
                     timeout=10,
                 )
                 return result.returncode == 0
             else:
-                # Linux/macOS: 使用 which 检测
+                # Linux/macOS: 使用 which 检测，并确保 ~/.local/bin 在 PATH 中
                 import os
                 env = os.environ.copy()
                 home = os.path.expanduser("~")
@@ -300,7 +362,17 @@ class OpenClawManager:
             return False
 
     def _setup_default_config(self) -> bool:
-        """Setup default configuration"""
+        """设置 OpenClaw 默认配置并执行 onboard
+
+        流程：
+        1. 设置 gateway.mode=local、gateway.bind=loopback、gateway.port=18789。
+        2. 执行 onboard --non-interactive ... 初始化环境。
+        3. 若 onboard 返回非零但配置文件已存在，视为重复执行，仍然通过。
+        4. 注入浏览器默认配置（启用 browser，defaultProfile=openclaw）。
+
+        Returns:
+            bool: 配置是否成功。
+        """
         try:
             self._log("Setting default config...")
             configs = [
@@ -309,10 +381,10 @@ class OpenClawManager:
                 ("gateway.port", "18789"),
                 # openclaw-cn 不支持 allowUnconfigured，由 onboard 完成初始化
             ]
-            
+
             for key, value in configs:
                 try:
-                    result = self._run_openclaw_command(f'config set {key} "{value}"')
+                    result = self._run_openclaw_command(["config", "set", key, value])
                     if result.returncode == 0:
                         self._log(f"Set {key}={value} OK")
                     else:
@@ -322,12 +394,15 @@ class OpenClawManager:
                 except Exception as e:
                     self._log(f"Set {key} error: {e}")
                     continue
-            
+
             self._log("Running onboard...")
             onboard_ok = False
             try:
-                cmd = 'onboard --non-interactive --accept-risk --mode local --skip-skills --skip-health --no-install-daemon --node-manager pnpm --skip-channels'
-                result = self._run_openclaw_command(cmd)
+                result = self._run_openclaw_command([
+                    "onboard", "--non-interactive", "--accept-risk", "--mode", "local",
+                    "--skip-skills", "--skip-health", "--no-install-daemon",
+                    "--node-manager", "pnpm", "--skip-channels",
+                ])
                 self._log(f"onboard return code: {result.returncode}")
                 if result.stdout:
                     self._log(f"onboard stdout: {result.stdout[:500]}")
@@ -348,20 +423,24 @@ class OpenClawManager:
             except Exception as e:
                 self._log(f"onboard error: {e}")
                 onboard_ok = False
-            
+
             if not onboard_ok:
                 return False
-            
+
             self._inject_browser_config()
-            
+
             return True
-            
+
         except Exception as e:
             self._log(f"Setup config error: {e}")
             return False
 
     def _inject_browser_config(self) -> None:
-        """Inject browser default config into ~/.openclaw/openclaw.json"""
+        """向 ~/.openclaw/openclaw.json 注入浏览器默认配置
+
+        若文件已存在则读取后追加/覆盖 browser 字段，不存在则新建。
+        配置内容：enabled=True，defaultProfile="openclaw"。
+        """
         import json
         import os
 
@@ -391,7 +470,15 @@ class OpenClawManager:
             self._log(f"Browser config: failed to write: {e}")
 
     def _build_clean_env(self) -> dict:
-        """Build clean environment for subprocess, filtering non-ASCII values"""
+        """构建干净的子进程环境变量
+
+        过滤掉包含非 ASCII 字符的环境变量（避免某些中文路径或特殊字符导致
+        subprocess 编码错误），同时保留 HOME、PATH 等核心变量。
+        最后确保 ~/.local/bin 在 PATH 最前面，以便找到 wrapper 脚本。
+
+        Returns:
+            dict: 清理后的环境变量字典。
+        """
         import os
         env = os.environ.copy()
         keep_always = {"HOME", "PATH", "SHELL", "TMPDIR", "PWD", "OLDPWD"}
@@ -405,77 +492,121 @@ class OpenClawManager:
                 clean_env[k] = v
             except UnicodeEncodeError:
                 pass
-        # Ensure ~/.local/bin in PATH
+        # 确保 ~/.local/bin 在 PATH 中（Linux/macOS wrapper 安装位置）
         home = os.path.expanduser("~")
         local_bin = os.path.join(home, ".local", "bin")
         clean_env["PATH"] = f"{local_bin}:{clean_env.get('PATH', '')}"
         return clean_env
 
     def _start_gateway(self) -> bool:
-        """Start OpenClaw gateway service"""
+        """启动 OpenClaw 网关服务（前台模式）
+
+        启动流程：
+        1. 先检查网关是否已在运行（最多重试 3 次）。
+        2. 若端口 18789 被占用，尝试释放该端口。
+        3. 使用前台模式启动（openclaw gateway，不加 start），避免需要管理员权限。
+        4. Windows 使用 PowerShell 包装并隐藏窗口；Linux/macOS 直接运行。
+        5. 轮询最多 20 秒：检查进程是否存活、通过 gateway status 检查、检测端口开放。
+
+        Returns:
+            bool: 网关是否成功进入就绪状态。
+        """
         try:
             self._log("Checking if gateway already running...")
+            # 轮询 3 次检查是否已有实例在运行
             for i in range(3):
                 try:
-                    result = self._run_openclaw_command("gateway status")
+                    result = self._run_openclaw_command(["gateway", "status"])
                     if result.returncode == 0 and "running" in result.stdout.lower():
                         self._log("Gateway already running")
                         return True
                 except Exception as e:
                     self._log(f"Check status error: {e}")
                 time.sleep(0.5)
-            
+
+            # 若端口被占用，尝试释放（可能是之前异常退出的残留进程）
             if self._is_port_open(18789):
                 self._log("Port occupied, trying to release...")
                 self._kill_port_process(18789)
                 time.sleep(1)
-            
-            # All platforms: use foreground mode (no admin required)
+
+            # 所有平台统一使用前台模式（不需要管理员权限）
             os_type = platform.system().lower()
             self._log(f"Detected OS: {os_type}")
             self._log("Starting gateway in foreground mode...")
-            
-            # Use 'openclaw gateway' (without 'start') for foreground mode
-            # This doesn't require admin privileges or scheduled task on any OS
+
+            # 使用 'openclaw gateway'（不带 'start'）前台启动，任何平台都不需要管理员权限
             env = self._build_clean_env()
+            cmd = self._resolve_openclaw_cmd()
+
+            # 如果全局命令找不到，但本地项目存在，则 fallback 到项目内 pnpm 执行
+            local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
+            local_fallback = (
+                cmd == "openclaw"
+                and not shutil.which("openclaw")
+                and not shutil.which("openclaw-cn")
+                and local_project.exists()
+                and (local_project / "package.json").exists()
+            )
+
             popen_kwargs = {
-                "shell": True,
+                "shell": False,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
                 "text": True,
                 "env": env,
             }
-            
-            cmd = self._resolve_openclaw_cmd()
+
             if os_type == "windows":
-                # Windows needs PowerShell wrapper and creation flags
-                full_command = f'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "{cmd} gateway"'
-                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                if local_fallback:
+                    full_cmd = ["pnpm", "openclaw", "gateway"]
+                    popen_kwargs["cwd"] = str(local_project)
+                else:
+                    full_cmd = [cmd, "gateway"]
+                # Windows 隐藏窗口
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0
+                popen_kwargs["startupinfo"] = startupinfo
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             else:
-                # Linux/macOS: run directly
-                full_command = f"{cmd} gateway"
-            
-            self._log(f"Execute: {full_command[:80]}...")
-            
-            # Use Popen to run in background, not blocking
-            self.process = subprocess.Popen(full_command, **popen_kwargs)
-            
+                if local_fallback:
+                    full_cmd = ["pnpm", "openclaw", "gateway"]
+                    popen_kwargs["cwd"] = str(local_project)
+                else:
+                    full_cmd = [cmd, "gateway"]
+
+            self._log(f"Execute: {' '.join(full_cmd[:5])}...")
+
+            # 如果已有旧进程在运行，先终止它，避免僵尸进程或端口冲突
+            if self.process is not None:
+                try:
+                    self._kill_process_tree(self.process)
+                    self._log("已终止旧的 Gateway 进程")
+                except Exception:
+                    pass
+                self.process = None
+
+            # 使用 Popen 后台运行，避免阻塞主线程
+            self.process = subprocess.Popen(full_cmd, **popen_kwargs)
+
             self._log(f"Gateway process started with PID: {self.process.pid}")
-            
+
             self._log("Waiting for service initialization...")
             time.sleep(3)
-            
+
             self._log("Waiting for gateway ready...")
-            for i in range(20):  # Wait up to 20 seconds
+            # 最多等待 20 秒，每秒检查一次
+            for i in range(20):
                 if self.is_cancelled:
                     return False
-                
+
                 time.sleep(1)
-                
-                # Check if process is still running (all platforms foreground mode)
+
+                # 检查前台进程是否已异常退出
                 if self.process:
                     if self.process.poll() is not None:
-                        # Process exited
+                        # 进程已退出，收集输出用于诊断
                         stdout, stderr = "", ""
                         try:
                             stdout, stderr = self.process.communicate(timeout=1)
@@ -487,10 +618,10 @@ class OpenClawManager:
                         if stderr:
                             self._log(f"stderr: {stderr[:500]}")
                         return False
-                
-                # Check status via command
+
+                # 通过 gateway status 命令检查服务状态
                 try:
-                    result = self._run_openclaw_command("gateway status")
+                    result = self._run_openclaw_command(["gateway", "status"])
                     self._log(f"Status check #{i+1}: rc={result.returncode}")
                     if result.returncode == 0:
                         if "running" in result.stdout.lower():
@@ -500,12 +631,13 @@ class OpenClawManager:
                             self._log(f"Status output: {result.stdout[:200]}")
                 except Exception as e:
                     self._log(f"Status check error: {e}")
-                
-                # Check if port is open
+
+                # 检查端口是否已开放（兜底判断）
                 if self._is_port_open(18789):
                     self._log("Port 18789 is open, gateway is ready")
                     return True
-                
+
+                # 每 5 秒输出一次等待提示，避免 UI 长时间无响应
                 if (i + 1) % 5 == 0:
                     self._log(f"Waiting for gateway... ({i+1}/20s)")
 
@@ -518,25 +650,35 @@ class OpenClawManager:
             self._log(f"Traceback: {traceback.format_exc()}")
             return False
 
-    # 禁止在 openclaw 命令中使用的 shell 元字符（防御注入）
-    _SHELL_METACHARS = re.compile(r"[;&|`$(){}[\]\n\r<>")
+    def _run_openclaw_command(self, args: list[str]) -> subprocess.CompletedProcess:
+        """执行 openclaw 子命令（使用 shell=False，彻底避免命令注入）
 
-    def _run_openclaw_command(self, command: str) -> subprocess.CompletedProcess:
-        """Execute openclaw command using PowerShell with hidden window"""
+        安全策略：
+        - 不再接收字符串命令，只接受参数列表，使用 shell=False 执行。
+        - Windows 直接调用可执行文件（配合 CREATE_NO_WINDOW 隐藏窗口）。
+        - 若全局命令找不到但本地项目目录存在，fallback 到项目内 pnpm openclaw。
+
+        Args:
+            args: 要执行的 openclaw 子命令参数列表（如 ["config", "set", "gateway.mode", "local"]）。
+
+        Returns:
+            subprocess.CompletedProcess: 包含 returncode、stdout、stderr。
+        """
         import os
         import shutil
 
-        if self._SHELL_METACHARS.search(command):
-            self._log(f"拒绝执行包含非法字符的命令: {command[:80]}")
+        # 防御：确保 args 是字符串列表，防止注入
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            self._log("拒绝执行：参数必须是字符串列表")
             return subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="命令包含非法字符",
+                args=[], returncode=1, stdout="", stderr="参数类型错误",
             )
 
         os_type = platform.system().lower()
         cmd = self._resolve_openclaw_cmd()
         env = self._build_clean_env()
 
-        # 如果全局命令找不到，但本地项目存在，使用项目内 pnpm
+        # 如果全局命令找不到，但本地项目存在，则 fallback 到项目内 pnpm 执行
         local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
         local_fallback = (
             cmd == "openclaw"
@@ -548,36 +690,45 @@ class OpenClawManager:
 
         if os_type == "windows":
             if local_fallback:
-                ps_command = f'cd "{local_project}"; pnpm openclaw {command}'
+                # 在项目目录内执行 pnpm openclaw <args>
+                full_cmd = ["pnpm", "openclaw"] + args
+                cwd = str(local_project)
             else:
-                ps_command = f'{cmd} {command}'
-            full_command = f'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "{ps_command}"'
+                full_cmd = [cmd] + args
+                cwd = None
 
-            self._log(f"Execute: {full_command[:100]}...")
+            self._log(f"Execute: {' '.join(full_cmd[:5])}...")
+
+            # Windows 隐藏窗口参数
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
 
             result = subprocess.run(
-                full_command,
-                shell=True,
+                full_cmd,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
                 env=env,
+                cwd=cwd,
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
-
             return result
         else:
             if local_fallback:
+                full_cmd = ["pnpm", "openclaw"] + args
                 cwd = str(local_project)
-                full_command = f"pnpm openclaw {command}"
             else:
+                full_cmd = [cmd] + args
                 cwd = None
-                full_command = f"{cmd} {command}"
 
-            self._log(f"Execute: {full_command[:100]}...")
+            self._log(f"Execute: {' '.join(full_cmd[:5])}...")
 
             result = subprocess.run(
-                full_command,
-                shell=True,
+                full_cmd,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -587,9 +738,17 @@ class OpenClawManager:
             return result
 
     def _kill_port_process(self, port: int):
-        """Kill process occupying port"""
+        """释放被占用的端口
+
+        先对端口进行防御性校验（纯数字、1-65535），然后按平台执行：
+        - Windows: netstat -ano 查找 PID，再 taskkill /F 强制结束。
+        - Linux/macOS: lsof -ti :port 查找 PID，再 kill -9 强制结束。
+
+        Args:
+            port: 要释放的端口号。
+        """
         try:
-            # 防御性校验：确保 port 是纯数字
+            # 防御性校验：确保 port 是纯数字且在合法范围内
             port = int(port)
             if not (1 <= port <= 65535):
                 self._log(f"Invalid port: {port}")
@@ -639,67 +798,99 @@ class OpenClawManager:
             self._log(f"Release port error: {e}")
 
     def _is_port_open(self, port: int) -> bool:
-        """Check if port is open"""
+        """检测本地端口是否开放
+
+        Args:
+            port: 端口号。
+
+        Returns:
+            bool: 端口是否可连接。
+        """
         import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)
-            result = sock.connect_ex(("localhost", port))
-            sock.close()
-            return result == 0
+            return sock.connect_ex(("localhost", port)) == 0
         except Exception:
             return False
+        finally:
+            sock.close()
 
     def _health_check(self) -> bool:
-        """Health check - check port 18789"""
+        """健康检查：检测网关端口 18789 是否开放
+
+        Returns:
+            bool: 服务是否健康。
+        """
         return self._is_port_open(18789)
 
     def _get_webui_url(self) -> str:
-        """Get WebUI URL using dashboard command"""
+        """通过 dashboard 命令获取 WebUI 访问地址
+
+        最多重试 10 次（每次间隔 1 秒），从 stdout+stderr 中正则提取 URL。
+        若提取失败则返回默认地址 http://127.0.0.1:18789。
+
+        Returns:
+            str: WebUI 完整 URL（含 token）。
+        """
         for attempt in range(10):
             try:
                 self._log(f"Getting WebUI URL (attempt {attempt + 1}/10)...")
-                
-                result = self._run_openclaw_command("dashboard --no-open")
-                
+
+                result = self._run_openclaw_command(["dashboard", "--no-open"])
+
                 output = result.stdout + result.stderr
                 self._log(f"dashboard output: {output[:300]}")
-                
+
                 if result.returncode == 0:
                     url_match = re.search(r'https?://[^\s\n\r]+', output)
                     if url_match:
                         url = url_match.group(0)
+                        # 校验 URL 是否包含 token 或目标端口，避免误匹配
                         if "token=" in url or "18789" in url:
                             self._log(f"Got URL: {url}")
                             return url
                 else:
                     self._log(f"dashboard return code: {result.returncode}")
-                    
+
             except Exception as e:
                 self._log(f"Get URL error: {type(e).__name__}: {e}")
-            
+
+            # 最后一次不再等待
             if attempt < 9:
                 time.sleep(1)
-        
+
         self._log("Failed to get URL from dashboard, using default")
         return "http://127.0.0.1:18789"
 
     def _open_browser(self, url: str) -> bool:
-        """Open system default browser"""
+        """打开系统默认浏览器访问指定 URL
+
+        尝试顺序：
+        1. webbrowser.open（跨平台，最干净）。
+        2. Windows: start 命令。
+        3. 按平台使用 os.system 兜底（start / open / xdg-open）。
+
+        Args:
+            url: 要打开的完整 URL。
+
+        Returns:
+            bool: 是否至少有一种方式成功执行。
+        """
         self._log(f"Opening browser: {url}")
-        
+
         try:
             webbrowser.open(url, new=2)
             self._log("webbrowser.open success")
             return True
         except Exception as e:
             self._log(f"webbrowser.open failed: {e}")
-        
+
         if platform.system().lower() == "windows":
             try:
                 result = subprocess.run(
-                    f'start "" "{url}"',
-                    shell=True,
+                    ["cmd", "/c", "start", "", url],
+                    shell=False,
                     capture_output=True,
                     timeout=5,
                 )
@@ -708,7 +899,7 @@ class OpenClawManager:
                     return True
             except Exception as e:
                 self._log(f"start command failed: {e}")
-        
+
         try:
             if platform.system().lower() == "windows":
                 os.system(f'start "" "{url}"')
@@ -720,15 +911,21 @@ class OpenClawManager:
             return True
         except Exception as e:
             self._log(f"os.system failed: {e}")
-        
+
         return False
 
     def _stop_gateway(self):
-        """Stop gateway service"""
+        """停止网关服务
+
+        停止策略：
+        1. 若前台进程仍在运行，先 terminate，5 秒内不退出则 kill。
+        2. 执行 gateway stop 命令（兼容后台模式残留）。
+        3. 强制释放端口 18789。
+        """
         try:
             self._log("Stopping gateway...")
-            
-            # All platforms use foreground mode now: terminate the process we started
+
+            # 所有平台现在使用前台模式：终止我们启动的进程
             if self.process and self.process.poll() is None:
                 self._log(f"Terminating gateway process (PID: {self.process.pid})")
                 self.process.terminate()
@@ -737,24 +934,27 @@ class OpenClawManager:
                 except:
                     self._log("Force killing gateway process...")
                     self.process.kill()
-            
-            # Also try command-line stop and release port 18789
+
+            # 同时尝试命令行 stop 并释放端口 18789（兜底）
             try:
-                self._run_openclaw_command("gateway stop")
+                self._run_openclaw_command(["gateway", "stop"])
             except Exception as e:
                 self._log(f"gateway stop command error: {e}")
-            
+
             self._kill_port_process(18789)
         except Exception as e:
             self._log(f"Stop gateway error: {e}")
 
     def read_existing_provider_config(self) -> dict:
         """读取已有的 Provider 配置
-        
+
         从两个来源读取：
-        1. ~/.openclaw/openclaw.json — env 变量、默认模型、providers 配置
-        2. ~/.openclaw/agents/main/agent/auth-profiles.json — auth profile 中的 API Key
-        
+        1. ~/.openclaw/openclaw.json —— env 变量、默认模型、providers 配置
+        2. ~/.openclaw/agents/main/agent/auth-profiles.json —— auth profile 中的 API Key
+
+        读取 env 时会做防污染过滤：跳过包含 Traceback/ERROR 或长度过短的值，
+        避免之前崩溃时写入的堆栈信息被误读为 API Key。
+
         Returns:
             dict: {
                 "env": {"DEEPSEEK_API_KEY": "sk-xxx", ...},
@@ -852,15 +1052,26 @@ class OpenClawManager:
         on_log: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """配置 AI Provider：写入 env 变量和默认模型
-        
+
+        执行流程：
+        1. 遍历 providers_config，设置主 env 变量和 fallback env 变量。
+        2. 若 provider 有 auth_choice，执行 onboard 初始化 provider 配置。
+        3. 设置全局默认模型（agents.defaults.model 对象格式）。
+        4. 更新 provider 模型列表（覆盖 onboard 可能创建的过时模型别名）。
+        5. 对无 onboard 的自定义 provider（如 DashScope）直接写入 models.providers。
+
+        安全策略：写入 env 前会清理 API Key，过滤掉包含 Traceback/ERROR 或长度不足的值，
+        防止之前崩溃堆栈污染配置。
+
         Args:
             providers_config: {vendor_id: {api_key, env_var, fallback_env_var, model, base_url, auth_choice, key_type}}
             global_default_model: 全局默认 model ref
+            fallback_models: 备选模型列表
             on_progress: 进度回调
             on_log: 日志回调
-        
+
         Returns:
-            bool: 是否全部成功
+            bool: 是否全部成功（任一子步骤失败会置为 False，但会继续执行后续步骤）。
         """
         self._on_log = on_log
         all_ok = True
@@ -895,39 +1106,42 @@ class OpenClawManager:
                 all_ok = False
                 continue
             try:
-                cmd = f'config set env.{env_var} "{cleaned_key}"'
-                result = self._run_openclaw_command(cmd)
+                result = self._run_openclaw_command(["config", "set", f"env.{env_var}", cleaned_key])
                 if result.returncode == 0:
                     self._log(f"  Set env.{env_var} OK")
                 else:
                     self._log(f"  Set env.{env_var} failed: rc={result.returncode}")
                     if result.stderr:
-                        self._log(f"    stderr: {result.stderr[:200]}")
+                        # 脱敏：如果 stderr 中包含 API Key，替换为 ***，防止敏感信息泄露到日志
+                        safe_stderr = result.stderr[:200]
+                        # 同时检查原始 api_key 和 cleaned_key
+                        for sensitive in (api_key, cleaned_key):
+                            if sensitive and sensitive in safe_stderr:
+                                safe_stderr = safe_stderr.replace(sensitive, "***")
+                        self._log(f"    stderr: {safe_stderr}")
                     all_ok = False
             except Exception as e:
                 self._log(f"  Set env.{env_var} error: {e}")
                 all_ok = False
 
-            # 2. 如有 fallback_env_var，也设置（用于兼容）
+            # 2. 如有 fallback_env_var，也设置（用于兼容不同 provider 的命名习惯）
             if fallback_env_var and fallback_env_var != env_var:
                 try:
-                    cmd = f'config set env.{fallback_env_var} "{api_key}"'
-                    result = self._run_openclaw_command(cmd)
+                    result = self._run_openclaw_command(["config", "set", f"env.{fallback_env_var}", api_key])
                     if result.returncode == 0:
                         self._log(f"  Set env.{fallback_env_var} OK")
                 except Exception as e:
                     self._log(f"  Set env.{fallback_env_var} error: {e}")
 
-            # 3. 如有 auth_choice，执行 onboard（设置 provider baseUrl 等）
+            # 3. 如有 auth_choice，执行 onboard（设置 provider baseUrl 等元信息）
             if auth_choice:
                 try:
-                    onboard_cmd = (
-                        f'onboard --auth-choice {auth_choice} '
-                        f'--non-interactive --accept-risk --mode local '
-                        f'--skip-skills --skip-health --no-install-daemon '
-                        f'--node-manager pnpm --skip-channels'
-                    )
-                    result = self._run_openclaw_command(onboard_cmd)
+                    result = self._run_openclaw_command([
+                        "onboard", "--auth-choice", auth_choice,
+                        "--non-interactive", "--accept-risk", "--mode", "local",
+                        "--skip-skills", "--skip-health", "--no-install-daemon",
+                        "--node-manager", "pnpm", "--skip-channels",
+                    ])
                     self._log(f"  onboard return code: {result.returncode}")
                     if result.stdout:
                         self._log(f"  onboard stdout: {result.stdout[:300]}")
@@ -991,7 +1205,12 @@ class OpenClawManager:
         return all_ok
 
     def _set_model_config(self, primary: str, fallbacks: Optional[list] = None) -> None:
-        """直接修改 openclaw.json 写入 agents.defaults.model（对象格式：primary + fallbacks）"""
+        """直接修改 openclaw.json 写入 agents.defaults.model（对象格式：primary + fallbacks）
+
+        Args:
+            primary: 主模型引用（如 "deepseek/deepseek-chat"）。
+            fallbacks: 备选模型引用列表。
+        """
         import json
         import os
 
@@ -1028,7 +1247,15 @@ class OpenClawManager:
             raise
 
     def _update_provider_models(self, config_key: str, cfg: dict) -> None:
-        """直接修改 openclaw.json 更新 provider 模型列表（覆盖 onboard 过时模型）"""
+        """直接修改 openclaw.json 更新 provider 模型列表（覆盖 onboard 过时模型）
+
+        将 UI 中选中的模型写入 models.providers.<provider_id>.models，
+        同时更新 agents.defaults.models 别名映射。
+
+        Args:
+            config_key: 格式 "vendor_id:key_type" 或 "vendor_id"。
+            cfg: 包含 selected_models、model_prefix、key_type 等字段的配置字典。
+        """
         import json
         import os
 
@@ -1100,7 +1327,15 @@ class OpenClawManager:
             raise
 
     def _configure_custom_provider(self, config_key: str, cfg: dict) -> None:
-        """直接修改 openclaw.json 写入自定义 provider 配置（如 DashScope）"""
+        """直接修改 openclaw.json 写入自定义 provider 配置（如 DashScope）
+
+        适用于没有 onboard auth_choice 的 provider，直接构造 models.providers 条目，
+        包含 baseUrl、api、apiKey 和模型列表。
+
+        Args:
+            config_key: 格式 "vendor_id:key_type" 或 "vendor_id"。
+            cfg: 包含 base_url、api_key、selected_models 等字段的配置字典。
+        """
         import json
         import os
 
@@ -1162,7 +1397,18 @@ class OpenClawManager:
             raise
 
     def _resolve_provider_id(self, vendor_id: str, key_type: str) -> str:
-        """将程序内部的 vendor_id 映射到 openclaw 的 provider ID"""
+        """将程序内部的 vendor_id 映射到 openclaw 的 provider ID
+
+        部分厂商在 openclaw 中有多个 provider 身份（如 kimi 对应 moonshot/kimi-coding），
+        通过 key_type 区分场景。
+
+        Args:
+            vendor_id: 内部厂商标识（如 "kimi"、"aliyun"）。
+            key_type: 密钥类型（如 "coding"、空字符串）。
+
+        Returns:
+            str: openclaw 使用的 provider ID。
+        """
         if vendor_id == "kimi":
             return "kimi-coding" if key_type == "coding" else "moonshot"
         if vendor_id == "aliyun":
@@ -1172,16 +1418,33 @@ class OpenClawManager:
         return vendor_id
 
     def stop(self):
-        """Stop service (external call)"""
+        """外部调用：停止服务并标记取消状态"""
         self.is_cancelled = True
         self._stop_gateway()
 
     def is_running(self) -> bool:
-        """Check if service is running"""
+        """检查前台网关进程是否仍在运行
+
+        Returns:
+            bool: 进程是否存活。
+        """
         return self.process is not None and self.process.poll() is None
 
     def uninstall(self, on_log: Optional[Callable[[str], None]] = None) -> bool:
-        """完全卸载 OpenClaw：停止服务、删除目录、卸载 npm 包、清理命令包装器"""
+        """完全卸载 OpenClaw
+
+        卸载流程：
+        1. 停止 Gateway（若正在运行）。
+        2. 删除本地构建目录（~/openclaw-cn、~/.openclaw）。
+        3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）。
+        4. 删除命令包装器（Windows: %APPDATA%\npm\\*.cmd；Linux/macOS: ~/.local/bin）。
+
+        Args:
+            on_log: 日志回调，用于在 UI 中展示卸载进度。
+
+        Returns:
+            bool: 是否全部成功（个别步骤失败不影响整体返回，但会记录日志）。
+        """
         import shutil
         import platform
 
@@ -1206,7 +1469,7 @@ class OpenClawManager:
         for d in dirs_to_remove:
             if os.path.exists(d):
                 try:
-                    shutil.rmtree(d, onerror=self._remove_readonly)
+                    shutil.rmtree(d, onerror=utils.remove_readonly)
                     if on_log:
                         on_log(f"已删除: {d}")
                 except Exception as e:
@@ -1218,8 +1481,8 @@ class OpenClawManager:
         for pkg in ["openclaw-cn", "openclaw"]:
             try:
                 result = subprocess.run(
-                    f'npm uninstall -g {pkg}',
-                    shell=True, capture_output=True, text=True
+                    ["npm", "uninstall", "-g", pkg],
+                    shell=False, capture_output=True, text=True
                 )
                 if result.returncode == 0:
                     if on_log:
@@ -1253,8 +1516,3 @@ class OpenClawManager:
             on_log("OpenClaw 卸载完成")
         return all_ok
 
-    @staticmethod
-    def _remove_readonly(func, path, _):
-        import stat
-        os.chmod(path, stat.S_IWRITE)
-        func(path)

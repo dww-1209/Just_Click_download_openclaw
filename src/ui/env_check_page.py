@@ -21,7 +21,12 @@ from src.models.env_check import (
 
 
 class CheckItemWidget(QFrame):
-    """单个检测项显示组件"""
+    """单个检测项显示组件。
+
+    职责：将「检测项名称 + 状态标签 + 详情文本」封装为一行可复用的卡片。
+    状态标签使用彩色圆角 pill 样式（绿/橙/红），让非技术用户一眼识别通过、
+    警告、失败三种结果，无需阅读英文日志。
+    """
 
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
@@ -43,6 +48,7 @@ class CheckItemWidget(QFrame):
         layout.addWidget(self.status_label)
 
     def set_status(self, status: CheckStatus, message: str = ""):
+        """根据检测结果更新状态标签样式与文本。"""
         if status == CheckStatus.OK:
             tag = '<span style="background:#E8F5E9; color:#2E7D32; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">✓ OK</span>'
             self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
@@ -55,13 +61,19 @@ class CheckItemWidget(QFrame):
 
 
 class OpenClawInstalledWidget(QWidget):
-    """OpenClaw 已安装选项组件"""
+    """OpenClaw 已安装选项组件（US-02 分支场景）。
 
-    quick_start_clicked = Signal()       # 快速启动
-    config_and_start_clicked = Signal()  # 重新配置并启动
-    provider_config_clicked = Signal()   # 配置模型
-    manual_config_clicked = Signal()     # 手动配置
-    reinstall_clicked = Signal()         # 重新下载
+    职责：当环境检测到 OpenClaw 已安装时，代替常规的「下一步」按钮，
+    向用户提供 5 种快捷操作。该组件默认隐藏，仅在检测到已安装状态后显示。
+    设计上采用两行按钮布局：第一行为高频正向操作（启动/配置），
+    第二行为低频或破坏性操作（手动配置/重新下载），降低误触风险。
+    """
+
+    quick_start_clicked = Signal()       # 用户点击「快速启动」——直接拉起已有 Gateway
+    config_and_start_clicked = Signal()  # 用户点击「重新配置并启动」——清空配置后重新 onboarding
+    provider_config_clicked = Signal()   # 用户点击「配置模型」——跳转到 Provider 配置页
+    manual_config_clicked = Signal()     # 用户点击「手动配置」——打开配置文件目录供用户手动编辑
+    reinstall_clicked = Signal()         # 用户点击「重新下载」——删除旧版本后重新执行 US-04 安装流程
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,7 +93,7 @@ class OpenClawInstalledWidget(QWidget):
 
         desc = QLabel("请选择操作：")
 
-        # 第一行按钮：快速操作
+        # 第一行按钮：高频正向操作，使用 primaryButton 样式突出显示
         quick_layout = QHBoxLayout()
         quick_layout.addStretch(1)
 
@@ -105,7 +117,7 @@ class OpenClawInstalledWidget(QWidget):
         quick_layout.addWidget(self.provider_config_btn)
         quick_layout.addStretch(1)
 
-        # 第二行按钮：其他选项
+        # 第二行按钮：低频或偏门操作，使用默认样式，视觉上弱于第一行
         other_layout = QHBoxLayout()
         other_layout.addStretch(1)
 
@@ -131,16 +143,22 @@ class OpenClawInstalledWidget(QWidget):
 
 
 class EnvCheckPage(QWidget):
-    """环境检测页面 - US-02"""
+    """环境检测页面（US-02）—— 安装前的系统兼容性检查。
 
-    retry_clicked = Signal()
-    next_clicked = Signal()
-    back_clicked = Signal()
-    openclaw_quick_start = Signal()      # 快速启动
-    openclaw_config_and_start = Signal() # 重新配置并启动
-    openclaw_provider_config = Signal()  # 配置模型
-    openclaw_manual_config = Signal()    # 手动配置
-    openclaw_reinstall = Signal()        # 重新下载
+    职责：在后台线程中并行检测操作系统、磁盘空间、权限、浏览器支持以及
+    OpenClaw 是否已安装，并将结果实时反映到 UI。检测结果决定用户可走的分支：
+    - 全新安装：检测通过后启用「下一步」
+    - 已安装场景：展示 OpenClawInstalledWidget，提供快速启动/重新配置/重装等选项
+    """
+
+    retry_clicked = Signal()             # 检测失败或用户希望重新检测时触发
+    next_clicked = Signal()              # 检测通过且为全新安装时，用户点击「下一步」触发
+    back_clicked = Signal()              # 用户点击「返回」回到欢迎页
+    openclaw_quick_start = Signal()      # 已安装场景：用户选择「快速启动」
+    openclaw_config_and_start = Signal() # 已安装场景：用户选择「重新配置并启动」
+    openclaw_provider_config = Signal()  # 已安装场景：用户选择「配置模型」
+    openclaw_manual_config = Signal()    # 已安装场景：用户选择「手动配置」
+    openclaw_reinstall = Signal()        # 已安装场景：用户选择「重新下载」
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -151,18 +169,18 @@ class EnvCheckPage(QWidget):
         from PySide6.QtWidgets import QScrollArea
         from PySide6.QtCore import QSize
 
-        # 主布局
+        # 主布局：上部为可滚动检测内容，下部为固定按钮栏。
+        # 使用 QScrollArea 保证在笔记本小屏（1366×768）或高 DPI 缩放时
+        # 所有检测项和提示信息均可完整浏览。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
 
-        # 创建滚动区域以适应小屏幕
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 内容容器
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         layout.setSpacing(15)
@@ -185,7 +203,7 @@ class EnvCheckPage(QWidget):
         self.openclaw_item = CheckItemWidget("OpenClaw 安装")
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setRange(0, 0)  # 设置为不确定模式，表示检测正在进行中
         self.progress_bar.setMinimumHeight(20)
 
         self.openclaw_widget = OpenClawInstalledWidget()
@@ -229,6 +247,11 @@ class EnvCheckPage(QWidget):
         main_layout.addWidget(scroll_area, 1)
 
         # 按钮区域（固定在底部）
+        # 状态机设计：
+        #   - 检测中：next_button 禁用，retry_button 隐藏
+        #   - 检测通过（全新安装）：next_button 启用，retry_button 隐藏
+        #   - 检测失败：next_button 禁用，retry_button 显示
+        #   - 已安装：next_button 隐藏，由 OpenClawInstalledWidget 接管操作
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(40, 10, 40, 0)
         button_layout.addStretch(1)

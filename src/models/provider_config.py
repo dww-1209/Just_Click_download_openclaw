@@ -1,4 +1,9 @@
-"""AI Provider 配置数据模型 - 按供应商 + Key 类型组织"""
+"""AI Provider 配置数据模型。
+
+职责：定义供应商（Vendor）、Key 类型（KeyType）和模型（Model）的数据结构，
+并维护完整的供应商注册表 VENDOR_REGISTRY。UI 层（provider_config_page）
+基于该注册表动态渲染供应商选择、Key 输入和模型选择界面。
+"""
 
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -6,7 +11,15 @@ from typing import List, Optional
 
 @dataclass
 class ModelInfo:
-    """模型信息"""
+    """模型信息数据对象。
+
+    Attributes:
+        id: 模型 ID（如 "kimi-k2.5"），用于内部标识。
+        name: 模型显示名称（如 "Kimi K2.5"），用于 UI 展示。
+        ref: 完整 model ref（如 "moonshot/kimi-k2.5"），用于写入配置文件。
+        reasoning: 是否为推理模型（会影响 UI 展示或配置行为）。
+    """
+
     id: str           # 模型 ID，如 "kimi-k2.5"
     name: str         # 显示名称
     ref: str          # 完整 model ref，如 "moonshot/kimi-k2.5"
@@ -15,7 +28,21 @@ class ModelInfo:
 
 @dataclass
 class KeyTypeInfo:
-    """同一个供应商下的不同 API Key 类型"""
+    """同一个供应商下的不同 API Key 类型。
+
+    例如 Kimi 分为"标准 API"和"Coding API"两种 Key，对应不同的环境变量和 baseUrl。
+
+    Attributes:
+        key: 内部标识（如 "standard" / "coding"）。
+        label: UI 显示标签（如 "标准 API"）。
+        env_var: 主环境变量名（写入系统环境变量时使用）。
+        fallback_env_var: 备用环境变量名（兼容旧版或不同命名）。
+        base_url: 该 Key 类型对应的 API baseUrl（可选，大多数不需要）。
+        auth_choice: onboard 时的 auth choice 标识（用于 openclaw onboard 命令）。
+        model_prefix: model ref 前缀提示（如 "moonshot/"）。
+        models: 该 Key 类型支持的模型列表。
+    """
+
     key: str                  # 内部标识，如 "standard"
     label: str                # 显示标签，如 "标准 API"
     env_var: str              # 环境变量名
@@ -28,7 +55,15 @@ class KeyTypeInfo:
 
 @dataclass
 class VendorInfo:
-    """供应商信息"""
+    """供应商信息数据对象。
+
+    Attributes:
+        id: 供应商内部标识（如 "kimi" / "deepseek"）。
+        name: 供应商显示名称（如 "Kimi (Moonshot)"）。
+        icon: 供应商图标标识（预留字段）。
+        key_types: 该供应商支持的所有 Key 类型列表。
+    """
+
     id: str                   # 内部标识
     name: str                 # 显示名称
     icon: str = ""
@@ -36,7 +71,7 @@ class VendorInfo:
 
 
 # ============================================================
-# 供应商配置（来自 openclaw-cn 源码）
+# 供应商配置注册表（来自 openclaw-cn 源码支持的供应商列表）
 # ============================================================
 
 VENDOR_REGISTRY: List[VendorInfo] = [
@@ -273,6 +308,14 @@ VENDOR_REGISTRY: List[VendorInfo] = [
 
 
 def get_vendor_by_id(vendor_id: str) -> Optional[VendorInfo]:
+    """根据供应商 ID 查找供应商信息。
+
+    Args:
+        vendor_id: 供应商内部标识（如 "kimi"）。
+
+    Returns:
+        匹配的 VendorInfo 对象，未找到则返回 None。
+    """
     for v in VENDOR_REGISTRY:
         if v.id == vendor_id:
             return v
@@ -280,6 +323,15 @@ def get_vendor_by_id(vendor_id: str) -> Optional[VendorInfo]:
 
 
 def get_key_type(vendor_id: str, key_type_key: str) -> Optional[KeyTypeInfo]:
+    """根据供应商 ID 和 Key 类型标识查找 KeyTypeInfo。
+
+    Args:
+        vendor_id: 供应商内部标识。
+        key_type_key: Key 类型内部标识（如 "standard" / "coding"）。
+
+    Returns:
+        匹配的 KeyTypeInfo 对象，未找到则返回 None。
+    """
     vendor = get_vendor_by_id(vendor_id)
     if not vendor:
         return None

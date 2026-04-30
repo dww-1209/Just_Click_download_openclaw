@@ -1,3 +1,15 @@
+"""OpenClaw 环境检测模块
+
+在 US-02 阶段调用，检测：
+- 操作系统类型
+- 磁盘空间（> 5GB）
+- 用户目录写入权限
+- Chromium 系浏览器安装情况（提示项，不阻断）
+- OpenClaw 是否已安装（命令行可用性 + 目录检测）
+
+注意：US-02 不检测网络，网络问题在 US-04 安装阶段处理。
+"""
+
 import platform
 import os
 import shutil
@@ -18,6 +30,7 @@ from src.models.env_check import (
 )
 
 
+# 最小磁盘空间要求（GB）
 MIN_DISK_SPACE_GB = 5
 
 
@@ -43,13 +56,18 @@ COMMON_INSTALL_PATHS: List[str] = [
 
 
 def _get_windows_install_paths() -> List[str]:
+    """收集 Windows 上可能存在的 OpenClaw 安装路径列表
+
+    按优先级：用户目录 → Program Files → Program Files (x86) → LOCALAPPDATA → 当前工作目录。
+    用于命令行检测失败后的 fallback 目录扫描。
+    """
     paths = []
-    # 添加用户目录下的路径（默认安装路径）
+    # 用户目录下的路径（默认安装路径）
     user_home = os.path.expanduser("~")
     paths.append(os.path.join(user_home, "OpenClaw"))
     paths.append(os.path.join(user_home, "openclaw"))
-    
-    # 添加系统路径
+
+    # 系统级路径
     program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
     program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
     paths.append(os.path.join(program_files, "OpenClaw"))
@@ -58,14 +76,15 @@ def _get_windows_install_paths() -> List[str]:
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     if local_appdata:
         paths.append(os.path.join(local_appdata, "OpenClaw"))
-    
-    # 添加当前工作目录下的路径
+
+    # 当前工作目录（开发场景）
     paths.append(os.path.join(os.getcwd(), "OpenClaw"))
 
     return paths
 
 
 def _get_os_type() -> str:
+    """获取统一的操作系统类型标识字符串"""
     system = platform.system().lower()
     if system == "windows":
         return "windows"
@@ -133,9 +152,15 @@ def _check_disk_space() -> DiskSpaceResult:
 
 
 def _check_permission() -> PermissionResult:
-    """检查用户目录写入权限"""
+    """检查用户目录写入权限
+
+    在用户主目录下创建临时文件并删除，验证安装所需的写入权限。
+    使用 WARNING 而非 FAILED，因为权限不足不一定完全阻断安装
+   （部分场景仍可正常执行）。
+    """
     test_dir = None
     try:
+        # 创建临时测试目录和文件，验证读写删能力
         test_dir = Path.home() / ".openclaw_test"
         test_dir.mkdir(parents=True, exist_ok=True)
         test_file = test_dir / "test.txt"
@@ -143,25 +168,25 @@ def _check_permission() -> PermissionResult:
         test_file.unlink()
         test_dir.rmdir()
         return PermissionResult(status=CheckStatus.OK, message="权限正常")
-        
+
     except PermissionError as e:
         error_msg = f"无法写入用户目录: {str(e)}"
         return PermissionResult(
-            status=CheckStatus.WARNING, 
+            status=CheckStatus.WARNING,
             message="权限不足，建议以管理员身份运行",
             error_detail=error_msg
         )
     except OSError as e:
         error_msg = f"磁盘操作失败: {str(e)}"
         return PermissionResult(
-            status=CheckStatus.WARNING, 
+            status=CheckStatus.WARNING,
             message=f"文件系统错误: {str(e)}",
             error_detail=error_msg
         )
     except Exception as e:
         error_msg = f"权限检测异常: {type(e).__name__}: {str(e)}"
         return PermissionResult(
-            status=CheckStatus.WARNING, 
+            status=CheckStatus.WARNING,
             message="权限检测异常",
             error_detail=error_msg
         )
@@ -192,7 +217,7 @@ def _resolve_openclaw_cmd(env: dict = None) -> str:
     if os_type == "windows":
         for cmd in ["openclaw-cn", "openclaw"]:
             result = subprocess.run(
-                f"where {cmd}", shell=True, capture_output=True, timeout=5
+                ["where", cmd], shell=False, capture_output=True, timeout=5
             )
             if result.returncode == 0:
                 return cmd
@@ -228,7 +253,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
     try:
         if os_type == "windows":
             result = subprocess.run(
-                f"where {cmd}", shell=True, capture_output=True, text=True, timeout=5
+                ["where", cmd], shell=False, capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
                 exe_path = result.stdout.strip().split('\n')[0].strip()

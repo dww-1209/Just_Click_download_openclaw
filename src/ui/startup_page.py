@@ -1,4 +1,9 @@
-"""US-06 startup page - start gateway and open WebUI"""
+"""US-06 启动页面 —— 启动 Gateway 服务并打开 WebChat。
+
+职责：在配置完成后，通过后台线程启动 openclaw-cn gateway start，
+轮询 18789 端口健康检查，成功后获取带 token 的 WebChat URL 并展示给用户。
+同时提供倒计时防抖、URL 复制、浏览器打开等交互，确保非技术用户能一键进入 WebChat。
+"""
 
 import sys
 
@@ -13,6 +18,13 @@ from src.models.config import ConfigStatus, ConfigProgress, ConfigResult
 
 
 class StartupStepWidget(QFrame):
+    """启动步骤显示组件。
+
+    职责：以图标（○ / ● / ✓ / ✗）+ 文字的形式展示单一步骤的状态。
+    用于 US06StartupPage 的步骤列表，让用户直观看到「启动网关 → 服务检查」
+    两个阶段的流转情况。
+    """
+
     def __init__(self, step_name, parent=None):
         super().__init__(parent)
         self.step_name = step_name
@@ -32,27 +44,39 @@ class StartupStepWidget(QFrame):
         layout.addStretch(1)
 
     def set_pending(self):
+        """步骤未开始：灰色空心圆圈"""
         self.icon_label.setText("○")
         self.icon_label.setStyleSheet("font-size: 18px; color: #bbb; min-width: 24px;")
 
     def set_running(self):
+        """步骤进行中：橙色实心圆点，表示正在处理"""
         self.icon_label.setText("●")
         self.icon_label.setStyleSheet("font-size: 18px; color: #f39c12; min-width: 24px;")
 
     def set_completed(self):
+        """步骤完成：绿色对勾加粗"""
         self.icon_label.setText("✓")
         self.icon_label.setStyleSheet("font-size: 18px; color: #27ae60; font-weight: bold; min-width: 24px;")
 
     def set_failed(self):
+        """步骤失败：红色叉号加粗"""
         self.icon_label.setText("✗")
         self.icon_label.setStyleSheet("font-size: 18px; color: #e74c3c; font-weight: bold; min-width: 24px;")
 
 
 class US06StartupPage(QWidget):
-    retry_clicked = Signal()
-    finish_clicked = Signal()
-    back_clicked = Signal()
-    open_webchat_clicked = Signal()  # New: open WebChat button clicked
+    """US-06 启动页面 —— 启动 Gateway 服务并打开 WebChat。
+
+    职责：在配置完成后，通过后台线程启动 openclaw-cn gateway start，
+    轮询 18789 端口健康检查，成功后获取带 token 的 WebChat URL 并展示给用户。
+    页面提供倒计时防抖（避免用户过早点击导致连接失败）、URL 复制、浏览器打开等交互，
+    同时以醒目的红色警告提示用户「不要关闭安装器窗口」，因为 Gateway 是前台进程。
+    """
+
+    retry_clicked = Signal()         # 启动失败后用户点击「重试」，触发重新启动 Gateway
+    finish_clicked = Signal()        # 用户点击「完成」，触发关闭安装器
+    back_clicked = Signal()          # 用户点击「返回」，回到配置页
+    open_webchat_clicked = Signal()  # 倒计时结束后用户点击「打开 WebChat」，触发打开系统浏览器
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,6 +85,9 @@ class US06StartupPage(QWidget):
     def _setup_ui(self):
         from PySide6.QtWidgets import QScrollArea
 
+        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
+        # 使用 QScrollArea 包裹内容，确保在小屏设备上成功后的提示信息（含 URL、
+        # 操作按钮、使用提示）均可完整浏览。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
@@ -86,6 +113,7 @@ class US06StartupPage(QWidget):
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setWordWrap(True)
 
+        # 步骤显示区域：使用浅色卡片包裹，突出两个阶段的流转状态
         self.steps_frame = QFrame()
         self.steps_frame.setStyleSheet("background-color: #f9f9f9; border-radius: 8px; padding: 10px;")
         steps_layout = QVBoxLayout(self.steps_frame)
@@ -97,7 +125,9 @@ class US06StartupPage(QWidget):
         steps_layout.addWidget(self.step_gateway)
         steps_layout.addWidget(self.step_health)
 
-        # Windows 防火墙提示
+        # Windows 防火墙提示：Gateway 启动后会监听本地端口，Windows Defender 防火墙
+        # 可能弹出授权对话框。若用户未点击「允许访问」，浏览器将无法连接到 WebChat。
+        # 因此非 Windows 平台直接隐藏该提示。
         self.firewall_hint = QLabel(
             "⚠️ Windows 可能会弹出防火墙授权窗口，请点击\"允许访问\"，否则 WebChat 无法正常打开"
         )
@@ -119,6 +149,7 @@ class US06StartupPage(QWidget):
         self.task_label.setAlignment(Qt.AlignCenter)
         self.task_label.setStyleSheet("color: #666;")
 
+        # 日志显示区域（可折叠，用于排查问题）
         self.log_frame = QFrame()
         self.log_frame.setStyleSheet("background-color: #1e1e1e; border-radius: 8px; padding: 10px;")
         self.log_frame.hide()
@@ -143,6 +174,8 @@ class US06StartupPage(QWidget):
         self.toggle_log_btn.setCursor(Qt.PointingHandCursor)
         self.toggle_log_btn.clicked.connect(self._toggle_log)
 
+        # 成功提示区域：绿色卡片，包含 WebChat URL、复制按钮、打开按钮、使用提示。
+        # 设计意图：将成功后的所有关键信息集中在一个视觉卡片内，降低用户寻找成本。
         self.success_frame = QFrame()
         self.success_frame.setStyleSheet(
             "QFrame { background-color: #e8f5e9; border: 1px solid #81c784; border-radius: 12px; }"
@@ -192,6 +225,8 @@ class US06StartupPage(QWidget):
         self.fallback_hint.setWordWrap(True)
 
         # 提示：如何隐藏工具调用过程，只看最终回复
+        # 设计原因：WebChat 默认展示 thinking 过程，非技术用户常误以为这是错误信息，
+        # 因此在启动页提前告知关闭方法，减少首次使用的困惑。
         self.thinking_hint = QLabel(
             "💡 提示：打开 WebChat 后，若界面显示了太多工具调用过程，"
             "可点击聊天界面右上角的 🧠（thinking）图标关闭，即可只查看 OpenClaw 的最终回复"
@@ -204,6 +239,8 @@ class US06StartupPage(QWidget):
         )
 
         # 关键警告：请勿关闭安装器
+        # 设计原因：Gateway 以前台子进程方式运行，安装器窗口关闭会触发进程树回收，
+        # 导致 Gateway 被杀死。必须用醒目的红色卡片反复强调。
         self.keep_alive_hint = QLabel(
             "⚠️ 请勿关闭本窗口！程序在运行，OpenClaw 才能正常使用"
         )
@@ -214,7 +251,8 @@ class US06StartupPage(QWidget):
             "border-radius: 6px; padding: 10px; font-size: 12px; font-weight: bold;"
         )
 
-        # 倒计时提示
+        # 倒计时提示：启动成功后等待 8 秒再启用「打开 WebChat」按钮，
+        # 避免用户过早点击时 Gateway 尚未完全就绪导致 502/连接拒绝。
         self.countdown_label = QLabel("服务已就绪，正在等待连接稳定... 3 秒")
         self.countdown_label.setAlignment(Qt.AlignCenter)
         self.countdown_label.setStyleSheet(
@@ -222,7 +260,7 @@ class US06StartupPage(QWidget):
         )
         self.countdown_label.hide()
 
-        # 打开 WebChat 按钮
+        # 打开 WebChat 按钮：倒计时结束后才启用，点击后发射 open_webchat_clicked
         self.open_webchat_btn = QPushButton("打开 WebChat")
         self.open_webchat_btn.setCursor(Qt.PointingHandCursor)
         self.open_webchat_btn.setObjectName("primaryButton")
@@ -240,6 +278,7 @@ class US06StartupPage(QWidget):
         success_layout.addWidget(self.thinking_hint)
         success_layout.addWidget(self.keep_alive_hint)
 
+        # 错误提示区域：黄色警告卡片，包含友好错误文本和可选的原始错误输出
         self.error_frame = QFrame()
         self.error_frame.setStyleSheet("background-color: #fff3cd; border-radius: 8px; padding: 15px;")
         self.error_frame.hide()
@@ -250,18 +289,23 @@ class US06StartupPage(QWidget):
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #856404;")
-        
+
         self.error_detail_label = QLabel("")
         self.error_detail_label.setWordWrap(True)
         self.error_detail_label.setStyleSheet(
             "color: #856404; font-family: monospace; font-size: 10px; background-color: #fff8e1; padding: 5px;"
         )
         self.error_detail_label.hide()
-        
+
         error_layout.addWidget(self.error_title)
         error_layout.addWidget(self.error_label)
         error_layout.addWidget(self.error_detail_label)
 
+        # 按钮区域
+        # 按钮状态机：
+        #   - 启动中：仅显示「返回」
+        #   - 启动成功：隐藏「返回/重试」，显示「完成」
+        #   - 启动失败：显示「返回」「重试」，隐藏「完成」
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
 
@@ -330,6 +374,8 @@ class US06StartupPage(QWidget):
         scrollbar.setValue(scrollbar.maximum())
 
     def start_startup(self):
+        """重置并进入启动中状态：恢复步骤显示、进度条、防火墙提示（Windows），
+        隐藏成功/错误区域，重置日志。"""
         self.status_label.setText("正在启动网关服务...")
         self.status_label.setStyleSheet("")
 
@@ -358,6 +404,7 @@ class US06StartupPage(QWidget):
         self.finish_button.hide()
 
     def update_progress(self, progress):
+        """根据后台线程发射的 ConfigProgress 更新进度条、任务文本和步骤状态。"""
         self.progress_bar.setValue(progress.progress_percent)
 
         if progress.message:
@@ -376,6 +423,8 @@ class US06StartupPage(QWidget):
                 self.step_gateway.set_failed()
 
     def startup_success(self, result):
+        """启动成功回调：更新状态文本、隐藏进行中区域、展示成功卡片，
+        并启动倒计时防抖后启用「打开 WebChat」按钮。"""
         self.status_label.setText("网关服务已启动")
         self.status_label.setStyleSheet("color: green; font-weight: bold;")
 
@@ -407,21 +456,22 @@ class US06StartupPage(QWidget):
             self.scroll_area.verticalScrollBar().maximum()
         ))
 
-        # 启动3秒倒计时，等待连接稳定
+        # 启动倒计时，等待连接稳定后再允许打开 WebChat
         self._start_countdown()
 
     def startup_failed(self, result):
+        """启动失败回调：展示错误卡片和日志摘要，显示「返回」「重试」按钮。"""
         self.status_label.setText("启动失败")
         self.status_label.setStyleSheet("color: red; font-weight: bold;")
 
         error_text = result.error_message or "服务启动失败"
         self.error_label.setText(error_text)
-        
+
         if result.log_lines:
             detail = "\n".join(result.log_lines[-20:])
             self.error_detail_label.setText(detail)
             self.error_detail_label.show()
-        
+
         self.error_frame.show()
         self.success_frame.hide()
 
@@ -430,11 +480,14 @@ class US06StartupPage(QWidget):
         self.finish_button.hide()
 
     def _start_countdown(self):
-        """启动8秒倒计时，等待网关连接稳定"""
-        
+        """启动 8 秒倒计时，等待网关连接稳定后再启用「打开 WebChat」按钮。
+
+        设计原因：Gateway 进程启动后需要数秒完成初始化并注册路由，
+        若用户立即点击打开浏览器，可能遇到 502/连接拒绝，产生「启动失败」的误判。
+        倒计时期间按钮禁用，并以文本提示安抚用户。
+        """
         self._countdown_value = 8
         self.open_webchat_btn.setEnabled(False)
-        pass
         self.countdown_label.setText(f"服务已就绪，正在等待连接稳定... {self._countdown_value} 秒")
         self.countdown_label.show()
 
@@ -443,7 +496,7 @@ class US06StartupPage(QWidget):
         self._countdown_timer.start(1000)  # 每秒更新一次
 
     def _update_countdown(self):
-        """更新倒计时"""
+        """更新倒计时文本；归零后停止计时器并启用「打开 WebChat」按钮。"""
         self._countdown_value -= 1
         if self._countdown_value > 0:
             self.countdown_label.setText(
@@ -455,6 +508,7 @@ class US06StartupPage(QWidget):
             self.open_webchat_btn.setEnabled(True)
 
     def reset(self):
+        """重置页面到初始状态，停止可能运行中的倒计时。"""
         self.step_gateway.set_pending()
         self.step_health.set_pending()
 

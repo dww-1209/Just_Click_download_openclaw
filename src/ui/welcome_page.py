@@ -11,7 +11,13 @@ from PySide6.QtGui import QFont
 
 
 def _step_bubble(text: str, number: int, active: bool = False) -> QFrame:
-    """创建一个步骤气泡组件"""
+    """创建一个步骤气泡组件，用于欢迎页顶部的步骤流程指示器。
+
+    设计意图：通过数字圆圈 + 文字标签的卡片式布局，让用户在安装开始前
+    就能直观了解后续 4 个阶段（环境检测 → 下载安装 → 自动配置 → 启动服务），
+    降低对未知流程的焦虑感。
+    """
+
     frame = QFrame()
     frame.setStyleSheet(
         "QFrame { background-color: " + ("#e8f5e9" if active else "#f5f5f5") + "; "
@@ -43,10 +49,15 @@ def _step_line() -> QLabel:
 
 
 class WelcomePage(QWidget):
-    """欢迎页面 - US-01"""
+    """欢迎页面（US-01）—— 安装流程的起点。
 
-    next_clicked = Signal()
-    exit_clicked = Signal()
+    职责：向用户展示 OpenClaw 的品牌信息、安装说明和四步流程预览，
+    并提供「开始安装」与「退出」两个入口。作为 QStackedWidget 的第一页，
+    承担降低用户心理门槛、建立信任感的作用。
+    """
+
+    next_clicked = Signal()   # 用户点击「开始安装」，触发进入环境检测页
+    exit_clicked = Signal()   # 用户点击「退出」，触发关闭安装器
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,18 +66,18 @@ class WelcomePage(QWidget):
     def _setup_ui(self):
         from PySide6.QtWidgets import QScrollArea
 
-        # 主布局
+        # 主布局：采用上下结构，上部为可滚动内容区，下部为固定按钮栏。
+        # 使用 QScrollArea 包裹内容，确保在 768px 以下小屏或高分屏缩放时
+        # 内容仍可完整浏览，避免截断。
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(24, 24, 24, 24)
 
-        # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 内容容器
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         layout.setSpacing(15)
@@ -103,7 +114,9 @@ class WelcomePage(QWidget):
         desc_font.setPointSize(10)
         description_text.setFont(desc_font)
 
-        # 步骤流程指示器
+        # 步骤流程指示器：横向排列 4 个步骤气泡，中间用细线连接。
+        # 设计意图：在欢迎页即呈现完整流程，让用户对耗时和阶段有心理预期，
+        # 减少中途退出的概率。所有步骤默认 inactive（灰色），仅作预览。
         steps_layout = QHBoxLayout()
         steps_layout.setSpacing(6)
         steps_layout.setContentsMargins(0, 10, 0, 10)
@@ -133,7 +146,9 @@ class WelcomePage(QWidget):
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area, 1)
 
-        # 按钮区域（固定在底部）
+        # 按钮区域（固定在底部，不随内容滚动）
+        # 采用右对齐布局，符合 Windows / macOS 用户从左到右的阅读习惯，
+        # 主操作（开始安装）放在右侧，退出放在左侧，减少误触。
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(40, 10, 40, 0)
         button_layout.addStretch(1)
