@@ -22,7 +22,7 @@ from src.models.config import (
     ConfigResult,
 )
 from src.infra import utils
-from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD
+from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD
 
 
 class OpenClawManager:
