@@ -27,7 +27,11 @@ from src.models.install import (
 from src.infra.git_installer import ensure_git_installed
 from src.infra.shell_runner import run_shell, ShellResult
 from src.infra import utils
-from src.models.constants import is_windows, is_macos, is_linux
+from src.models.constants import (
+    is_windows, is_macos, is_linux,
+    TIMEOUT_SHORT_CMD, TIMEOUT_OPENCLAW_CMD, TIMEOUT_INSTALL_CMD,
+    TIMEOUT_NODE_MSI_INSTALL, TIMEOUT_GIT_INSTALL_MAX, TIMEOUT_BUILD_CMD,
+)
 
 
 class OpenClawInstaller:

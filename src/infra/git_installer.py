@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.infra.shell_runner import run_shell, ShellResult
+from src.models.constants import TIMEOUT_DOWNLOAD
 
 
 def _get_hidden_startupinfo():
