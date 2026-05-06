@@ -608,7 +608,7 @@ class InstallerWindow:
         os_type = platform.system().lower()
         cmd_name = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
         try:
-            if is_windows() or is_windows():
+            if is_windows():
                 # 使用完整路径 + CREATE_NEW_CONSOLE 打开新窗口，避免 shell 字符串拼接
                 cmd_path = shutil.which(cmd_name)
                 if cmd_path:

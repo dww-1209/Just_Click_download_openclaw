@@ -14,6 +14,8 @@ from .env_check import (
 )
 
 from .install import (
+    ErrorCategory,
+    InstallErrorDetail,
     InstallStatus,
     InstallStage,
     InstallProgress,
@@ -50,6 +52,8 @@ __all__ = [
     "OpenClawInstallResult",
     "EnvCheckResult",
     # install
+    "ErrorCategory",
+    "InstallErrorDetail",
     "InstallStatus",
     "InstallStage",
     "InstallProgress",

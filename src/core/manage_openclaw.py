@@ -9,7 +9,6 @@ import platform
 import time
 import os
 import shutil
-import signal
 import webbrowser
 import re
 import traceback
@@ -25,7 +24,7 @@ from src.models.config import (
 from src.models.utils import remove_readonly, resolve_openclaw_cmd
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD
 from src.contracts.define_base_manager import BaseOpenClawManager
-from src.adapters.define_decorators import log_method, check_cancelled
+from src.adapters.define_decorators import log_method
 
 
 class OpenClawManager(BaseOpenClawManager):

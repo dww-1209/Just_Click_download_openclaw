@@ -317,7 +317,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         if has_residual:
             _ensure_local_bin_in_rc()
             # 重新检测一次（同时验证 --version 确保没有 build 产物缺失）
-            cmd2 = _resolve_openclaw_cmd(env)
+            cmd2 = resolve_openclaw_cmd(env)
             result = subprocess.run(
                 ["which", cmd2],
                 capture_output=True,

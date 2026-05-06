@@ -110,7 +110,7 @@ class UninstallerWindow:
     def _on_recheck(self) -> None:
         """完成页点击'重新检测'：回到欢迎页并重新检测安装状态"""
         self.stacked_widget.setCurrentIndex(0)
-        self.welcome_page._check_installation()
+        self.welcome_page.check_installation()
 
     def _on_exit(self) -> None:
         """退出程序"""

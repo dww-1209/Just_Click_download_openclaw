@@ -34,7 +34,7 @@ class UninstallWelcomePage(QWidget):
         super().__init__(parent)
         self.installed = False
         self._setup_ui()
-        self._check_installation()
+        self.check_installation()
 
     def _setup_ui(self) -> None:
         # 主布局：上部为可滚动内容区，下部为固定按钮栏。
@@ -152,7 +152,7 @@ class UninstallWelcomePage(QWidget):
 
         main_layout.addLayout(btn_layout)
 
-    def _check_installation(self) -> None:
+    def check_installation(self) -> None:
         """检测用户主目录下是否存在 OpenClaw 程序与配置目录，并据此刷新 UI 状态。"""
         home = os.path.expanduser("~")
         has_src = os.path.exists(os.path.join(home, "openclaw-cn"))
