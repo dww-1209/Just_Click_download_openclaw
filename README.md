@@ -67,10 +67,15 @@ uv sync
 **运行开发版本：**
 ```bash
 # 安装器
-uv run python installer.py
+uv run python launch_installer.py
 
 # 卸载器
-uv run python uninstaller.py
+uv run python launch_uninstaller.py
+```
+
+**运行测试：**
+```bash
+uv run pytest tests/
 ```
 
 **打包可执行文件：**
@@ -92,37 +97,52 @@ uv run python build.py --clean-only
 ### 项目结构
 
 ```
-├── installer.py               # 安装器入口（6 步流程）
-├── uninstaller.py             # 卸载工具入口
-├── build.py                   # PyInstaller 打包脚本（双程序）
+├── launch_installer.py               # 安装器入口（6 步流程，Composition Root）
+├── launch_uninstaller.py             # 卸载工具入口（Composition Root）
+├── build.py                          # PyInstaller 打包脚本（双程序）
 ├── src/
-│   ├── core/
-│   │   └── openclaw_manager.py    # OpenClaw 服务管理（启动/停止/配置/Provider）
-│   ├── infra/
-│   │   ├── openclaw_installer.py  # 安装逻辑（Gitee + pnpm 本地构建）
-│   │   ├── git_installer.py       # Git 自动安装器（Windows）
-│   │   ├── shell_runner.py        # Shell 命令执行 + 错误分类
-│   │   └── system_checker.py      # 系统环境检测
-│   ├── models/
-│   │   ├── constants.py           # 项目常量（Node.js 版本、镜像、端口等）
-│   │   ├── install.py             # 安装状态数据模型 + 错误分类枚举
-│   │   ├── config.py              # 配置状态数据模型
-│   │   ├── env_check.py           # 环境检测数据模型
-│   │   └── provider_config.py     # Provider 数据定义
-│   ├── services/
-│   │   ├── install_service.py     # 安装服务（QThread Worker）
-│   │   ├── env_check_service.py   # 环境检测服务
-│   │   └── workers.py             # 配置/启动/Provider Worker
-│   └── ui/
-│       ├── welcome_page.py            # US-01 欢迎页
-│       ├── env_check_page.py          # US-02 环境检测页
-│       ├── installing_page.py         # US-04 安装进度页
-│       ├── default_config_page.py     # US-05 默认配置页
-│       ├── provider_config_page.py    # US-05b 模型配置页
-│       ├── startup_page.py            # US-06 启动页
-│       ├── uninstall_welcome_page.py  # 卸载-检测页
-│       ├── uninstall_progress_page.py # 卸载-进度页
-│       └── uninstall_done_page.py     # 卸载-完成页
+│   ├── ui/                           # UI 层：PySide6 页面
+│   │   ├── show_welcome.py           # 欢迎页
+│   │   ├── show_envcheck.py          # 环境检测页
+│   │   ├── show_install_progress.py  # 安装进度页
+│   │   ├── show_default_config.py    # 默认配置页
+│   │   ├── show_provider_config.py   # Provider 模型配置页
+│   │   ├── show_startup.py           # 启动服务与 WebChat 页
+│   │   ├── show_uninstall_welcome.py # 卸载-欢迎/检测页
+│   │   ├── show_uninstall_progress.py# 卸载-进度页
+│   │   └── show_uninstall_done.py    # 卸载-完成页
+│   ├── services/                     # 服务层：QThread Worker 与桥接
+│   │   ├── perform_install.py        # 安装服务（InstallWorker / InstallService）
+│   │   ├── perform_uninstall.py      # 卸载服务（UninstallWorker / UninstallService）
+│   │   ├── check_environment.py      # 环境检测服务（EnvCheckWorker / EnvCheckService）
+│   │   └── configure_providers.py    # 配置/启动/Provider 服务（ConfigWorker / StartupWorker / ProviderConfigWorker）
+│   ├── contracts/                    # 契约层：Protocol + ABC 双抽象
+│   │   ├── define_installer.py       # IInstaller / IInstallTask（面向调用者）
+│   │   ├── define_manager.py         # IOpenClawManager（面向调用者）
+│   │   ├── define_process.py         # IProcessRunner（面向调用者）
+│   │   ├── define_uninstaller.py     # IUninstallTask（面向调用者）
+│   │   ├── define_worker.py          # 进度/日志回调类型别名
+│   │   ├── define_env_checker.py     # IEnvChecker（面向调用者）
+│   │   ├── define_base_installer.py  # BaseInstaller ABC（面向实现者）
+│   │   ├── define_base_manager.py    # BaseOpenClawManager ABC（面向实现者）
+│   │   └── define_decorators.py      # @log_method / @check_cancelled 装饰器
+│   ├── core/                         # 核心层：生命周期管理
+│   │   └── manage_openclaw.py        # OpenClawManager（配置/启停/卸载）
+│   ├── adapters/                     # 适配器层：底层系统操作
+│   │   ├── install_openclaw.py       # OpenClaw 安装逻辑（Gitee + pnpm 本地构建）
+│   │   ├── install_git.py            # Git 自动安装器（Windows）
+│   │   ├── run_shell.py              # Shell 命令执行 + 错误分类
+│   │   ├── check_system.py           # 系统环境检测
+│   │   ├── provide_utils.py          # 通用工具函数（remove_readonly 等）
+│   │   └── define_decorators.py      # 装饰器实现（供 core 层使用）
+│   └── models/                       # 模型层：数据定义与常量
+│       ├── constants.py              # 项目常量（Node.js 版本、镜像、端口等）
+│       ├── install.py                # 安装状态/阶段/进度/错误分类枚举
+│       ├── config.py                 # 配置状态/服务状态/进度数据类
+│       ├── env_check.py              # 环境检测结果数据类
+│       ├── provider_config.py        # Provider 配置数据定义
+│       ├── user_messages.py          # 用户友好错误消息翻译
+│       └── utils.py                  # 纯工具函数（命令解析、权限处理等）
 ```
 
 ### 双仓库工作流
@@ -165,8 +185,15 @@ OpenClaw 官方安装脚本固定安装到用户目录，且后续升级需要�
 
 ### 错误分类系统
 
-安装过程中的所有子进程失败都会通过 `ErrorCategory` 枚举分类（网络超时、DNS、SSL、权限不足、磁盘已满、杀毒软件拦截等），UI 根据分类展示本地化错误描述和修复建议，而非原始 stderr。
+安装过程中的所有子进程失败都会通过 `ErrorCategory` 枚举分类（网络超时、DNS、SSL、权限不足、磁盘已满、杀毒软件拦截等），UI 根据分类展示本地化错误描述和修复建议，而非原始 stderr。错误消息翻译集中维护在 `src/models/user_messages.py`。
 
 ### UI ↔ 后端通信
 
-所有长耗时操作（安装、环境检测、配置、启动）都在独立的 `QThread` 子类中执行，通过 `Signal` 对象将进度和日志反馈给 UI。主线程始终保持响应，支持取消操作。
+所有长耗时操作（安装、环境检测、配置、启动）都在独立的 `QThread` 子类中执行，通过 `Signal` 对象将进度和日志反馈给 UI。主线程始终保持响应，支持取消操作。Service 层负责 Worker 生命周期管理和信号中继。
+
+### 架构设计要点
+
+- **六层架构**：UI → Services → Contracts → Core → Adapters → Models，依赖方向严格自上而下
+- **Composition Root**：`launch_installer.py` / `launch_uninstaller.py` 是唯一允许跨层导入的装配器层
+- **Protocol + ABC 双抽象**：Contracts 层同时提供 `typing.Protocol`（面向使用者）和 `ABC`（面向实现者），兼顾灵活性与代码复用
+- **中文注释**：所有代码模块、类、函数和非平凡逻辑块均包含中文注释

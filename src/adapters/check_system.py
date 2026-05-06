@@ -29,6 +29,7 @@ from src.models.env_check import (
     EnvCheckResult,
 )
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_SHORT_CMD
+from src.models.utils import resolve_openclaw_cmd
 
 
 # 最小磁盘空间要求（GB）
@@ -193,7 +194,7 @@ def _check_permission() -> PermissionResult:
         )
 
 
-def _ensure_local_bin_in_rc():
+def _ensure_local_bin_in_rc() -> None:
     """将 ~/.local/bin 添加到用户 shell 配置文件中（如果不存在）"""
     home = os.path.expanduser("~")
     local_bin = os.path.join(home, ".local", "bin")
@@ -211,23 +212,6 @@ def _ensure_local_bin_in_rc():
             except (OSError, ValueError):
                 pass
 
-
-def _resolve_openclaw_cmd(env: dict = None) -> str:
-    """检测系统中可用的 openclaw 命令（优先 openclaw-cn，fallback openclaw）"""
-    os_type = _get_os_type()
-    if is_windows():
-        for cmd in ["openclaw-cn", "openclaw"]:
-            result = subprocess.run(
-                ["where", cmd], shell=False, capture_output=True, timeout=TIMEOUT_SHORT_CMD
-            )
-            if result.returncode == 0:
-                return cmd
-    else:
-        path_env = env.get("PATH", os.environ.get("PATH", "")) if env else os.environ.get("PATH", "")
-        for cmd in ["openclaw-cn", "openclaw"]:
-            if shutil.which(cmd, path=path_env) is not None:
-                return cmd
-    return "openclaw"
 
 
 def _check_openclaw_installed() -> OpenClawInstallResult:
@@ -247,7 +231,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         local_bin = os.path.join(home, ".local", "bin")
         env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
 
-    cmd = _resolve_openclaw_cmd(env)
+    cmd = resolve_openclaw_cmd(env)
 
     # Windows: 直接用 where 检测；Linux/macOS: 用 which
     cmd_found = False
@@ -303,7 +287,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         openclaw_indicators = [
             "openclaw.exe", "OpenClaw.exe", "openclaw", "openclaw-cn.exe", "openclaw-cn",
             "package.json", "server.js", "app.js",
-            "installer.py", "config.json", ".openclaw",
+            "launch_installer.py", "config.json", ".openclaw",
         ]
         for path in paths_to_check:
             if os.path.exists(path) and os.path.isdir(path):
@@ -452,6 +436,14 @@ def _check_browser() -> BrowserResult:
             found_browsers=[],
             message="未检测到 Chrome/Edge/Brave，浏览器自动化功能不可用",
         )
+
+
+class SystemChecker:
+    """系统环境检测器 — IEnvChecker 的具体实现。"""
+
+    def check(self, install_path: str = None) -> EnvCheckResult:
+        """执行环境检测。委托给模块级 check_environment 函数以保持兼容。"""
+        return check_environment(install_path)
 
 
 def check_environment(install_path: str = None) -> EnvCheckResult:

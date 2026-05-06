@@ -2,7 +2,7 @@ from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
-from src.core.openclaw_manager import OpenClawManager
+from src.contracts.define_manager import IOpenClawManager
 
 
 class ConfigWorker(QThread):
@@ -17,11 +17,11 @@ class ConfigWorker(QThread):
     log_line = Signal(str)             # 单行日志输出
     complete = Signal(object)          # 配置完成（携带 ConfigResult 对象）
 
-    def __init__(self, manager: OpenClawManager) -> None:
+    def __init__(self, manager: IOpenClawManager) -> None:
         """初始化配置工作线程。
 
         Args:
-            manager: OpenClaw 生命周期管理器实例，负责实际配置逻辑。
+            manager: OpenClaw 生命周期管理器实例（通过接口引用）。
         """
         super().__init__()
         self.manager = manager
@@ -47,11 +47,11 @@ class StartupWorker(QThread):
     log_line = Signal(str)             # 单行日志输出
     complete = Signal(object)          # 启动完成（携带 ConfigResult 对象）
 
-    def __init__(self, manager: OpenClawManager, quick_start: bool = False) -> None:
+    def __init__(self, manager: IOpenClawManager, quick_start: bool = False) -> None:
         """初始化启动工作线程。
 
         Args:
-            manager: OpenClaw 生命周期管理器实例。
+            manager: OpenClaw 生命周期管理器实例（通过接口引用）。
             quick_start: 是否使用快速启动模式（跳过部分初始化步骤）。
         """
         super().__init__()
@@ -81,7 +81,7 @@ class ProviderConfigWorker(QThread):
 
     def __init__(
         self,
-        manager: OpenClawManager,
+        manager: IOpenClawManager,
         providers_config: dict[str, Any],
         global_default_model: str,
         fallback_models: list[str],
@@ -89,7 +89,7 @@ class ProviderConfigWorker(QThread):
         """初始化 Provider 配置工作线程。
 
         Args:
-            manager: OpenClaw 生命周期管理器实例。
+            manager: OpenClaw 生命周期管理器实例（通过接口引用）。
             providers_config: 各供应商的配置字典，格式为 {vendor_id: {key_type: {env_var: value, ...}, ...}}。
             global_default_model: 用户选择的全局默认模型 ref（如 "moonshot/kimi-k2.5"）。
             fallback_models: 全局 fallback 模型列表，按优先级排序。

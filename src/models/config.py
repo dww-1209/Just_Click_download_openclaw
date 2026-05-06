@@ -137,7 +137,7 @@ class ConfigResult:
     browser_opened: bool = False
     log_lines: list[str] = None  # 详细日志，用于排查问题
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.log_lines is None:
             self.log_lines = []
 

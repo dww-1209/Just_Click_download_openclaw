@@ -22,6 +22,15 @@ CMD_OPENCLAW_CN = "openclaw-cn"
 # Gitee 仓库地址（在线安装时克隆的源码仓库）
 GITEE_REPO_URL = "https://gitee.com/OpenClaw-CN/openclaw-cn.git"
 
+# Git for Windows 下载镜像列表
+GIT_FOR_WINDOWS_URLS = [
+    "https://registry.npmmirror.com/-/binary/git-for-windows/v2.43.0.windows.1/Git-2.43.0-64-bit.exe",
+    "https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/LatestRelease/Git-2.47.1-64-bit.exe",
+    "https://mirrors.nju.edu.cn/github-release/git-for-windows/git/LatestRelease/Git-2.47.1-64-bit.exe",
+    "https://mirrors.aliyun.com/github-release/git-for-windows/git/LatestRelease/Git-2.47.1-64-bit.exe",
+    "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/Git-2.47.1-64-bit.exe",
+]
+
 # npm/pnpm 镜像（用于加速依赖下载）
 REGISTRY_NPM_MIRROR = "https://registry.npmmirror.com"
 REGISTRY_CLAWHUB = "https://cn.clawhub-mirror.com/"

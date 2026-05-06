@@ -25,11 +25,11 @@ class UninstallProgressPage(QWidget):
 
     cancel_clicked = Signal()  # 用户点击「取消」，但卸载开始后该按钮会被禁用，仅作状态提示
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         # 主布局：垂直排列标题、进度条、状态文本、日志区域和底部按钮。
         # 日志区域使用深色背景卡片，与安装/配置页保持一致的视觉风格。
         main_layout = QVBoxLayout(self)
@@ -93,7 +93,7 @@ class UninstallProgressPage(QWidget):
 
         main_layout.addLayout(btn_layout)
 
-    def reset(self):
+    def reset(self) -> None:
         """重置页面状态，恢复到初始值。"""
         self.progress_bar.setValue(0)
         self.progress_label.setText("准备卸载...")
@@ -101,18 +101,18 @@ class UninstallProgressPage(QWidget):
         self.cancel_btn.setEnabled(True)
         self.cancel_btn.setText("取消")
 
-    def set_progress(self, percent: int, message: str):
+    def set_progress(self, percent: int, message: str) -> None:
         """更新进度条值和状态文本。"""
         self.progress_bar.setValue(percent)
         self.progress_label.setText(message)
 
-    def add_log(self, line: str):
+    def add_log(self, line: str) -> None:
         """追加日志行并自动滚动到底部。"""
         self.log_edit.append(line)
         scrollbar = self.log_edit.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def set_done(self):
+    def set_done(self) -> None:
         """卸载完成后禁用取消按钮并更新文本，防止用户误操作。"""
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.setText("卸载中...")

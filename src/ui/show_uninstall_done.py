@@ -26,11 +26,11 @@ class UninstallDonePage(QWidget):
     recheck_clicked = Signal()  # 用户点击「重新检测环境」，触发回到卸载欢迎页重新扫描
     exit_clicked = Signal()     # 用户点击「退出」，触发关闭卸载工具
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         # 主布局：垂直排列标题、状态卡片、清单区域和底部按钮。
         # 状态卡片与清单区域使用不同背景色形成视觉层次。
         main_layout = QVBoxLayout(self)
@@ -131,7 +131,7 @@ class UninstallDonePage(QWidget):
 
         main_layout.addLayout(btn_layout)
 
-    def set_success(self):
+    def set_success(self) -> None:
         """设置为完全成功状态：绿色卡片 + 标准已删除清单。"""
         self.status_frame.setStyleSheet(
             "QFrame { background-color: #e8f5e9; border-radius: 8px; }"
@@ -148,7 +148,7 @@ class UninstallDonePage(QWidget):
             "✓ Gateway 服务  — 已停止"
         )
 
-    def set_partial(self, failed_items: list):
+    def set_partial(self, failed_items: list[str]) -> None:
         """设置为部分完成状态：黄色卡片 + 已删除/失败混合清单。
 
         Args:
@@ -163,7 +163,7 @@ class UninstallDonePage(QWidget):
         self.status_title.setStyleSheet("color: #e65100; background: transparent; border: none;")
         self.status_desc.setText("部分文件未能删除，您可以手动清理剩余文件。")
 
-        lines = [
+        lines: list[str] = [
             "✓ OpenClaw 程序文件  — 已删除",
             "✓ 配置文件（含 API Key）— 已删除",
             "✓ 命令行工具  — 已删除",

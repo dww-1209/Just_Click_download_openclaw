@@ -30,13 +30,13 @@ class UninstallWelcomePage(QWidget):
     confirm_clicked = Signal()  # 用户点击「确认卸载」，触发进入卸载进度页
     cancel_clicked = Signal()   # 用户点击「取消/退出」，触发关闭卸载工具
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.installed = False
         self._setup_ui()
         self._check_installation()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         # 主布局：上部为可滚动内容区，下部为固定按钮栏。
         # 使用 QScrollArea 保证在小屏设备上警告清单不会被截断。
         main_layout = QVBoxLayout(self)
@@ -152,7 +152,7 @@ class UninstallWelcomePage(QWidget):
 
         main_layout.addLayout(btn_layout)
 
-    def _check_installation(self):
+    def _check_installation(self) -> None:
         """检测用户主目录下是否存在 OpenClaw 程序与配置目录，并据此刷新 UI 状态。"""
         home = os.path.expanduser("~")
         has_src = os.path.exists(os.path.join(home, "openclaw-cn"))

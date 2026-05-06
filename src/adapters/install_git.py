@@ -3,7 +3,7 @@
 改进点：
 1. 下载优先使用 Python urllib.request，避免 PowerShell 管理员网络上下文断裂
 2. 完整保留原始错误信息（stdout/stderr/异常堆栈），不再截断
-3. 使用 infra.shell_runner 统一执行子进程，自动分类错误类型
+3. 使用 adapters.run_shell 统一执行子进程，自动分类错误类型
 4. 失败时输出详细的上下文、用户提示和修复建议
 """
 
@@ -14,11 +14,11 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from src.infra.shell_runner import run_shell, ShellResult
-from src.models.constants import TIMEOUT_DOWNLOAD
+from src.adapters.run_shell import run_shell, ShellResult
+from src.models.constants import TIMEOUT_DOWNLOAD, GIT_FOR_WINDOWS_URLS
 
 
-def _get_hidden_startupinfo():
+def _get_hidden_startupinfo() -> None:
     """获取用于隐藏窗口的 startupinfo（Windows 专用）"""
     startupinfo = None
     if os.name == "nt":
@@ -176,13 +176,7 @@ def install_git_windows(on_log: Optional[Callable[[str], None]] = None) -> bool:
         print(msg)
 
     try:
-        git_urls = [
-            "https://registry.npmmirror.com/-/binary/git-for-windows/v2.43.0.windows.1/Git-2.43.0-64-bit.exe",
-            "https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/LatestRelease/Git-2.47.1-64-bit.exe",
-            "https://mirrors.nju.edu.cn/github-release/git-for-windows/git/LatestRelease/Git-2.47.1-64-bit.exe",
-            "https://mirrors.aliyun.com/github-release/git-for-windows/git/LatestRelease/Git-2.47.1-64-bit.exe",
-            "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/Git-2.47.1-64-bit.exe",
-        ]
+        git_urls = GIT_FOR_WINDOWS_URLS
 
         with tempfile.TemporaryDirectory() as tmpdir:
             installer_path = Path(tmpdir) / "git-installer.exe"

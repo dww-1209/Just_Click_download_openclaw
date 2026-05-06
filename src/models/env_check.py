@@ -134,7 +134,7 @@ class EnvCheckResult:
     is_ready: bool = True
     message: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """后置初始化：若磁盘空间检测失败，则将整体就绪状态设为 False。"""
         if self.disk_space.status == CheckStatus.FAILED:
             self.is_ready = False

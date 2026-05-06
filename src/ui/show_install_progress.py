@@ -102,7 +102,7 @@ class InstallingPage(QWidget):
         self.progress_bar.setMinimumHeight(22)
 
         # 日志区域：只读文本框，最大保留 100 个 block，防止内存无限增长。
-        # 日志内容来自后台 shell_runner 的标准输出/错误流。
+        # 日志内容来自后台 run_shell 的标准输出/错误流。
         log_label = QLabel("安装日志:")
 
         self.log_text = QPlainTextEdit()

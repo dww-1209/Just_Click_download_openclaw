@@ -7,7 +7,7 @@ from src.models.install import (
     InstallProgress,
     InstallResult,
 )
-from src.infra.openclaw_installer import OpenClawInstaller
+from src.contracts.define_installer import IInstaller
 
 
 class InstallWorker(QThread):
@@ -22,19 +22,18 @@ class InstallWorker(QThread):
     install_complete = Signal(InstallResult)     # 安装完成（成功）
     install_failed = Signal(str)                 # 安装失败（异常信息）
 
-    def __init__(self, os_type: str | None = None, parent: QObject | None = None) -> None:
+    def __init__(self, installer: IInstaller, parent: QObject | None = None) -> None:
         """初始化安装工作线程。
 
         Args:
-            os_type: 目标操作系统类型（windows / linux / macos），用于选择平台特定的安装逻辑。
+            installer: 安装器实例（通过接口注入，避免硬编码具体类）。
             parent: Qt 父对象。
         """
         super().__init__(parent)
-        self.os_type = os_type
-        self.installer = OpenClawInstaller(os_type)
+        self.installer = installer
 
     def run(self) -> None:
-        """线程入口。调用 OpenClawInstaller 执行安装，并转发结果或异常。"""
+        """线程入口。调用安装器接口执行安装，并转发结果或异常。"""
         try:
             result = self.installer.install(
                 on_progress=self._on_progress,
@@ -61,7 +60,7 @@ class InstallWorker(QThread):
         self.log_updated.emit(log_line)
 
     def cancel(self) -> None:
-        """请求取消安装。会转发给 OpenClawInstaller 的取消标志。"""
+        """请求取消安装。会转发给安装器接口的 cancel 方法。"""
         self.installer.cancel()
 
 
@@ -88,15 +87,15 @@ class InstallService(QObject):
         self.worker: InstallWorker | None = None
         self.result: InstallResult | None = None
 
-    def start_install(self, os_type: str | None = None) -> None:
+    def start_install(self, installer: IInstaller) -> None:
         """启动安装流程。
 
         创建 InstallWorker 并连接所有 Signal，然后启动线程。
 
         Args:
-            os_type: 目标操作系统类型。
+            installer: 安装器实例（通过接口注入，由装配器层创建）。
         """
-        self.worker = InstallWorker(os_type)
+        self.worker = InstallWorker(installer)
         self.worker.progress_updated.connect(self._on_progress)
         self.worker.log_updated.connect(self._on_log)
         self.worker.install_complete.connect(self._on_complete)

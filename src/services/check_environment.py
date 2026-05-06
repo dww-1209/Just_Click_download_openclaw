@@ -1,7 +1,9 @@
+from typing import Optional
+
 from PySide6.QtCore import QThread, Signal, QObject
 
 from src.models.env_check import EnvCheckResult, OpenClawStatus
-from src.infra.system_checker import check_environment
+from src.contracts.define_env_checker import IEnvChecker
 
 
 class EnvCheckWorker(QThread):
@@ -9,6 +11,7 @@ class EnvCheckWorker(QThread):
 
     职责：在独立线程中执行系统环境检测（磁盘、网络、权限、OpenClaw 安装状态、浏览器），
     并通过 Signal 向 UI 层回传检测进度和结果。
+    通过 IEnvChecker 接口调用检测逻辑，不直接依赖 infra 层具体实现。
     """
 
     # Signal 方向：Worker -> Service -> UI 页面（env_check_page）
@@ -16,21 +19,28 @@ class EnvCheckWorker(QThread):
     check_complete = Signal(EnvCheckResult) # 检测完成（携带完整结果）
     check_failed = Signal(str)              # 检测过程抛出异常
 
-    def __init__(self, install_path: str | None = None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        checker: IEnvChecker,
+        install_path: str | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         """初始化环境检测工作线程。
 
         Args:
+            checker: 环境检测器实例（通过接口注入）。
             install_path: 预期的安装路径，用于检测该路径下的磁盘空间和已有安装。
             parent: Qt 父对象。
         """
         super().__init__(parent)
+        self.checker = checker
         self.install_path = install_path
 
-    def run(self):
+    def run(self) -> None:
         """线程入口。执行环境检测并发射结果或异常。"""
         try:
             self.started_check.emit()
-            result = check_environment(self.install_path)
+            result = self.checker.check(self.install_path)
             self.check_complete.emit(result)
         except Exception as e:
             self.check_failed.emit(str(e))
@@ -57,15 +67,16 @@ class EnvCheckService(QObject):
         self.worker: EnvCheckWorker | None = None
         self.result: EnvCheckResult | None = None
 
-    def start_check(self, install_path: str | None = None) -> None:
+    def start_check(self, checker: IEnvChecker, install_path: str | None = None) -> None:
         """启动环境检测流程。
 
         创建 EnvCheckWorker 并连接所有 Signal，然后启动线程。
 
         Args:
+            checker: 环境检测器实例（通过接口注入，由装配器层创建）。
             install_path: 预期的安装路径。
         """
-        self.worker = EnvCheckWorker(install_path)
+        self.worker = EnvCheckWorker(checker, install_path)
         self.worker.started_check.connect(self._on_started)
         self.worker.check_complete.connect(self._on_service_complete)
         self.worker.check_failed.connect(self._on_service_failed)

@@ -9,50 +9,101 @@ OpenClaw Installer is a **cross-platform online installer** for the OpenClaw pro
 ## Common Commands
 
 - **Install dependencies:** `uv sync`
-- **Run installer (dev):** `uv run python installer.py`
-- **Run uninstaller (dev):** `uv run python uninstaller.py`
+- **Run installer (dev):** `uv run python launch_installer.py`
+- **Run uninstaller (dev):** `uv run python launch_uninstaller.py`
+- **Run tests:** `uv run pytest tests/`
 - **Build executables:** `uv run python build.py`
 - **Build to custom output:** `uv run python build.py --output <path>`
 - **Clean build artifacts only:** `uv run python build.py --clean-only`
 - **Build without cleaning first:** `uv run python build.py --no-clean`
-- **Quick syntax check:** `python3 -m py_compile installer.py uninstaller.py` (no test suite exists)
+- **Quick syntax check:** `python3 -m py_compile launch_installer.py launch_uninstaller.py`
 
 ## Architecture
 
-### Dual-Entry Design
+### Six-Layer Architecture (Frozen)
 
-The project produces **two independent desktop apps** via `build.py`:
+The project follows a **strictly layered architecture** with six layers. Dependency direction is top-down only: upper layers may import from lower layers, but never the reverse.
 
-- `installer.py` — Main installer with a 6-step flow (欢迎 → 环境检测 → 安装 → 配置 → 模型 → 启动) via `QStackedWidget`.
-- `uninstaller.py` — Standalone uninstaller: stop gateway → remove directories → clean npm wrappers.
+| Layer | Directory | Responsibility |
+|---|---|---|
+| 1. UI | `src/ui/` | PySide6 pages rendered inside `QStackedWidget` slides. Pure presentation; no business logic. |
+| 2. Services | `src/services/` | `QThread` workers and service facades that bridge UI events to backend operations. |
+| 3. Contracts | `src/contracts/` | `typing.Protocol` definitions (for callers) and `ABC` base classes (for implementers). |
+| 4. Core | `src/core/` | High-level lifecycle orchestration (start/stop gateway, open WebUI, configure defaults). |
+| 5. Adapters | `src/adapters/` | Low-level system operations (shell execution, Git/Node.js installation, system checks). |
+| 6. Models | `src/models/` | Dataclasses, enums, constants, and pure utility functions. No external dependencies. |
 
-Both entries prepend the project root to `sys.path` so that `src.*` imports resolve regardless of the CWD:
+**Architecture Freeze Declaration:** This six-layer structure is considered **frozen**. Any modification that adds new layers, changes dependency directions, or introduces cross-layer imports outside the Composition Root requires explicit design discussion. New features should fit within the existing layer boundaries.
+
+### Composition Root Pattern
+
+`launch_installer.py` and `launch_uninstaller.py` are the **only** files permitted to perform cross-layer imports. They act as the Composition Root: wiring concrete implementations into abstract interfaces and connecting Qt signals between UI pages and service workers.
+
+Example from `launch_installer.py`:
 
 ```python
-_PROJECT_ROOT = Path(__file__).parent.resolve()
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+from src.ui.show_welcome import WelcomePage
+from src.ui.show_envcheck import EnvCheckPage
+from src.services.check_environment import EnvCheckService
+from src.services.perform_install import InstallService
+from src.core.manage_openclaw import OpenClawManager
+from src.adapters.install_openclaw import OpenClawInstaller
+from src.adapters.check_system import SystemChecker
 ```
 
-### Layered Structure under `src/`
+No other module should import across more than one layer boundary.
 
-| Layer | Responsibility | Key Files |
+### Naming Conventions (Mandatory)
+
+| Directory | Prefix / Pattern | Example |
 |---|---|---|
-| `ui/` | PySide6 pages (QStackedWidget slides) | `welcome_page.py`, `installing_page.py`, `provider_config_page.py`, ... |
-| `services/` | QThread workers that bridge UI and infra | `install_service.py`, `env_check_service.py`, `workers.py` |
-| `core/` | High-level OpenClaw lifecycle management | `openclaw_manager.py` — start/stop gateway, open WebUI, configure defaults |
-| `infra/` | Low-level system operations | `openclaw_installer.py`, `git_installer.py`, `shell_runner.py`, `system_checker.py` |
-| `models/` | Dataclasses, enums, constants | `install.py`, `config.py`, `constants.py`, `env_check.py` |
+| `src/contracts/` | `define_` + noun | `define_installer.py`, `define_manager.py`, `define_process.py`, `define_uninstaller.py`, `define_worker.py`, `define_env_checker.py`, `define_base_installer.py`, `define_base_manager.py` |
+| `src/adapters/` | verb + noun | `install_openclaw.py`, `install_git.py`, `run_shell.py`, `check_system.py`, `provide_utils.py` |
+| `src/services/` | verb + noun | `perform_install.py`, `perform_uninstall.py`, `check_environment.py`, `configure_providers.py` |
+| `src/ui/` | `show_` + noun | `show_welcome.py`, `show_envcheck.py`, `show_install_progress.py`, `show_default_config.py`, `show_provider_config.py`, `show_startup.py`, `show_uninstall_welcome.py`, `show_uninstall_progress.py`, `show_uninstall_done.py` |
+| `src/core/` | noun (manager) | `manage_openclaw.py` |
+| `src/models/` | noun (domain) | `constants.py`, `install.py`, `config.py`, `env_check.py`, `provider_config.py`, `user_messages.py`, `utils.py` |
+
+When creating new files, always follow the convention of the target directory.
+
+### Protocol + ABC Dual Abstraction
+
+The `contracts/` layer uses two complementary abstraction mechanisms:
+
+1. **`typing.Protocol`** — for callers. Service and UI layers depend on Protocol interfaces (e.g., `IInstaller`, `IOpenClawManager`), allowing any implementation to be injected without inheritance.
+2. **`ABC` base classes** — for implementers. Classes in `core/` and `adapters/` may inherit from `BaseInstaller` or `BaseOpenClawManager` to reuse shared utilities (`_log()`, `is_cancelled`, `_check_cancelled()`) without being forced into a rigid hierarchy.
+
+Key contracts:
+- `define_installer.py` — `IInstaller`, `IInstallTask`
+- `define_manager.py` — `IOpenClawManager`
+- `define_process.py` — `IProcessRunner`
+- `define_uninstaller.py` — `IUninstallTask`
+- `define_worker.py` — `ProgressCallback`, `LogCallback`, `ConfigProgressCallback`
+- `define_env_checker.py` — `IEnvChecker`
+- `define_base_installer.py` — `BaseInstaller` (ABC)
+- `define_base_manager.py` — `BaseOpenClawManager` (ABC)
+- `define_decorators.py` — `@log_method`, `@check_cancelled`（位于 `adapters/`，供 core 和 adapters 层复用）
 
 ### UI ↔ Backend Communication Pattern
 
-All long-running operations (install, env check, config) run in dedicated `QThread` subclasses defined in `services/`. They emit `Signal` objects back to the UI. The UI pages connect to these signals and update progress bars/logs accordingly. Never run blocking shell commands on the main thread.
+All long-running operations (install, env check, config, startup) run in dedicated `QThread` subclasses defined in `services/`. They emit `Signal` objects back to the UI. The UI pages connect to these signals and update progress bars/logs accordingly. Never run blocking shell commands on the main thread.
+
+Typical signal flow:
+
+```
+UI page (show_*.py)
+  → triggers Service (perform_*.py / check_*.py / configure_*.py)
+  → Service spawns Worker (QThread subclass)
+  → Worker calls Core/Adapters via Protocol interfaces
+  → Worker emits progress/log/complete signals
+  → Service relays signals to UI page slots
+```
 
 ### Online Installation Flow
 
 The installer does **not** bundle OpenClaw. It performs an online build:
 
-1. Detect or install Node.js ≥22 (platform-specific: MSI on Windows, PKG on macOS, apt on Ubuntu).
+1. Detect or install Node.js >=22 (platform-specific: MSI on Windows, PKG on macOS, apt on Ubuntu).
 2. Install pnpm globally.
 3. Clone `https://gitee.com/OpenClaw-CN/openclaw-cn.git` into `~/openclaw-cn`.
 4. Run `pnpm install` and `pnpm build` inside the cloned repo.
@@ -73,18 +124,30 @@ Constants such as Node.js version, mirror URLs, and the Gitee repo are centraliz
 
 ### Error Classification System
 
-`src/infra/openclaw_installer.py` maps subprocess failures and exceptions into `ErrorCategory` enums (`network_timeout`, `permission_denied`, `antivirus_blocked`, etc.). The UI uses this category to show localized, user-friendly error messages with actionable suggestions rather than raw stderr.
+`src/adapters/install_openclaw.py` and `src/adapters/run_shell.py` map subprocess failures and exceptions into `ErrorCategory` enums (`network_timeout`, `permission_denied`, `antivirus_blocked`, etc.). The UI uses this category to show localized, user-friendly error messages with actionable suggestions rather than raw stderr.
+
+Error-to-message translation is centralized in `src/models/user_messages.py` via `UserMessageHelper`.
+
+### sys.path Bootstrap
+
+Both entry points prepend the project root to `sys.path` so that `src.*` imports resolve regardless of the CWD:
+
+```python
+_PROJECT_ROOT = Path(__file__).parent.resolve()
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+```
 
 ## Two-Repo Workflow (Critical)
 
 This working directory contains **two nested, independent Git repos**:
 
-1. **Root** (`/Users/dww/Desktop/Just_Click_download_openclaw`) → GitHub `dww-1209/Just_Click_download_openclaw` (source of truth for development).
-2. **`agentclaw/` subdirectory** → Gitea `http://47.116.45.225/ai-team/agentclaw` (downstream, sparse-checkout showing only `installer/`).
+1. **Root** (`/Users/dww/Desktop/Just_Click_download_openclaw`) -> GitHub `dww-1209/Just_Click_download_openclaw` (source of truth for development).
+2. **`agentclaw/` subdirectory** -> Gitea `http://47.116.45.225/ai-team/agentclaw` (downstream, sparse-checkout showing only `installer/`).
 
 **Workflow:**
 1. Develop and test in the **root directory** (GitHub repo).
-2. After changes are committed in the root repo, manually copy/overwrite the relevant files into `agentclaw/installer/` (e.g., `cp -R src/ agentclaw/installer/src/`, `cp installer.py agentclaw/installer/`, etc.).
+2. After changes are committed in the root repo, manually copy/overwrite the relevant files into `agentclaw/installer/` (e.g., `cp -R src/ agentclaw/installer/src/`, `cp launch_installer.py agentclaw/installer/`, etc.).
 3. Commit the synced changes inside `agentclaw/` and push to Gitea.
 
 **Git trap:** Because `agentclaw/` sits inside the root repo's work tree, running `git` commands from inside `agentclaw/` will often resolve to the **parent** GitHub repo instead of the agentclaw repo. Always use absolute paths:

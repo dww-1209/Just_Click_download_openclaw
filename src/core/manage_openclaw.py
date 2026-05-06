@@ -12,8 +12,9 @@ import shutil
 import signal
 import webbrowser
 import re
+import traceback
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 
 from src.models.config import (
     ConfigStatus,
@@ -21,11 +22,13 @@ from src.models.config import (
     ConfigProgress,
     ConfigResult,
 )
-from src.infra import utils
+from src.models.utils import remove_readonly, resolve_openclaw_cmd
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD
+from src.contracts.define_base_manager import BaseOpenClawManager
+from src.adapters.define_decorators import log_method, check_cancelled
 
 
-class OpenClawManager:
+class OpenClawManager(BaseOpenClawManager):
     """OpenClaw 服务管理器
 
     管理 OpenClaw 网关进程的完整生命周期，包括：
@@ -36,25 +39,10 @@ class OpenClawManager:
     - 完全卸载
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        super().__init__()
         self.process: Optional[subprocess.Popen] = None
-        self.is_cancelled = False
         self._webui_url: Optional[str] = None
-        self._log_lines: list = []
-        self._on_log: Optional[Callable[[str], None]] = None
-
-    def _log(self, message: str):
-        """记录日志并回调 UI
-
-        Args:
-            message: 日志内容，会自动追加时间戳。
-        """
-        timestamp = time.strftime("%H:%M:%S")
-        log_line = f"[{timestamp}] {message}"
-        self._log_lines.append(log_line)
-        print(log_line)
-        if self._on_log:
-            self._on_log(log_line)
 
     def configure_only(
         self,
@@ -138,7 +126,6 @@ class OpenClawManager:
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
             # 顶层容错：捕获配置过程中所有已知运行时异常，防止 UI 崩溃
             self._log(f"Exception: {type(e).__name__}: {e}")
-            import traceback
             self._log(f"Traceback: {traceback.format_exc()}")
             return ConfigResult(
                 status=ConfigStatus.FAILED,
@@ -254,7 +241,6 @@ class OpenClawManager:
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
             # 顶层容错：捕获启动过程中所有已知运行时异常，防止 UI 崩溃
             self._log(f"Exception: {type(e).__name__}: {e}")
-            import traceback
             self._log(f"Traceback: {traceback.format_exc()}")
             self._stop_gateway()
             return ConfigResult(
@@ -294,35 +280,6 @@ class OpenClawManager:
         # 再启动网关
         return self.startup_only(on_progress=on_progress)
 
-    def _resolve_openclaw_cmd(self) -> str:
-        """检测系统中可用的 openclaw 命令
-
-        优先检测 openclaw-cn，fallback 到 openclaw。
-        Windows 使用 where 命令（能正确处理 %APPDATA% 等环境变量展开），
-        Linux/macOS 使用 shutil.which。
-
-        Returns:
-            str: 检测到的命令名（如 "openclaw-cn"），若都未找到则返回 "openclaw"。
-        """
-        import shutil
-        os_type = platform.system().lower()
-        if is_windows():
-            # Windows 下使用 where 更可靠（能处理 %APPDATA% 等环境变量展开）
-            for cmd in ["openclaw-cn", "openclaw"]:
-                result = subprocess.run(
-                    ["where", cmd],
-                    shell=False,
-                    capture_output=True,
-                    timeout=TIMEOUT_SHORT_CMD,
-                )
-                if result.returncode == 0:
-                    return cmd
-        else:
-            for cmd in ["openclaw-cn", "openclaw"]:
-                if shutil.which(cmd):
-                    return cmd
-        return "openclaw"
-
     def _check_openclaw_installed(self) -> bool:
         """检查 openclaw 命令是否可用
 
@@ -334,7 +291,7 @@ class OpenClawManager:
             bool: 命令是否可用。
         """
         try:
-            cmd = self._resolve_openclaw_cmd()
+            cmd = resolve_openclaw_cmd()
             os_type = platform.system().lower()
             if is_windows():
                 # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
@@ -364,6 +321,7 @@ class OpenClawManager:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    @log_method
     def _setup_default_config(self) -> bool:
         """设置 OpenClaw 默认配置并执行 onboard
 
@@ -438,6 +396,7 @@ class OpenClawManager:
             self._log(f"Setup config error: {e}")
             return False
 
+    @log_method
     def _inject_browser_config(self) -> None:
         """向 ~/.openclaw/openclaw.json 注入浏览器默认配置
 
@@ -501,6 +460,7 @@ class OpenClawManager:
         clean_env["PATH"] = f"{local_bin}:{clean_env.get('PATH', '')}"
         return clean_env
 
+    @log_method
     def _start_gateway(self) -> bool:
         """启动 OpenClaw 网关服务（前台模式）
 
@@ -540,7 +500,7 @@ class OpenClawManager:
 
             # 使用 'openclaw gateway'（不带 'start'）前台启动，任何平台都不需要管理员权限
             env = self._build_clean_env()
-            cmd = self._resolve_openclaw_cmd()
+            cmd = resolve_openclaw_cmd()
 
             # 如果全局命令找不到，但本地项目存在，则 fallback 到项目内 pnpm 执行
             local_project = Path(os.path.expanduser("~")) / "openclaw-cn"
@@ -650,7 +610,6 @@ class OpenClawManager:
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
             # 顶层容错：捕获网关启动过程中所有已知运行时异常，防止 UI 崩溃
             self._log(f"Start gateway error: {type(e).__name__}: {e}")
-            import traceback
             self._log(f"Traceback: {traceback.format_exc()}")
             return False
 
@@ -679,7 +638,7 @@ class OpenClawManager:
             )
 
         os_type = platform.system().lower()
-        cmd = self._resolve_openclaw_cmd()
+        cmd = resolve_openclaw_cmd()
         env = self._build_clean_env()
 
         # 如果全局命令找不到，但本地项目存在，则 fallback 到项目内 pnpm 执行
@@ -741,7 +700,7 @@ class OpenClawManager:
             )
             return result
 
-    def _kill_port_process(self, port: int):
+    def _kill_port_process(self, port: int) -> None:
         """释放被占用的端口
 
         先对端口进行防御性校验（纯数字、1-65535），然后按平台执行：
@@ -828,6 +787,7 @@ class OpenClawManager:
         """
         return self._is_port_open(18789)
 
+    @log_method
     def _get_webui_url(self) -> str:
         """通过 dashboard 命令获取 WebUI 访问地址
 
@@ -918,7 +878,7 @@ class OpenClawManager:
 
         return False
 
-    def _stop_gateway(self):
+    def _stop_gateway(self) -> None:
         """停止网关服务
 
         停止策略：
@@ -1049,10 +1009,10 @@ class OpenClawManager:
 
     def configure_providers(
         self,
-        providers_config: dict,
+        providers_config: dict[str, Any],
         global_default_model: str,
-        fallback_models: Optional[list] = None,
-        on_progress: Optional[Callable] = None,
+        fallback_models: Optional[list[str]] = None,
+        on_progress: Optional[Callable[[ConfigProgress], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """配置 AI Provider：写入 env 变量和默认模型
@@ -1098,10 +1058,14 @@ class OpenClawManager:
 
             self._log(f"[{idx}/{total}] Configuring {vendor_id}...")
             if on_progress:
-                on_progress({
-                    "percent": int(10 + 80 * idx / total),
-                    "message": f"正在配置 {vendor_id}...",
-                })
+                on_progress(
+                    ConfigProgress(
+                        stage=ConfigStatus.CONFIGURING,
+                        progress_percent=int(10 + 80 * idx / total),
+                        message=f"正在配置 {vendor_id}...",
+                        current_task=f"配置 {vendor_id}",
+                    )
+                )
 
             # 1. 设置主 env 变量（先清理异常字符，防止之前崩溃堆栈等垃圾数据污染配置）
             cleaned_key = api_key.replace('"', '').replace('\n', ' ').strip()
@@ -1421,9 +1385,9 @@ class OpenClawManager:
             return "volcengine-plan" if key_type == "coding" else "volcengine"
         return vendor_id
 
-    def stop(self):
-        """外部调用：停止服务并标记取消状态"""
-        self.is_cancelled = True
+    def stop(self) -> None:
+        """外部调用：停止服务并标记取消状态。复用基类的取消标志设置，再终止 Gateway。"""
+        super().stop()
         self._stop_gateway()
 
     def is_running(self) -> bool:
@@ -1434,7 +1398,11 @@ class OpenClawManager:
         """
         return self.process is not None and self.process.poll() is None
 
-    def uninstall(self, on_log: Optional[Callable[[str], None]] = None) -> bool:
+    def uninstall(
+        self,
+        on_log: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """完全卸载 OpenClaw
 
         卸载流程：
@@ -1443,8 +1411,11 @@ class OpenClawManager:
         3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）。
         4. 删除命令包装器（Windows: %APPDATA%\npm\\*.cmd；Linux/macOS: ~/.local/bin）。
 
+        每一步之前都会检查 cancel_event，若返回 True 则提前终止并返回 False。
+
         Args:
             on_log: 日志回调，用于在 UI 中展示卸载进度。
+            cancel_event: 取消检查函数，返回 True 表示请求取消。
 
         Returns:
             bool: 是否全部成功（个别步骤失败不影响整体返回，但会记录日志）。
@@ -1457,6 +1428,10 @@ class OpenClawManager:
         home = os.path.expanduser("~")
 
         # 1. 停止 Gateway
+        if cancel_event and cancel_event():
+            if on_log:
+                on_log("卸载已取消")
+            return False
         try:
             self._stop_gateway()
             if on_log:
@@ -1466,6 +1441,10 @@ class OpenClawManager:
                 on_log(f"停止 Gateway 失败（可能未运行）: {e}")
 
         # 2. 删除本地构建目录
+        if cancel_event and cancel_event():
+            if on_log:
+                on_log("卸载已取消")
+            return False
         dirs_to_remove = [
             os.path.join(home, "openclaw-cn"),
             os.path.join(home, ".openclaw"),
@@ -1473,7 +1452,7 @@ class OpenClawManager:
         for d in dirs_to_remove:
             if os.path.exists(d):
                 try:
-                    shutil.rmtree(d, onerror=utils.remove_readonly)
+                    shutil.rmtree(d, onerror=remove_readonly)
                     if on_log:
                         on_log(f"已删除: {d}")
                 except (OSError, shutil.Error) as e:
@@ -1482,6 +1461,10 @@ class OpenClawManager:
                     all_ok = False
 
         # 3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）
+        if cancel_event and cancel_event():
+            if on_log:
+                on_log("卸载已取消")
+            return False
         for pkg in ["openclaw-cn", "openclaw"]:
             try:
                 result = subprocess.run(
@@ -1498,6 +1481,10 @@ class OpenClawManager:
                     on_log(f"卸载 {pkg} 出错: {e}")
 
         # 4. 删除命令包装器
+        if cancel_event and cancel_event():
+            if on_log:
+                on_log("卸载已取消")
+            return False
         if os_type == "win32":
             wrapper_dir = os.path.join(home, r"AppData\Roaming\npm")
             wrappers = ["openclaw.cmd", "openclaw-cn.cmd"]

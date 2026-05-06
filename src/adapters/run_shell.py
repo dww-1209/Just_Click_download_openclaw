@@ -60,7 +60,7 @@ class ShellResult:
         return "\n".join(parts)
 
 
-def get_hidden_startupinfo():
+def get_hidden_startupinfo() -> None:
     """获取用于隐藏窗口的 startupinfo（Windows 专用）
 
     在 Windows 上，子进程默认会弹出控制台窗口；通过设置 STARTUPINFO

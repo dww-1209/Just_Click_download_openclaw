@@ -38,6 +38,8 @@ from .user_messages import (
     format_time,
 )
 
+from .utils import remove_readonly
+
 __all__ = [
     # env_check
     "CheckStatus",
@@ -66,4 +68,5 @@ __all__ = [
     "UserMessageHelper",
     "format_size",
     "format_time",
+    "remove_readonly",
 ]

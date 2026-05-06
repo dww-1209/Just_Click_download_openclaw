@@ -152,7 +152,7 @@ class InstallConfig:
     # OpenClaw 官方安装命令模板
     command_template: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.command_template:
             self.command_template = get_official_command(self.os_type)
 
