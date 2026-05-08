@@ -23,6 +23,7 @@ import argparse
 import os
 import platform
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -143,6 +144,59 @@ def download_pnpm(output_dir: Path, version: str, platform_name: str, arch: str)
     )
 
 
+def _add_to_tar(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
+    """递归添加文件/目录到 tar，跳过 symlink 目录避免 junction 循环。
+
+    pnpm workspace 在 Windows 上使用 junction 链接本地包，若当作普通目录
+    递归进入会导致无限嵌套（如 extensions/bluebubbles/node_modules/openclaw/...）。
+    """
+    if path.is_symlink():
+        # symlink（含 junction）：只记录链接本身，绝不跟随
+        tar.add(path, arcname=arcname)
+        return
+
+    if path.is_dir():
+        # 添加目录本身，但不递归（recursive=False）
+        tar.add(path, arcname=arcname, recursive=False)
+        try:
+            for child in path.iterdir():
+                if child.name == ".git":
+                    continue
+                _add_to_tar(tar, child, f"{arcname}/{child.name}")
+        except OSError as e:
+            print(f"  警告: 无法访问 {path}: {e}")
+    else:
+        tar.add(path, arcname=arcname)
+
+
+def _pack_with_system_tar(source_dir: Path, output_file: Path) -> bool:
+    """尝试使用系统 tar 命令打包（MSYS2/Git Bash tar 能正确处理 Windows junction）。
+
+    Returns:
+        True 如果打包成功。
+    """
+    tar_cmd = shutil.which("tar")
+    if not tar_cmd:
+        return False
+
+    try:
+        result = subprocess.run(
+            [
+                tar_cmd,
+                "-czf", str(output_file),
+                "-C", str(source_dir),
+                "--exclude=.git",
+                ".",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
 def pack_prebuilt(source_dir: Path, output_dir: Path, platform_name: str) -> Path:
     """将预构建产物打包为 tar.gz。
 
@@ -177,31 +231,18 @@ def pack_prebuilt(source_dir: Path, output_dir: Path, platform_name: str) -> Pat
     print(f"  来源: {source_dir}")
     print(f"  目标: {output_file}")
 
-    # 统计要打包的文件数（排除 .git）
-    total_files = 0
-    for root, dirs, files in os.walk(source_dir):
-        if ".git" in dirs:
-            dirs.remove(".git")
-        total_files += len(files)
-    print(f"  文件数（排除 .git）: {total_files}")
-
-    packed = 0
-    with tarfile.open(output_file, "w:gz") as tar:
-        for item in source_dir.iterdir():
-            if item.name == ".git":
-                continue
-            arcname = f"openclaw-cn/{item.name}"
-            tar.add(item, arcname=arcname)
-            if item.is_dir():
-                for f in item.rglob("*"):
-                    if f.is_file():
-                        packed += 1
-                        if packed % 5000 == 0:
-                            print(f"\r  已打包: {packed}/{total_files}", end="", flush=True)
-            else:
-                packed += 1
-                if packed % 5000 == 0:
-                    print(f"\r  已打包: {packed}/{total_files}", end="", flush=True)
+    # Windows 上优先使用系统 tar（MSYS2/Git Bash），避免 Python tarfile
+    # 将 junction 误当作普通目录递归进入导致的路径爆炸。
+    if sys.platform == "win32" and _pack_with_system_tar(source_dir, output_file):
+        print(f"  使用系统 tar 打包完成")
+    else:
+        # 回退到 Python tarfile，手动遍历并跳过 symlink 目录
+        print(f"  使用 Python tarfile 打包（跳过 symlink 目录）...")
+        with tarfile.open(output_file, "w:gz") as tar:
+            for item in source_dir.iterdir():
+                if item.name == ".git":
+                    continue
+                _add_to_tar(tar, item, f"openclaw-cn/{item.name}")
 
     print(f"\n预构建产物打包完成: {output_file}")
 
