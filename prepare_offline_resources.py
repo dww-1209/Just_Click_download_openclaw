@@ -144,13 +144,28 @@ def download_pnpm(output_dir: Path, version: str, platform_name: str, arch: str)
     )
 
 
+def _is_junction(path: Path) -> bool:
+    """检测 Windows junction（重解析点）。
+
+    pnpm workspace 在 Windows 上创建 junction 而非 symlink，
+    pathlib.Path.is_symlink() 对 junction 返回 False。
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        st = os.lstat(path)
+        return bool(st.st_file_attributes & os.stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except (OSError, AttributeError):
+        return False
+
+
 def _add_to_tar(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
-    """递归添加文件/目录到 tar，跳过 symlink 目录避免 junction 循环。
+    """递归添加文件/目录到 tar，跳过 symlink/junction 目录避免循环。
 
     pnpm workspace 在 Windows 上使用 junction 链接本地包，若当作普通目录
     递归进入会导致无限嵌套（如 extensions/bluebubbles/node_modules/openclaw/...）。
     """
-    if path.is_symlink():
+    if path.is_symlink() or _is_junction(path):
         # symlink（含 junction）：只记录链接本身，绝不跟随
         tar.add(path, arcname=arcname)
         return

@@ -21,7 +21,7 @@ from src.models.config import (
     ConfigResult,
 )
 from src.models.utils import remove_readonly, resolve_openclaw_cmd
-from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD
+from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD, TIMEOUT_NODE_MSI_INSTALL
 from src.contracts.define_base_manager import BaseOpenClawManager
 from src.contracts.define_decorators import log_method
 
@@ -441,7 +441,11 @@ class OpenClawManager(BaseOpenClawManager):
         """
         import os
         env = os.environ.copy()
-        keep_always = {"HOME", "PATH", "SHELL", "TMPDIR", "PWD", "OLDPWD"}
+        keep_always = {
+            "HOME", "PATH", "SHELL", "TMPDIR", "PWD", "OLDPWD",
+            "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+            "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
+        }
         clean_env = {}
         for k, v in env.items():
             if k in keep_always:
@@ -457,6 +461,33 @@ class OpenClawManager(BaseOpenClawManager):
         local_bin = os.path.join(home, ".local", "bin")
         clean_env["PATH"] = f"{local_bin}:{clean_env.get('PATH', '')}"
         return clean_env
+
+    def _kill_process_tree(self, process: subprocess.Popen) -> None:
+        """终止指定进程及其子进程。
+
+        Windows 下使用 taskkill /F /T 递归杀进程树；
+        其他平台先尝试 process.kill()，由操作系统回收子进程。
+        """
+        try:
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=TIMEOUT_SHORT_CMD)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        if is_windows() and process.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    shell=False,
+                    capture_output=True,
+                    timeout=TIMEOUT_NODE_MSI_INSTALL,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     @log_method
     def _start_gateway(self) -> bool:
@@ -550,6 +581,20 @@ class OpenClawManager(BaseOpenClawManager):
 
             # 使用 Popen 后台运行，避免阻塞主线程
             self.process = subprocess.Popen(full_cmd, **popen_kwargs)
+
+            # 启动后台线程 drain stdout/stderr，避免 Gateway 输出填满 OS pipe 缓冲区导致死锁
+            import threading
+            def _drain_stream(stream):
+                try:
+                    while True:
+                        chunk = stream.read(4096)
+                        if not chunk:
+                            break
+                except (ValueError, OSError):
+                    pass
+
+            threading.Thread(target=_drain_stream, args=(self.process.stdout,), daemon=True).start()
+            threading.Thread(target=_drain_stream, args=(self.process.stderr,), daemon=True).start()
 
             self._log(f"Gateway process started with PID: {self.process.pid}")
 
@@ -723,20 +768,21 @@ class OpenClawManager(BaseOpenClawManager):
                     text=True,
                 )
                 if result.returncode == 0 and result.stdout:
+                    # 使用正则精确匹配端口，避免误匹配（如 18789 匹配到 118789）
+                    port_pattern = re.compile(rf':{port}\s+.*?(\d+)\s*$')
                     for line in result.stdout.strip().splitlines():
-                        if f":{port}" in line:
-                            parts = line.strip().split()
-                            if len(parts) >= 5:
-                                pid = parts[-1]
-                                if pid.isdigit():
-                                    try:
-                                        subprocess.run(
-                                            ["taskkill", "/PID", pid, "/F"],
-                                            capture_output=True,
-                                        )
-                                        self._log(f"Killed process PID: {pid}")
-                                    except (OSError, subprocess.SubprocessError) as e:
-                                        self._log(f"Kill process error: {e}")
+                        match = port_pattern.search(line)
+                        if match:
+                            pid = match.group(1)
+                            if pid.isdigit():
+                                try:
+                                    subprocess.run(
+                                        ["taskkill", "/PID", pid, "/F"],
+                                        capture_output=True,
+                                    )
+                                    self._log(f"Killed process PID: {pid}")
+                                except (OSError, subprocess.SubprocessError) as e:
+                                    self._log(f"Kill process error: {e}")
             else:
                 result = subprocess.run(
                     ["lsof", "-ti", f":{port}"],
@@ -805,13 +851,12 @@ class OpenClawManager(BaseOpenClawManager):
                 self._log(f"dashboard output: {output[:300]}")
 
                 if result.returncode == 0:
-                    url_match = re.search(r'https?://[^\s\n\r]+', output)
+                    # 直接匹配期望的本地地址，避免从错误消息中误提取其他 URL
+                    url_match = re.search(r'https?://127\.0\.0\.1:18789[^\s\n\r]*', output)
                     if url_match:
                         url = url_match.group(0)
-                        # 校验 URL 是否包含 token 或目标端口，避免误匹配
-                        if "token=" in url or "18789" in url:
-                            self._log(f"Got URL: {url}")
-                            return url
+                        self._log(f"Got URL: {url}")
+                        return url
                 else:
                     self._log(f"dashboard return code: {result.returncode}")
 
@@ -1423,7 +1468,7 @@ class OpenClawManager(BaseOpenClawManager):
                         on_log(f"已卸载 npm 包: {pkg}")
                 elif on_log:
                     on_log(f"npm 包 {pkg} 可能未全局安装，跳过")
-            except (OSError, subprocess.SubprocessError) as e:
+            except Exception as e:
                 if on_log:
                     on_log(f"卸载 {pkg} 出错: {e}")
 
@@ -1449,6 +1494,7 @@ class OpenClawManager(BaseOpenClawManager):
                 except OSError as e:
                     if on_log:
                         on_log(f"删除 {wpath} 失败: {e}")
+                    all_ok = False
 
         # 5. 删除离线安装器创建的 Node.js 目录
         openclaw_node_dir = os.path.join(home, ".openclaw-node")
@@ -1472,6 +1518,7 @@ class OpenClawManager(BaseOpenClawManager):
                             lines = f.readlines()
 
                         # 移除 "# Added by OpenClaw Installer" 及其下一行 export PATH
+                        # 同时移除 openclaw completion 的 source 语句
                         cleaned = []
                         skip_next = False
                         modified = False
@@ -1480,8 +1527,12 @@ class OpenClawManager(BaseOpenClawManager):
                                 skip_next = False
                                 modified = True
                                 continue
-                            if line.strip() == "# Added by OpenClaw Installer":
+                            stripped = line.strip()
+                            if stripped == "# Added by OpenClaw Installer":
                                 skip_next = True
+                                modified = True
+                                continue
+                            if "source" in stripped and ".openclaw/completions/openclaw.zsh" in stripped:
                                 modified = True
                                 continue
                             cleaned.append(line)
