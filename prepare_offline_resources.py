@@ -8,10 +8,13 @@ OpenClaw 离线资源准备脚本
     uv run python prepare_offline_resources.py --platform macos --source-dir ~/openclaw-cn
 
 说明:
-- 从 nodejs.org 下载 Node.js 预编译二进制包
-- 从 GitHub 下载 pnpm standalone 可执行文件
+- 从 nodejs.org 下载 Node.js 预编译二进制包（tarball/zip）
+- 从 npm registry（国内镜像优先）下载 pnpm npm tarball（.tgz，跨平台共用）
 - 将 OpenClaw 预构建产物打包为 tar.gz（需先通过在线安装器或手动构建）
 - 输出到 resources/{platform}/ 目录
+
+注意：pnpm 的 npm tarball 输出到 resources/ 根目录，不区分平台，
+      因为安装时统一通过 npm install -g 本地安装。
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from urllib.error import URLError
 
 # 默认版本号
 DEFAULT_NODEJS_VERSION = "22.14.0"
-DEFAULT_PNPM_VERSION = "9.15.0"
+DEFAULT_PNPM_VERSION = "10.10.0"
 
 
 def detect_platform() -> str:
@@ -102,55 +105,42 @@ def download_nodejs(output_dir: Path, version: str, platform_name: str, arch: st
 
 
 def download_pnpm(output_dir: Path, version: str, platform_name: str, arch: str) -> Path:
-    """下载 pnpm standalone 可执行文件。
+    """下载 pnpm npm tarball。
+
+    使用 npm registry 的 .tgz 包，安装时通过 npm install -g 本地安装，
+    无需平台相关的 standalone 二进制。
 
     Returns:
-        下载后的文件路径。
+        下载后的文件路径（位于 resources/ 根目录，跨平台共用）。
     """
-    # pnpm standalone 文件名映射
-    if platform_name == "macos":
-        pnpm_filename = f"pnpm-macos-{arch}"
-    elif platform_name == "linux":
-        pnpm_filename = f"pnpm-linux-{arch}"
-    elif platform_name == "windows":
-        pnpm_filename = f"pnpm-win-{arch}.exe"
-    else:
-        raise ValueError(f"不支持的平台: {platform_name}")
-
-    # GitHub releases URL
-    url = f"https://github.com/pnpm/pnpm/releases/download/v{version}/{pnpm_filename}"
-
-    if platform_name == "windows":
-        dest = output_dir / "pnpm.exe"
-    else:
-        dest = output_dir / "pnpm"
+    # 统一输出到 resources/ 根目录，不区分平台
+    resources_root = output_dir.parent
+    dest = resources_root / f"pnpm-{version}.tgz"
 
     if dest.exists():
         print(f"pnpm 已存在，跳过下载: {dest}")
         return dest
 
-    try:
-        _download_with_progress(url, dest)
-    except URLError as e:
-        print(f"从 GitHub 下载 pnpm 失败: {e}")
-        print("尝试从系统复制 pnpm...")
-        system_pnpm = shutil.which("pnpm")
-        if system_pnpm:
-            shutil.copy2(system_pnpm, dest)
-            print(f"已从系统复制 pnpm: {system_pnpm} -> {dest}")
-        else:
-            raise RuntimeError(
-                "无法获取 pnpm standalone。请手动下载并放置到资源目录:\n"
-                f"  {url}\n"
-                f"  -> {dest}"
-            )
+    # 优先使用国内镜像
+    mirrors = [
+        f"https://registry.npmmirror.com/pnpm/-/pnpm-{version}.tgz",
+        f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
+    ]
 
-    # 设置可执行权限（非 Windows）
-    if platform_name != "windows":
-        dest.chmod(0o755)
+    for url in mirrors:
+        try:
+            _download_with_progress(url, dest)
+            print(f"pnpm 下载完成: {dest}")
+            return dest
+        except URLError as e:
+            print(f"从 {url} 下载失败: {e}")
+            continue
 
-    print(f"pnpm 准备完成: {dest}")
-    return dest
+    raise RuntimeError(
+        f"无法从任何镜像下载 pnpm npm tarball。请手动下载并放置到:\n"
+        f"  https://registry.npmmirror.com/pnpm/-/pnpm-{version}.tgz\n"
+        f"  -> {dest}"
+    )
 
 
 def pack_prebuilt(source_dir: Path, output_dir: Path, platform_name: str) -> Path:
@@ -335,10 +325,18 @@ def main() -> None:
     print("资源准备完成")
     print("=" * 50)
     print()
-    print(f"资源目录: {output_dir.resolve()}")
+    print(f"平台资源目录: {output_dir.resolve()}")
     for f in sorted(output_dir.iterdir()):
         size_mb = f.stat().st_size / (1024 * 1024)
         print(f"  {f.name}: {size_mb:.1f} MB")
+
+    # 显示 resources/ 根目录下的 pnpm tarball
+    resources_root = output_dir.parent
+    pnpm_tgz = resources_root / f"pnpm-{args.pnpm_version}.tgz"
+    if pnpm_tgz.exists():
+        size_mb = pnpm_tgz.stat().st_size / (1024 * 1024)
+        print(f"  pnpm-{args.pnpm_version}.tgz: {size_mb:.1f} MB (resources/ 根目录，跨平台共用)")
+
     print()
     print("下一步：")
     print(f"  uv run python build.py --offline --resources-dir {output_dir}")

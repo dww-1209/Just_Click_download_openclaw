@@ -66,17 +66,36 @@ uv sync
 
 **运行开发版本：**
 ```bash
-# 安装器
+# 安装器（在线版）
 uv run python launch_installer.py
+
+# 安装器（离线版）
+uv run python launch_installer_offline.py
 
 # 卸载器
 uv run python launch_uninstaller.py
 ```
 
-**运行测试：**
+**准备资源（首次构建或更新资源时）：**
+
+在线版只需要 Node.js 预编译包，离线版额外需要 OpenClaw 预构建产物：
+
 ```bash
-uv run pytest tests/
+# 1. 准备基础资源（Node.js + pnpm npm tarball）
+uv run python prepare_offline_resources.py --platform macos --skip-prebuilt
+
+# 2. 安装 OpenClaw 在线版（获取最新源码并构建）
+# 运行一次在线安装器，完成构建后 ~/openclaw-cn 目录即为预构建产物
+
+# 3. 打包 OpenClaw 预构建产物（离线版需要）
+uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm
 ```
+
+**资源说明：**
+- `prepare_offline_resources.py` 从 nodejs.org 下载 Node.js 官方预编译包
+- pnpm 从 npm registry（国内镜像优先）下载 npm tarball（`.tgz`），跨平台共用
+- OpenClaw 预构建产物需先通过在线安装器完成 `pnpm install && pnpm build` 后打包
+- 所有资源输出到 `resources/{platform}/`，项目已配置自动读取
 
 **打包可执行文件：**
 ```bash
@@ -88,6 +107,9 @@ uv run python build.py --output ~/Desktop
 
 # 仅清理构建文件
 uv run python build.py --clean-only
+
+# 打包离线版
+uv run python build.py --offline --resources-dir resources/macos
 ```
 
 打包完成后：
