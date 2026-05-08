@@ -77,6 +77,38 @@ jobs:
           path: dist/**/**
           retention-days: 90
 
+      # 验证：用 Python tarfile 解压产物，模拟离线安装器的解压过程，
+      # 确认 Windows 上不会遇到 symlink 创建权限问题。
+      - name: Test extraction (simulate offline installer)
+        shell: pwsh
+        run: |
+          $testDir = "$env:TEMP\openclaw-extract-test"
+          Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+
+          python -c "
+          import tarfile, sys
+          from pathlib import Path
+          archive = Path('resources/windows/openclaw-prebuilt-windows.tar.gz')
+          print(f'Archive size: {archive.stat().st_size / 1024 / 1024:.1f} MB')
+          with tarfile.open(archive, 'r:gz') as tar:
+              # 先列出成员看看是否有 symlink
+              symlinks = [m for m in tar.getmembers() if m.issym() or m.islnk()]
+              print(f'Symlink count: {len(symlinks)}')
+              for s in symlinks[:5]:
+                  print(f'  {s.name} -> {s.linkname}')
+              # 执行解压（模拟 safe_tar_extract）
+              tar.extractall('$testDir')
+          print('Extraction OK')
+          "
+
+          $extracted = "$testDir\openclaw-cn"
+          if (Test-Path $extracted) {
+              $itemCount = (Get-ChildItem -Recurse $extracted | Measure-Object).Count
+              Write-Host "Extracted items: $itemCount"
+              Get-ChildItem $extracted | Select-Object -First 10 Name
+          }
+
       - name: Upload openclaw-cn prebuilt artifact
         uses: actions/upload-artifact@v4
         with:
