@@ -45,23 +45,18 @@ jobs:
           pnpm install
           pnpm build
 
+      # 使用 Git Bash (MSYS2) 的 tar 来打包，避免 Python tarfile 在 Windows 上
+      # 将 pnpm junction 误当作普通目录递归进入导致的路径爆炸问题。
+      # MSYS2 tar 会把 junction 当作 symlink 处理（不跟随），且不受 MAX_PATH 限制。
       - name: Package openclaw-cn prebuilt
-        shell: pwsh
+        shell: bash
         run: |
-          python -c "
-          import tarfile
-          from pathlib import Path
-          source = Path.home() / 'openclaw-cn'
-          output = Path('resources/windows/openclaw-prebuilt-windows.tar.gz')
-          output.parent.mkdir(parents=True, exist_ok=True)
-          with tarfile.open(output, 'w:gz') as tar:
-              for item in source.iterdir():
-                  if item.name == '.git':
-                      continue
-                  tar.add(item, arcname=f'openclaw-cn/{item.name}')
-          size_mb = output.stat().st_size / 1024 / 1024
-          print(f'Packaged: {output} ({size_mb:.1f} MB)')
-          "
+          mkdir -p resources/windows
+          tar -czf "resources/windows/openclaw-prebuilt-windows.tar.gz" \
+              -C "$USERPROFILE/openclaw-cn" \
+              --exclude='.git' \
+              .
+          ls -lh "resources/windows/openclaw-prebuilt-windows.tar.gz"
 
       - name: Build executables
         env:
