@@ -85,20 +85,20 @@ jobs:
           $testDir = "$env:TEMP\openclaw-extract-test"
           Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+          $env:TEST_DIR = $testDir
 
           python -c "
-          import tarfile, sys
+          import tarfile, os
           from pathlib import Path
           archive = Path('resources/windows/openclaw-prebuilt-windows.tar.gz')
+          dest = Path(os.environ['TEST_DIR'])
           print(f'Archive size: {archive.stat().st_size / 1024 / 1024:.1f} MB')
           with tarfile.open(archive, 'r:gz') as tar:
-              # 先列出成员看看是否有 symlink
               symlinks = [m for m in tar.getmembers() if m.issym() or m.islnk()]
               print(f'Symlink count: {len(symlinks)}')
               for s in symlinks[:5]:
                   print(f'  {s.name} -> {s.linkname}')
-              # 执行解压（模拟 safe_tar_extract）
-              tar.extractall('$testDir')
+              tar.extractall(dest)
           print('Extraction OK')
           "
 
