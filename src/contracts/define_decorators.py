@@ -9,6 +9,7 @@
 - 装饰器只依赖 self._log() 和 self.is_cancelled / self._check_cancelled()，
   因此要求被装饰的类继承 BaseOpenClawManager 或 BaseInstaller。
 - 装饰器使用 functools.wraps 保留原函数的元信息。
+- 本文件位于 contracts 层，可供 core 和 adapters 共同依赖，避免反向导入。
 """
 
 from __future__ import annotations

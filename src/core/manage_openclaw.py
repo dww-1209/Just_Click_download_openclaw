@@ -9,7 +9,6 @@ import platform
 import time
 import os
 import shutil
-import webbrowser
 import re
 import traceback
 from pathlib import Path
@@ -24,7 +23,7 @@ from src.models.config import (
 from src.models.utils import remove_readonly, resolve_openclaw_cmd
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD
 from src.contracts.define_base_manager import BaseOpenClawManager
-from src.adapters.define_decorators import log_method
+from src.contracts.define_decorators import log_method
 
 
 class OpenClawManager(BaseOpenClawManager):
@@ -826,57 +825,6 @@ class OpenClawManager(BaseOpenClawManager):
         self._log("Failed to get URL from dashboard, using default")
         return "http://127.0.0.1:18789"
 
-    def _open_browser(self, url: str) -> bool:
-        """打开系统默认浏览器访问指定 URL
-
-        尝试顺序：
-        1. webbrowser.open（跨平台，最干净）。
-        2. Windows: start 命令。
-        3. 按平台使用 os.system 兜底（start / open / xdg-open）。
-
-        Args:
-            url: 要打开的完整 URL。
-
-        Returns:
-            bool: 是否至少有一种方式成功执行。
-        """
-        self._log(f"Opening browser: {url}")
-
-        try:
-            webbrowser.open(url, new=2)
-            self._log("webbrowser.open success")
-            return True
-        except (OSError, webbrowser.Error) as e:
-            self._log(f"webbrowser.open failed: {e}")
-
-        if is_windows():
-            try:
-                result = subprocess.run(
-                    ["cmd", "/c", "start", "", url],
-                    shell=False,
-                    capture_output=True,
-                    timeout=TIMEOUT_SHORT_CMD,
-                )
-                if result.returncode == 0:
-                    self._log("start command success")
-                    return True
-            except (OSError, subprocess.SubprocessError) as e:
-                self._log(f"start command failed: {e}")
-
-        try:
-            if is_windows():
-                os.system(f'start "" "{url}"')
-            elif is_macos():
-                os.system(f'open "{url}"')
-            else:
-                os.system(f'xdg-open "{url}"')
-            self._log("os.system executed")
-            return True
-        except OSError as e:
-            self._log(f"os.system failed: {e}")
-
-        return False
-
     def _stop_gateway(self) -> None:
         """停止网关服务
 
@@ -1501,6 +1449,51 @@ class OpenClawManager(BaseOpenClawManager):
                 except OSError as e:
                     if on_log:
                         on_log(f"删除 {wpath} 失败: {e}")
+
+        # 5. 删除离线安装器创建的 Node.js 目录
+        openclaw_node_dir = os.path.join(home, ".openclaw-node")
+        if os.path.exists(openclaw_node_dir):
+            try:
+                shutil.rmtree(openclaw_node_dir, onerror=remove_readonly)
+                if on_log:
+                    on_log(f"已删除: {openclaw_node_dir}")
+            except (OSError, shutil.Error) as e:
+                if on_log:
+                    on_log(f"删除 {openclaw_node_dir} 失败: {e}")
+                all_ok = False
+
+        # 6. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目
+        if os_type != "win32":
+            for rc_file in [".bashrc", ".zshrc", ".profile"]:
+                rc_path = os.path.join(home, rc_file)
+                if os.path.exists(rc_path):
+                    try:
+                        with open(rc_path, "r", encoding="utf-8") as f:
+                            lines = f.readlines()
+
+                        # 移除 "# Added by OpenClaw Installer" 及其下一行 export PATH
+                        cleaned = []
+                        skip_next = False
+                        modified = False
+                        for line in lines:
+                            if skip_next:
+                                skip_next = False
+                                modified = True
+                                continue
+                            if line.strip() == "# Added by OpenClaw Installer":
+                                skip_next = True
+                                modified = True
+                                continue
+                            cleaned.append(line)
+
+                        if modified:
+                            with open(rc_path, "w", encoding="utf-8") as f:
+                                f.writelines(cleaned)
+                            if on_log:
+                                on_log(f"已清理 {rc_file} 中的 PATH 配置")
+                    except OSError as e:
+                        if on_log:
+                            on_log(f"清理 {rc_file} 失败: {e}")
 
         if on_log:
             on_log("OpenClaw 卸载完成")

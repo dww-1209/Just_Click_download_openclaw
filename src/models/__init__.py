@@ -1,6 +1,8 @@
 """数据模型模块
 
-包含所有数据结构定义和状态契约
+职责：作为 Models 层的聚合导出点，集中暴露所有数据结构定义和状态契约。
+本模块不依赖任何业务逻辑层，只包含纯数据类、枚举和工具函数，
+供 UI、Services、Core、Adapters 等各层按需导入。
 """
 
 from .env_check import (
@@ -40,7 +42,7 @@ from .user_messages import (
     format_time,
 )
 
-from .utils import remove_readonly
+from .utils import remove_readonly, ensure_local_bin_in_path
 
 __all__ = [
     # env_check
@@ -73,4 +75,5 @@ __all__ = [
     "format_size",
     "format_time",
     "remove_readonly",
+    "ensure_local_bin_in_path",
 ]

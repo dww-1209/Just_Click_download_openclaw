@@ -17,6 +17,8 @@ from src.contracts.define_installer import IInstaller
 from src.contracts.define_manager import IOpenClawManager
 from src.contracts.define_uninstaller import IUninstallTask
 from src.contracts.define_env_checker import IEnvChecker
+from src.contracts.define_system_launcher import ISystemLauncher
+from src.contracts.define_decorators import log_method, check_cancelled, CancellationError
 
 __all__ = [
     "BaseInstaller",
@@ -31,4 +33,8 @@ __all__ = [
     "IOpenClawManager",
     "IUninstallTask",
     "IEnvChecker",
+    "ISystemLauncher",
+    "log_method",
+    "check_cancelled",
+    "CancellationError",
 ]

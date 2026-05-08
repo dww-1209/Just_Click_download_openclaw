@@ -49,3 +49,13 @@ install.sh
 provider.txt
 promote.txt
 agentclaw/
+
+# Claude Code local state
+.claude/
+
+# Bundled platform binaries (downloaded via prepare_offline_resources.py)
+resources/*/node-*.tar.gz
+resources/*/node-*.tar.xz
+resources/*/node-*.zip
+resources/*/openclaw-prebuilt-*.tar.gz
+resources/pnpm-*.tgz

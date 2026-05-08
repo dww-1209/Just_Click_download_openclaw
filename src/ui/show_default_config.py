@@ -4,8 +4,6 @@
 并展示配置步骤的进度与结果。支持「重试」「手动配置」「下一步」三种用户分支。
 """
 
-import sys
-
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,

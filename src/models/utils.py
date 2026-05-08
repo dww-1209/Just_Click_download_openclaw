@@ -1,6 +1,6 @@
 """模型层公共工具函数
 
-职责：提供纯数据/工具辅助函数，供 models、core、infra 等各层共享使用。
+职责：提供纯数据/工具辅助函数，供 models、core、adapters 等各层共享使用。
 
 设计原则：
 - 本层只包含不依赖任何业务逻辑和系统调用的纯工具函数。
@@ -13,13 +13,15 @@ import os
 import shutil
 import stat
 import subprocess
+import tarfile
+from pathlib import Path
 from typing import Callable, Any, Optional
 
 from src.models.constants import is_windows, TIMEOUT_SHORT_CMD
 
 
 def remove_readonly(func: Callable[[str], None], path: str, _: Any) -> None:
-    """shutil.rmtree 的 onerror 回调：移除只读属性后重试删除。
+    """shutil.rmtree 的 onerror 回调：移除只读属性后重试删除操作。
 
     用途：删除可能包含只读文件（如 Git 仓库中的文件）的目录时，
     先修改文件权限再重试删除操作。
@@ -62,3 +64,125 @@ def resolve_openclaw_cmd(env: Optional[dict] = None) -> str:
             if shutil.which(cmd, path=path_env) is not None:
                 return cmd
     return "openclaw"
+
+
+def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = None) -> None:
+    """将指定目录持久化到用户 shell 配置文件的 PATH 中。
+
+    会依次检查 .bashrc、.zshrc、.profile，避免重复写入。
+    这是为"安装完成后用户新开终端能直接使用命令"做的持久化配置。
+
+    Args:
+        directory: 要加入 PATH 的目录绝对路径。
+        on_log: 可选的日志回调函数，用于输出操作结果。
+    """
+    # Windows 平台无 bashrc/zshrc 概念，直接跳过
+    if is_windows():
+        if on_log:
+            on_log("Windows 平台跳过 shell 配置写入")
+        return
+
+    path_export = f'export PATH="{directory}:$PATH"'
+
+    home = os.path.expanduser("~")
+    for rc_file in [".bashrc", ".zshrc", ".profile"]:
+        rc_path = os.path.join(home, rc_file)
+        if os.path.exists(rc_path):
+            try:
+                with open(rc_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if directory in content:
+                    if on_log:
+                        on_log(f"{rc_file} 已包含 {directory}")
+                    continue
+                with open(rc_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n# Added by OpenClaw Installer\n{path_export}\n")
+                if on_log:
+                    on_log(f"已将 {directory} 添加到 {rc_file}")
+            except OSError as e:
+                if on_log:
+                    on_log(f"修改 {rc_file} 失败: {e}")
+
+
+def ensure_local_bin_in_path(on_log: Callable[[str], None] | None = None) -> None:
+    """确保 ~/.local/bin 被写入用户 shell 配置文件。
+
+    这是 ensure_dir_in_path 的便捷封装，用于 openclaw 命令包装器的 PATH 持久化。
+    """
+    home = os.path.expanduser("~")
+    local_bin = os.path.join(home, ".local", "bin")
+    ensure_dir_in_path(local_bin, on_log)
+
+
+def detect_openclaw_installation() -> tuple[bool, list[str]]:
+    """检测用户主目录下是否存在 OpenClaw 安装记录。
+
+    检查两个目录:
+    - ~/openclaw-cn: 程序源码/构建目录
+    - ~/.openclaw: 配置文件目录
+
+    Returns:
+        (是否已安装, 检测到的目录描述列表)
+    """
+    home = os.path.expanduser("~")
+    details: list[str] = []
+    if os.path.exists(os.path.join(home, "openclaw-cn")):
+        details.append("程序文件: ~/openclaw-cn")
+    if os.path.exists(os.path.join(home, ".openclaw")):
+        details.append("配置文件: ~/.openclaw")
+    return bool(details), details
+
+
+def safe_tar_extract(
+    tar: tarfile.TarFile,
+    dest: Path | str,
+    on_log: Callable[[str], None] | None = None,
+) -> None:
+    """安全解压 tar 包，防止路径遍历攻击（zip-slip）。
+
+    校验每个成员的最终解析后的绝对路径是否在目标目录内，
+    同时校验软链接目标是否逃逸出目标目录。
+    所有 Python 版本统一走手动校验路径，确保行为一致且异常可感知。
+
+    Args:
+        tar: 已打开的 tarfile 对象。
+        dest: 解压目标目录。
+        on_log: 可选的日志回调，用于输出拒绝信息。
+
+    Raises:
+        tarfile.TarError: 当发现不安全的路径遍历成员时抛出。
+    """
+    dest_path = Path(dest).resolve()
+
+    for member in tar.getmembers():
+        # 拒绝绝对路径和包含 .. 的原始路径（第一层过滤）
+        # 使用 Path.parts 精确检测路径遍历组件，避免误杀合法文件名如 foo..bar.txt
+        if member.name.startswith("/") or ".." in Path(member.name).parts:
+            msg = f"拒绝不安全的 tar 成员: {member.name}"
+            if on_log:
+                on_log(msg)
+            raise tarfile.TarError(msg)
+
+        # 校验最终解析后的绝对路径是否在目标目录内（第二层过滤）
+        member_path = (dest_path / member.name).resolve()
+        try:
+            member_path.relative_to(dest_path)
+        except ValueError:
+            msg = f"拒绝不安全的 tar 成员: {member.name} -> {member_path}"
+            if on_log:
+                on_log(msg)
+            raise tarfile.TarError(msg)
+
+        # 校验软链接目标是否逃逸出目标目录
+        # 注意：软链接目标应相对于软链接文件所在目录解析，而非解压目标目录
+        if member.issym() or member.islnk():
+            link_target = (member_path.parent / member.linkname).resolve()
+            try:
+                link_target.relative_to(dest_path)
+            except ValueError:
+                msg = f"拒绝不安全的软链接目标: {member.linkname}"
+                if on_log:
+                    on_log(msg)
+                raise tarfile.TarError(msg)
+
+    tar.extractall(dest)

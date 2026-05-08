@@ -5,8 +5,6 @@
 同时提供倒计时防抖、URL 复制、浏览器打开等交互，确保非技术用户能一键进入 WebChat。
 """
 
-import sys
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QProgressBar, QFrame, QLineEdit, QApplication, QTextEdit,
@@ -15,6 +13,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
 from src.models.config import ConfigStatus, ConfigProgress, ConfigResult
+from src.models.constants import is_windows
 
 
 class StartupStepWidget(QFrame):
@@ -137,7 +136,7 @@ class US06StartupPage(QWidget):
             "background-color: #fff3e0; color: #bf360c; border: 1px solid #ffb74d; "
             "border-radius: 6px; padding: 10px; font-size: 13px; font-weight: bold;"
         )
-        if sys.platform != "win32":
+        if not is_windows():
             self.firewall_hint.hide()
 
         self.progress_bar = QProgressBar()
@@ -381,7 +380,7 @@ class US06StartupPage(QWidget):
 
         self.steps_frame.show()
         self.progress_bar.show()
-        if sys.platform == "win32":
+        if is_windows():
             self.firewall_hint.show()
         self.task_label.show()
 

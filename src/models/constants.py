@@ -62,6 +62,18 @@ NODEJS_PKG_MIRRORS = [
     f"https://registry.npmmirror.com/-/binary/node/latest-v{NODEJS_MAJOR_VERSION}.x/node-v{NODEJS_VERSION}.pkg",
 ]
 
+# Node.js 预编译二进制包(tarball/zip)下载镜像基础 URL 列表
+# 按优先级排列：国内镜像在前，官方源兜底
+# 实际使用时拼接文件名，如 f"{base}/node-v{NODEJS_VERSION}-darwin-arm64.tar.gz"
+NODEJS_ARCHIVE_MIRROR_BASES = [
+    f"https://mirrors.aliyun.com/nodejs-release/v{NODEJS_VERSION}",
+    f"https://mirrors.cloud.tencent.com/nodejs-release/v{NODEJS_VERSION}",
+    f"https://repo.huaweicloud.com/nodejs/v{NODEJS_VERSION}",
+    f"https://mirrors.ustc.edu.cn/nodejs/v{NODEJS_VERSION}",
+    f"https://npmmirror.com/mirrors/node/v{NODEJS_VERSION}",
+    f"https://nodejs.org/dist/v{NODEJS_VERSION}",
+]
+
 # MSI 文件头魔数（OLE 复合文档格式），用于校验下载的文件是否为有效 MSI
 MSI_MAGIC_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 

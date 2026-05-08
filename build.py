@@ -95,6 +95,7 @@ def _build_single(
     bundle_id: str,
     launcher_script_name: str = None,
     launcher_display_name: str = None,
+    add_data: list[str] | None = None,
 ):
     """打包单个程序
 
@@ -109,8 +110,11 @@ def _build_single(
         bundle_id: macOS bundle identifier
         launcher_script_name: macOS .command 脚本文件名（不含扩展名）
         launcher_display_name: .command 脚本中的显示名称
+        add_data: 额外打包的资源目录列表（PyInstaller --add-data）。
+                  每个元素格式为 "SRC:DEST"（macOS/Linux）或 "SRC;DEST"（Windows）
     """
     cmd = get_pyinstaller_cmd()
+    sep = ";" if is_windows() else ":"
     args = [
         "--onefile",
         "--windowed",
@@ -119,6 +123,11 @@ def _build_single(
         "--noconfirm",
         "--distpath", output_dir,
     ]
+
+    # 离线资源打包
+    if add_data:
+        for data_spec in add_data:
+            args.extend(["--add-data", data_spec])
 
     # Windows
     if is_windows():
@@ -200,21 +209,31 @@ echo "正在启动 {launcher_display_name}..."
     return True
 
 
-def build(output_dir: str = None):
+def build(output_dir: str = None, offline: bool = False, resources_dir: str = None):
     """使用 PyInstaller 打包安装器 + 卸载器
 
     依次调用 _build_single 打包两个程序，构建完成后输出文件大小和平台提示。
     任一失败时会返回错误码 1。
+
+    Args:
+        output_dir: 输出目录
+        offline: 是否构建离线版安装器
+        resources_dir: 离线资源目录路径，离线构建时通过 --add-data 打包
     """
     if output_dir is None:
         output_dir = "dist"
     os.makedirs(output_dir, exist_ok=True)
 
     print("=" * 50)
-    print("OpenClaw 打包工具")
+    if offline:
+        print("OpenClaw 离线打包工具")
+    else:
+        print("OpenClaw 打包工具")
     print("=" * 50)
     print()
     print(f"输出目录: {os.path.abspath(output_dir)}")
+    if offline and resources_dir:
+        print(f"离线资源: {os.path.abspath(resources_dir)}")
     print()
 
     import platform
@@ -224,14 +243,35 @@ def build(output_dir: str = None):
     print()
 
     # 1. 打包安装器
-    ok1 = _build_single(
-        output_dir=output_dir,
-        entry_file="launch_installer.py",
-        app_name="OpenClaw安装器",
-        bundle_id="com.openclaw.installer",
-        launcher_script_name="双击运行-OpenClaw安装器",
-        launcher_display_name="OpenClaw 安装器",
-    )
+    if offline:
+        sep = ";" if is_windows() else ":"
+        add_data = []
+        if resources_dir and os.path.isdir(resources_dir):
+            add_data.append(f"{resources_dir}{sep}resources")
+        ok1 = _build_single(
+            output_dir=output_dir,
+            entry_file="launch_installer_offline.py",
+            app_name="OpenClaw离线安装器",
+            bundle_id="com.openclaw.installer.offline",
+            launcher_script_name="双击运行-OpenClaw离线安装器",
+            launcher_display_name="OpenClaw 离线安装器",
+            add_data=add_data,
+        )
+    else:
+        sep = ";" if is_windows() else ":"
+        add_data = []
+        native_cache_dir = "resources/native-cache"
+        if os.path.isdir(native_cache_dir):
+            add_data.append(f"{native_cache_dir}{sep}resources/native-cache")
+        ok1 = _build_single(
+            output_dir=output_dir,
+            entry_file="launch_installer.py",
+            app_name="OpenClaw安装器",
+            bundle_id="com.openclaw.installer",
+            launcher_script_name="双击运行-OpenClaw安装器",
+            launcher_display_name="OpenClaw 安装器",
+            add_data=add_data,
+        )
 
     # 2. 打包卸载器
     ok2 = _build_single(
@@ -258,7 +298,8 @@ def build(output_dir: str = None):
     print()
 
     # 输出文件列表和大小
-    for app_name in ["OpenClaw安装器", "OpenClaw卸载工具"]:
+    app_names = ["OpenClaw离线安装器" if offline else "OpenClaw安装器", "OpenClaw卸载工具"]
+    for app_name in app_names:
         if is_macos():
             exe_path = os.path.join(output_dir, f"{app_name}.app")
         elif is_windows():
@@ -291,7 +332,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="OpenClaw 安装器打包工具",
-        epilog="示例: uv run python build.py"
+        epilog="示例: uv run python build.py\n"
+                "      uv run python build.py --offline --resources-dir resources/macos"
     )
     parser.add_argument(
         "--clean-only",
@@ -308,6 +350,16 @@ def main():
         default="dist",
         help="输出目录 (默认: dist)",
     )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="构建离线版安装器（需配合 --resources-dir）",
+    )
+    parser.add_argument(
+        "--resources-dir",
+        default=None,
+        help="离线资源目录路径，离线构建时通过 --add-data 打包到安装器中",
+    )
 
     args = parser.parse_args()
 
@@ -318,7 +370,7 @@ def main():
     if not args.no_clean:
         clean_build()
 
-    build(output_dir=args.output)
+    build(output_dir=args.output, offline=args.offline, resources_dir=args.resources_dir)
 
 
 if __name__ == "__main__":

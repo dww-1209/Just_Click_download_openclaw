@@ -1,13 +1,76 @@
 from PySide6.QtCore import QThread, Signal, QObject
 from typing import Callable
 
+import time
+
 from src.models.install import (
     InstallStatus,
     InstallStage,
     InstallProgress,
     InstallResult,
+    InstallErrorDetail,
+    ErrorCategory,
 )
 from src.contracts.define_installer import IInstaller
+
+
+class ReinstallWorker(QThread):
+    """重装前清理后台工作线程。
+
+    职责：在独立线程中执行旧安装清理（停止 Gateway、删除目录、卸载 npm 包），
+    完成后通过 Signal 通知 UI 进入安装阶段。
+    所有阻塞操作（子进程调用、文件删除）均在后台线程执行，避免 UI 冻结。
+    """
+
+    complete = Signal(bool)  # 清理完成信号（True 表示已执行，继续后续流程）
+    log_line = Signal(str)   # 清理日志输出
+
+    def run(self) -> None:
+        """线程入口：执行清理操作，完成后发射信号。"""
+        try:
+            import subprocess
+            import shutil
+            import os
+            import stat
+
+            # 停止 Gateway
+            cmd_name = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
+            try:
+                subprocess.run(
+                    [cmd_name, "gateway", "stop"],
+                    shell=False, capture_output=True, timeout=30,
+                )
+                self.log_line.emit("已停止 OpenClaw Gateway")
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+            # 删除本地构建目录
+            for d in [os.path.expanduser("~/openclaw-cn"), os.path.expanduser("~/.openclaw")]:
+                if os.path.exists(d):
+                    try:
+                        def _remove_readonly(func, path, _) -> None:
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                        shutil.rmtree(d, onerror=_remove_readonly)
+                        self.log_line.emit(f"已删除: {d}")
+                    except (OSError, shutil.Error):
+                        pass
+
+            # 卸载全局 npm 包（兼容旧版直接 npm install -g 的情况）
+            for pkg in ["openclaw-cn", "openclaw"]:
+                try:
+                    subprocess.run(
+                        ["npm", "uninstall", "-g", pkg],
+                        shell=False, capture_output=True, timeout=30,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
+
+            self.complete.emit(True)
+        except Exception as e:
+            # 记录异常信息后继续，让用户进入安装阶段
+            self.log_line.emit(f"清理过程出错: {e}")
+            self.complete.emit(True)
 
 
 class InstallWorker(QThread):
@@ -19,8 +82,7 @@ class InstallWorker(QThread):
     # Signal 方向：Worker -> Service -> UI 页面（installing_page）
     progress_updated = Signal(InstallProgress)   # 安装进度更新
     log_updated = Signal(str)                    # 单行日志输出
-    install_complete = Signal(InstallResult)     # 安装完成（成功）
-    install_failed = Signal(str)                 # 安装失败（异常信息）
+    install_complete = Signal(InstallResult)     # 安装完成（含成功/失败/取消）
 
     def __init__(self, installer: IInstaller, parent: QObject | None = None) -> None:
         """初始化安装工作线程。
@@ -31,9 +93,15 @@ class InstallWorker(QThread):
         """
         super().__init__(parent)
         self.installer = installer
+        self._worker_start_time = time.time()
 
     def run(self) -> None:
-        """线程入口。调用安装器接口执行安装，并转发结果或异常。"""
+        """线程入口。调用安装器接口执行安装，并转发结果或异常。
+
+        异常时不再仅发射 install_failed 字符串，而是构造包含日志和耗时的
+        完整 InstallResult 并通过 install_complete 发射，使 UI 层能统一处理
+        成功与失败路径。
+        """
         try:
             result = self.installer.install(
                 on_progress=self._on_progress,
@@ -41,7 +109,24 @@ class InstallWorker(QThread):
             )
             self.install_complete.emit(result)
         except Exception as e:
-            self.install_failed.emit(str(e))
+            self._on_log(f"安装异常: {e}")
+            start_time = getattr(self.installer, "start_time", self._worker_start_time)
+            result = InstallResult(
+                status=InstallStatus.FAILED,
+                message="安装异常",
+                error_message=str(e),
+                log_lines=getattr(self.installer, "log_lines", []),
+                duration_seconds=time.time() - start_time,
+                error_detail=InstallErrorDetail(
+                    category=ErrorCategory.UNKNOWN,
+                    stage="INSTALLING",
+                    context="InstallWorker 异常捕获",
+                    raw_error=str(e),
+                    user_message="安装过程中发生异常",
+                    suggestion="请查看日志获取详细信息，或尝试重新安装",
+                ),
+            )
+            self.install_complete.emit(result)
 
     def _on_progress(self, progress: InstallProgress) -> None:
         """内部回调：将安装进度通过 Signal 发射出去。
@@ -74,8 +159,7 @@ class InstallService(QObject):
     # Signal 方向：Service -> UI 页面（installing_page）
     progress_updated = Signal(InstallProgress)   # 安装进度更新
     log_updated = Signal(str)                    # 单行日志输出
-    install_complete = Signal(InstallResult)     # 安装完成
-    install_failed = Signal(str)                 # 安装失败
+    install_complete = Signal(InstallResult)     # 安装完成（含成功/失败/取消）
 
     def __init__(self, parent: QObject | None = None) -> None:
         """初始化安装服务。
@@ -99,7 +183,6 @@ class InstallService(QObject):
         self.worker.progress_updated.connect(self._on_progress)
         self.worker.log_updated.connect(self._on_log)
         self.worker.install_complete.connect(self._on_complete)
-        self.worker.install_failed.connect(self._on_failed)
         self.worker.start()
 
     def _on_progress(self, progress: InstallProgress) -> None:
@@ -126,14 +209,6 @@ class InstallService(QObject):
         """
         self.result = result
         self.install_complete.emit(result)
-
-    def _on_failed(self, error: str) -> None:
-        """内部槽：转发失败 Signal。
-
-        Args:
-            error: 异常描述字符串。
-        """
-        self.install_failed.emit(error)
 
     def cancel_install(self) -> None:
         """取消当前安装。仅设置取消标志，不强制终止线程。"""

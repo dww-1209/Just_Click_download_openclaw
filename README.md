@@ -94,10 +94,49 @@ uv run python build.py --clean-only
 - **Windows**：`dist/OpenClaw安装器.exe`、`dist/OpenClaw卸载工具.exe`
 - **macOS**：`dist/OpenClaw安装器.app` + `双击运行-OpenClaw安装器.command`
 
+### 架构图（六层 + Composition Root）
+
+```
+                    ┌───────────────────────────────┐
+                    │      Composition Root         │
+                    │  launch_installer.py          │
+                    │  launch_installer_offline.py  │
+                    │  launch_uninstaller.py        │
+                    │  【唯一允许跨层导入】         │
+                    └───────────────┬───────────────┘
+                                    │ 装配依赖 + 连接信号
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        依赖方向：自上而下（Frozen）                          │
+│                                                                             │
+│    UI  ──▶  Services  ──▶  Contracts  ──▶  Core  ──▶  Adapters  ──▶  Models│
+│                                                                             │
+│   ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐       │
+│   │show_*  │    │perform_│    │I*      │    │manage_ │    │install_│       │
+│   │        │◄───│check_* │───▶│Base*   │◄───│        │◄───│run_    │       │
+│   │Signal  │Slot│configure│    │Protocol│    │        │    │launch_ │       │
+│   └────────┘    └────────┘    └────────┘    └────────┘    └────────┘       │
+│                                                              │              │
+│                                                              ▼              │
+│                                                           ┌────────┐       │
+│                                                           │constants│      │
+│                                                           │install │      │
+│                                                           │config  │      │
+│                                                           └────────┘       │
+│                                                                             │
+│  安全修改：                                                                 │
+│  • 换 UI 框架      → 只改 UI 层，下层通过 Protocol 无感知                   │
+│  • 换安装方式      → 只改 Core + Adapters，UI/Services 不变                 │
+│  • 新增功能        → 先定义 Protocol → 各层分别实现 → Root 装配             │
+│  • 新增错误分类    → 只改 Models(user_messages)，UI 自动适配                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### 项目结构
 
 ```
 ├── launch_installer.py               # 安装器入口（6 步流程，Composition Root）
+├── launch_installer_offline.py       # 离线安装器入口（Composition Root）
 ├── launch_uninstaller.py             # 卸载工具入口（Composition Root）
 ├── build.py                          # PyInstaller 打包脚本（双程序）
 ├── src/
@@ -123,6 +162,7 @@ uv run python build.py --clean-only
 │   │   ├── define_uninstaller.py     # IUninstallTask（面向调用者）
 │   │   ├── define_worker.py          # 进度/日志回调类型别名
 │   │   ├── define_env_checker.py     # IEnvChecker（面向调用者）
+│   │   ├── define_system_launcher.py # ISystemLauncher（面向调用者）
 │   │   ├── define_base_installer.py  # BaseInstaller ABC（面向实现者）
 │   │   ├── define_base_manager.py    # BaseOpenClawManager ABC（面向实现者）
 │   │   └── define_decorators.py      # @log_method / @check_cancelled 装饰器
@@ -130,11 +170,12 @@ uv run python build.py --clean-only
 │   │   └── manage_openclaw.py        # OpenClawManager（配置/启停/卸载）
 │   ├── adapters/                     # 适配器层：底层系统操作
 │   │   ├── install_openclaw.py       # OpenClaw 安装逻辑（Gitee + pnpm 本地构建）
+│   │   ├── install_openclaw_offline.py# 离线安装逻辑（预构建资源解压）
 │   │   ├── install_git.py            # Git 自动安装器（Windows）
 │   │   ├── run_shell.py              # Shell 命令执行 + 错误分类
 │   │   ├── check_system.py           # 系统环境检测
 │   │   ├── provide_utils.py          # 通用工具函数（remove_readonly 等）
-│   │   └── define_decorators.py      # 装饰器实现（供 core 层使用）
+│   │   └── launch_system.py          # 终端/浏览器唤起（跨平台封装）
 │   └── models/                       # 模型层：数据定义与常量
 │       ├── constants.py              # 项目常量（Node.js 版本、镜像、端口等）
 │       ├── install.py                # 安装状态/阶段/进度/错误分类枚举

@@ -1,3 +1,5 @@
+import os
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Any
@@ -207,6 +209,5 @@ def get_openclaw_home() -> str:
     Returns:
         OpenClaw 默认安装路径（用户主目录下的 .openclaw 文件夹）。
     """
-    import os
     home = os.path.expanduser("~")
     return os.path.join(home, ".openclaw")

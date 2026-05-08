@@ -7,8 +7,6 @@
 - 未安装：提示无需卸载，仅提供「退出」按钮
 """
 
-import os
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QFrame, QScrollArea,
@@ -154,21 +152,15 @@ class UninstallWelcomePage(QWidget):
 
     def check_installation(self) -> None:
         """检测用户主目录下是否存在 OpenClaw 程序与配置目录，并据此刷新 UI 状态。"""
-        home = os.path.expanduser("~")
-        has_src = os.path.exists(os.path.join(home, "openclaw-cn"))
-        has_cfg = os.path.exists(os.path.join(home, ".openclaw"))
+        from src.models.utils import detect_openclaw_installation
 
-        if has_src or has_cfg:
+        installed, details = detect_openclaw_installation()
+
+        if installed:
             self.installed = True
             self.status_icon.setText("🔴")
             self.status_title.setText("检测到 OpenClaw 已安装")
             self.status_title.setStyleSheet("color: #c62828;")
-
-            details = []
-            if has_src:
-                details.append("程序文件: ~/openclaw-cn")
-            if has_cfg:
-                details.append("配置文件: ~/.openclaw")
             self.status_detail.setText("\n".join(details))
 
             self.warning_frame.show()

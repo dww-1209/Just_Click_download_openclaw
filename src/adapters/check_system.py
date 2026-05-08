@@ -359,8 +359,6 @@ def _check_browser() -> BrowserResult:
     浏览器自动化功能（Playwright + CDP）需要 Chromium 系浏览器，Safari 不支持。
     这是一个提示项，不影响安装流程（is_ready 不受影响）。
     """
-    import platform
-
     os_type = platform.system().lower()
     found = []
     candidates = []
@@ -395,7 +393,6 @@ def _check_browser() -> BrowserResult:
         ]
         # 备用：通过 where/shutil.which 检测 PATH 中的浏览器
         try:
-            import shutil
             path_candidates = {
                 "msedge": "Microsoft Edge",
                 "chrome": "Google Chrome",

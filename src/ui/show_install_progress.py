@@ -1,5 +1,3 @@
-import sys
-
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -14,6 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from src.models.install import InstallStatus, InstallStage, InstallProgress, InstallResult
+from src.models.constants import is_windows
 
 
 class InstallingPage(QWidget):
@@ -90,7 +89,7 @@ class InstallingPage(QWidget):
             "background-color: #fff3e0; color: #bf360c; border: 1px solid #ffb74d; "
             "border-radius: 6px; padding: 10px; font-size: 13px; font-weight: bold;"
         )
-        if sys.platform != "win32":
+        if not is_windows():
             self.security_hint.hide()
 
         # 进度条：范围 0-100，与 InstallProgress.progress_percent 同步

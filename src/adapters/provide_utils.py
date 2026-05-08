@@ -6,6 +6,6 @@
 
 from __future__ import annotations
 
-from src.models.utils import remove_readonly
+from src.models.utils import remove_readonly, ensure_local_bin_in_path
 
-__all__ = ["remove_readonly"]
+__all__ = ["remove_readonly", "ensure_local_bin_in_path"]
