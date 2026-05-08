@@ -112,6 +112,8 @@ uv run python build.py --clean-only
 uv run python build.py --offline --resources-dir resources/macos
 ```
 
+> **注意：打包离线版之前，必须先完成上述"准备资源"步骤。** 离线版依赖 `resources/{platform}/` 中的预构建产物和 Node.js 预编译包，若该目录不存在或缺少文件，请按上面三步流程执行。
+
 打包完成后：
 - **Windows**：`dist/OpenClaw安装器.exe`、`dist/OpenClaw卸载工具.exe`
 - **macOS**：`dist/OpenClaw安装器.app` + `双击运行-OpenClaw安装器.command`
