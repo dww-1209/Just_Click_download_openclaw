@@ -142,26 +142,16 @@ uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip
 
 **⚠️ 这不是从 git 官网下载的安装包。** 全新 macOS 的 `/usr/bin/git` 是一个 shim（约 100KB），调用时会触发"安装开发者命令行工具"弹窗，而 Xcode CLT 体积约 2GB。我们的内部 git 是从 Xcode CLT 复制的**真正 git 二进制 + 辅助程序**，绕过弹窗。
 
-**必须从已安装 Xcode Command Line Tools 的 Mac 上复制制作**：
+**获取方式**：在**已安装 Xcode Command Line Tools** 的 Mac 上，运行 `prepare_offline_resources.py` 自动从 Xcode CLT 复制并打包：
 
 ```bash
-# 1. 创建临时目录
-mkdir -p /tmp/git-macos-arm64/bin
-mkdir -p /tmp/git-macos-arm64/libexec
-
-# 2. 复制真正的 git 二进制（来源必须是 Xcode CLT，不能是 /usr/bin/git shim）
-cp /Library/Developer/CommandLineTools/usr/bin/git /tmp/git-macos-arm64/bin/
-
-# 3. 复制 git-core 辅助程序（git clone 等子命令依赖）
-cp -R /Library/Developer/CommandLineTools/usr/libexec/git-core /tmp/git-macos-arm64/libexec/
-
-# 4. 打包并移动到资源目录
-cd /tmp && tar czf git-macos-arm64.tar.gz git-macos-arm64/
-mv git-macos-arm64.tar.gz resources/macos/
+uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm --skip-prebuilt
 ```
 
+脚本会自动检测 `/Library/Developer/CommandLineTools/usr/bin/git` 和 `libexec/git-core/`，复制到临时目录后打包为 `resources/macos/git-macos-{arch}.tar.gz`。
+
 **关键约束**：
-- 来源必须是 `/Library/Developer/CommandLineTools/usr/bin/git`（真正二进制），**绝对不能**用 `/usr/bin/git`（shim）
+- 来源必须是 Xcode CLT 的 `/Library/Developer/CommandLineTools/usr/bin/git`（真正二进制），**绝对不能**用 `/usr/bin/git`（shim）
 - 必须包含 `libexec/git-core/` 目录，否则 git 子命令无法运行
 - 文件名需带架构标识（如 `git-macos-arm64.tar.gz` 或 `git-macos-x64.tar.gz`）
 - 安装器会解压到 `~/.openclaw-git/`，创建 wrapper 脚本并设置 `GIT_EXEC_PATH`

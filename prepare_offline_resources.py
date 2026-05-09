@@ -184,21 +184,70 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
         return None
 
     if platform_name == "macos":
-        # macOS 内部 git 需要从 Xcode CLT 手动复制打包
         git_tgz = output_dir / f"git-macos-{arch}.tar.gz"
         if git_tgz.exists():
             print(f"内部 git 已存在: {git_tgz}")
             return git_tgz
-        print(
-            f"注意: macOS 离线版需要手动准备内部 git tarball。\n"
-            f"  请从 Xcode CLT 复制 git 二进制 + libexec/git-core/，打包为:\n"
-            f"  -> {git_tgz}\n"
-            f"  示例命令:\n"
-            f"    mkdir -p /tmp/git-macos-{arch} && "
-            f"cp -R /Library/Developer/CommandLineTools/usr/bin/git /tmp/git-macos-{arch}/bin/ && "
-            f"cp -R /Library/Developer/CommandLineTools/usr/libexec/git-core /tmp/git-macos-{arch}/libexec/ && "
-            f"cd /tmp && tar czf git-macos-{arch}.tar.gz git-macos-{arch}/"
-        )
+
+        # 自动检测 Xcode CLT 并打包内部 git
+        xcode_git = Path("/Library/Developer/CommandLineTools/usr/bin/git")
+        xcode_git_core = Path("/Library/Developer/CommandLineTools/usr/libexec/git-core")
+
+        if xcode_git.is_file() and xcode_git_core.is_dir():
+            print(f"检测到 Xcode CLT，正在自动打包内部 git...")
+
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix="git-macos-") as tmpdir:
+                git_stage = Path(tmpdir) / f"git-macos-{arch}"
+                bin_dir = git_stage / "bin"
+                libexec_dir = git_stage / "libexec"
+
+                bin_dir.mkdir(parents=True)
+                libexec_dir.mkdir(parents=True)
+
+                # 复制 git 二进制
+                shutil.copy2(xcode_git, bin_dir / "git")
+                print(f"  复制: {xcode_git} -> {bin_dir}/git")
+
+                # 复制 git-core 辅助程序
+                shutil.copytree(xcode_git_core, libexec_dir / "git-core", dirs_exist_ok=True)
+                print(f"  复制: {xcode_git_core} -> {libexec_dir}/git-core")
+
+                # 如有 lib/ 目录也一并复制（某些 git 功能需要动态库）
+                xcode_lib = Path("/Library/Developer/CommandLineTools/usr/lib")
+                if xcode_lib.is_dir():
+                    # 只复制与 git 相关的动态库
+                    git_stage_lib = git_stage / "lib"
+                    git_stage_lib.mkdir(exist_ok=True)
+                    for lib_file in xcode_lib.glob("libgit*"):
+                        shutil.copy2(lib_file, git_stage_lib)
+                        print(f"  复制: {lib_file} -> {git_stage_lib}/")
+
+                # 打包
+                print(f"  正在打包: {git_tgz}")
+                try:
+                    subprocess.run(
+                        ["tar", "czf", str(git_tgz), "-C", tmpdir, f"git-macos-{arch}"],
+                        check=True,
+                        capture_output=True,
+                    )
+                    size_mb = git_tgz.stat().st_size / (1024 * 1024)
+                    print(f"内部 git 打包完成: {git_tgz} ({size_mb:.1f} MB)")
+                    return git_tgz
+                except subprocess.CalledProcessError as e:
+                    print(f"打包失败: {e}")
+                    if git_tgz.exists():
+                        git_tgz.unlink()
+        else:
+            print(
+                f"未检测到 Xcode CLT（{xcode_git} 不存在）。\n"
+                f"请在已安装 Xcode Command Line Tools 的 Mac 上运行此脚本，或手动准备:\n"
+                f"  1. mkdir -p /tmp/git-macos-{arch}/bin /tmp/git-macos-{arch}/libexec\n"
+                f"  2. cp /Library/Developer/CommandLineTools/usr/bin/git /tmp/git-macos-{arch}/bin/\n"
+                f"  3. cp -R /Library/Developer/CommandLineTools/usr/libexec/git-core /tmp/git-macos-{arch}/libexec/\n"
+                f"  4. cd /tmp && tar czf git-macos-{arch}.tar.gz git-macos-{arch}/\n"
+                f"  5. mv git-macos-{arch}.tar.gz {output_dir}/"
+            )
         return None
 
     # Linux 暂不支持
