@@ -156,30 +156,59 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
         下载后的文件路径，或 None（如果平台不需要/不支持）。
     """
     if platform_name == "windows":
-        filename = f"MinGit-{version}-64-bit.zip"
-        dest = output_dir / filename
+        git_zip = output_dir / f"git-windows-{arch}.zip"
+        if git_zip.exists():
+            print(f"内部 git 已存在: {git_zip}")
+            return git_zip
 
-        if dest.exists():
-            print(f"MinGit 已存在，跳过下载: {dest}")
-            return dest
+        # 1. 检测系统 git 安装位置
+        git_exe = shutil.which("git")
+        if git_exe:
+            git_exe_path = Path(git_exe).resolve()
+            # git.exe 通常在 cmd/git.exe，向上两级为安装根目录
+            git_root = git_exe_path.parent.parent
+            expected_git = git_root / "cmd" / "git.exe"
 
-        # GitHub releases 为主源，npmmirror 为备用镜像
-        mirrors = [
-            f"https://github.com/git-for-windows/git/releases/download/v{version}.windows.1/{filename}",
-        ]
-        for url in mirrors:
-            try:
-                _download_with_progress(url, dest)
-                print(f"MinGit 下载完成: {dest}")
-                return dest
-            except URLError as e:
-                print(f"从 {url} 下载失败: {e}")
-                continue
+            if expected_git.is_file():
+                print(f"检测到系统 Git: {git_root}")
+                print(f"正在打包内部 git...")
+
+                import tempfile
+                with tempfile.TemporaryDirectory(prefix="git-win-") as tmpdir:
+                    stage = Path(tmpdir) / f"git-windows-{arch}"
+
+                    # 复制必要目录
+                    dirs_to_copy = ["cmd", "mingw64", "usr"]
+                    for dname in dirs_to_copy:
+                        src = git_root / dname
+                        if src.is_dir():
+                            dst = stage / dname
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                            print(f"  复制: {dname}/")
+
+                    # 打包
+                    print(f"  正在打包: {git_zip}")
+                    try:
+                        shutil.make_archive(
+                            str(git_zip.with_suffix("")),
+                            "zip",
+                            root_dir=tmpdir,
+                            base_dir=f"git-windows-{arch}",
+                        )
+                        size_mb = git_zip.stat().st_size / (1024 * 1024)
+                        print(f"内部 git 打包完成: {git_zip} ({size_mb:.1f} MB)")
+                        return git_zip
+                    except OSError as e:
+                        print(f"打包失败: {e}")
+                        if git_zip.exists():
+                            git_zip.unlink()
+        else:
+            print("未在 PATH 中找到 git.exe。")
 
         print(
-            f"无法自动下载 MinGit。请手动下载并放置到:\n"
-            f"  https://github.com/git-for-windows/git/releases/download/v{version}.windows.1/{filename}\n"
-            f"  -> {dest}"
+            f"请在已安装 Git for Windows 的机器上运行此脚本，\n"
+            f"或手动将 git 安装目录打包为 zip 放置到:\n"
+            f"  -> {git_zip}"
         )
         return None
 

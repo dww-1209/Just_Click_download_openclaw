@@ -145,7 +145,7 @@ uv run python launch_installer.py
 
 Windows 在线版安装器可直接从网络下载 git，无需准备资源。
 
-离线版需准备：下载 [MinGit](https://github.com/git-for-windows/git/releases) 便携版 zip（如 `MinGit-2.54.0-64-bit.zip`），或提供 PortableGit 目录压缩包，放入 `resources/windows/`。安装器会解压到 `~/.openclaw-git/` 并加入 PATH。
+**获取方式**：在**已安装 Git for Windows** 的 Windows 机器上，运行 `prepare_offline_resources.py` 自动从系统 git 安装目录（通常为 `C:\Program Files\Git`）复制 `cmd/`、`mingw64/`、`usr/` 等必要目录并打包为 `resources/windows/git-windows-x64.zip`。无需手动操作。
 
 ---
 
