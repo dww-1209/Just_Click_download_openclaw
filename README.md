@@ -90,10 +90,6 @@ uv run python launch_uninstaller.py
 
 **获取方式**：`prepare_offline_resources.py` 自动从 npm registry（国内镜像优先）下载。
 
-```bash
-uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-prebuilt --skip-git
-```
-
 #### 分平台（各平台独立准备）
 
 | 文件 | 位置 | 说明 |
@@ -103,15 +99,10 @@ uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip
 | `git-macos-*.tar.gz` | `resources/macos/` | ⚠️ **macOS 在线/离线版都必需**。内部 git，非官网安装包。 |
 | `git-*.zip` / `MinGit-*.zip` | `resources/windows/` | Windows 离线版才需准备。在线版安装器可直接网络下载 git。 |
 
-**获取方式**：Node.js 由 `prepare_offline_resources.py` 自动从 nodejs.org 下载。其余需按下方步骤手动准备。
-
----
-
-#### 1. Node.js 预编译包
+**获取方式**：Node.js 由 `prepare_offline_resources.py` 自动从 nodejs.org 下载，预构建产物和 git 由脚本自动打包。只需一键运行：
 
 ```bash
-# 自动下载当前平台的 Node.js 官方包
-uv run python prepare_offline_resources.py --platform macos --skip-pnpm --skip-prebuilt --skip-git
+uv run python prepare_offline_resources.py --platform macos
 ```
 
 安装器使用 glob 匹配文件名（如 `node-v*.tar.gz`），**不硬编码版本号**，支持任意版本。
@@ -126,15 +117,13 @@ uv run python prepare_offline_resources.py --platform macos --skip-pnpm --skip-p
 - Windows：调用系统 tar（MSYS2/Git Bash）正确处理 junction
 - 回退：Python tarfile 手动遍历，遇到 symlink/junction 只记录链接本身，绝不跟随进入
 
-**步骤**：
+**前提**：先通过在线安装器完成构建，生成 `~/openclaw-cn`：
 
 ```bash
-# 步骤 A：先通过在线安装器完成构建，生成 ~/openclaw-cn
 uv run python launch_installer.py
-
-# 步骤 B：使用脚本打包（自动处理 symlink/junction）
-uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm --skip-git
 ```
+
+然后运行 `prepare_offline_resources.py` 即可自动打包（脚本会读取 `~/openclaw-cn`）。
 
 ---
 
@@ -142,13 +131,7 @@ uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip
 
 **⚠️ 这不是从 git 官网下载的安装包。** 全新 macOS 的 `/usr/bin/git` 是一个 shim（约 100KB），调用时会触发"安装开发者命令行工具"弹窗，而 Xcode CLT 体积约 2GB。我们的内部 git 是从 Xcode CLT 复制的**真正 git 二进制 + 辅助程序**，绕过弹窗。
 
-**获取方式**：在**已安装 Xcode Command Line Tools** 的 Mac 上，运行 `prepare_offline_resources.py` 自动从 Xcode CLT 复制并打包：
-
-```bash
-uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm --skip-prebuilt
-```
-
-脚本会自动检测 `/Library/Developer/CommandLineTools/usr/bin/git` 和 `libexec/git-core/`，复制到临时目录后打包为 `resources/macos/git-macos-{arch}.tar.gz`。
+**获取方式**：在**已安装 Xcode Command Line Tools** 的 Mac 上，运行 `prepare_offline_resources.py` 自动从 Xcode CLT 复制并打包为 `resources/macos/git-macos-{arch}.tar.gz`。无需手动操作。
 
 **关键约束**：
 - 来源必须是 Xcode CLT 的 `/Library/Developer/CommandLineTools/usr/bin/git`（真正二进制），**绝对不能**用 `/usr/bin/git`（shim）
