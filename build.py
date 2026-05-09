@@ -242,39 +242,47 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     print(f"架构: {platform.machine()}")
     print()
 
-    # 1. 打包安装器
-    if offline:
-        sep = ";" if is_windows() else ":"
-        add_data = []
-        if resources_dir and os.path.isdir(resources_dir):
-            add_data.append(f"{resources_dir}{sep}resources")
-        ok1 = _build_single(
+    # 1. 打包在线版安装器（始终构建）
+    sep = ";" if is_windows() else ":"
+    add_data_online = []
+    native_cache_dir = "resources/native-cache"
+    if os.path.isdir(native_cache_dir):
+        add_data_online.append(f"{native_cache_dir}{sep}resources/native-cache")
+    ok_online = _build_single(
+        output_dir=output_dir,
+        entry_file="launch_installer.py",
+        app_name="OpenClaw安装器",
+        bundle_id="com.openclaw.installer",
+        launcher_script_name="双击运行-OpenClaw安装器",
+        launcher_display_name="OpenClaw 安装器",
+        add_data=add_data_online,
+    )
+
+    # 2. 打包离线版安装器（资源存在时额外构建）
+    ok_offline = True
+    if offline and resources_dir and os.path.isdir(resources_dir):
+        add_data_offline = []
+        # 保持 resources/{platform} 的目录结构，与 _resolve_resource_dir 期望一致
+        platform_name = os.path.basename(resources_dir)
+        add_data_offline.append(f"{resources_dir}{sep}resources/{platform_name}")
+        # pnpm npm tarball 在 resources/ 根目录，跨平台共用，也需要打包
+        for pnpm_tgz in Path("resources").glob("pnpm-*.tgz"):
+            add_data_offline.append(f"{pnpm_tgz}{sep}resources")
+        # macOS 离线版需要自带 git（避免 Xcode CLT shim 弹窗）
+        for git_tgz in Path(resources_dir).glob("git-*.tar.gz"):
+            add_data_offline.append(f"{git_tgz}{sep}resources/{platform_name}")
+        ok_offline = _build_single(
             output_dir=output_dir,
             entry_file="launch_installer_offline.py",
             app_name="OpenClaw离线安装器",
             bundle_id="com.openclaw.installer.offline",
             launcher_script_name="双击运行-OpenClaw离线安装器",
             launcher_display_name="OpenClaw 离线安装器",
-            add_data=add_data,
-        )
-    else:
-        sep = ";" if is_windows() else ":"
-        add_data = []
-        native_cache_dir = "resources/native-cache"
-        if os.path.isdir(native_cache_dir):
-            add_data.append(f"{native_cache_dir}{sep}resources/native-cache")
-        ok1 = _build_single(
-            output_dir=output_dir,
-            entry_file="launch_installer.py",
-            app_name="OpenClaw安装器",
-            bundle_id="com.openclaw.installer",
-            launcher_script_name="双击运行-OpenClaw安装器",
-            launcher_display_name="OpenClaw 安装器",
-            add_data=add_data,
+            add_data=add_data_offline,
         )
 
-    # 2. 打包卸载器
-    ok2 = _build_single(
+    # 3. 打包卸载器
+    ok_uninstall = _build_single(
         output_dir=output_dir,
         entry_file="launch_uninstaller.py",
         app_name="OpenClaw卸载工具",
@@ -285,12 +293,18 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
 
     print()
     print("=" * 50)
-    if ok1 and ok2:
+    results = []
+    if ok_online:
+        results.append("在线安装器")
+    if ok_offline:
+        results.append("离线安装器")
+    if ok_uninstall:
+        results.append("卸载工具")
+
+    if len(results) == 3:
         print("全部打包成功！")
-    elif ok1:
-        print("安装器打包成功，卸载器打包失败")
-    elif ok2:
-        print("卸载器打包成功，安装器打包失败")
+    elif results:
+        print(f"部分打包成功: {', '.join(results)}")
     else:
         print("打包失败")
         sys.exit(1)
@@ -298,7 +312,10 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     print()
 
     # 输出文件列表和大小
-    app_names = ["OpenClaw离线安装器" if offline else "OpenClaw安装器", "OpenClaw卸载工具"]
+    app_names = ["OpenClaw安装器"]
+    if offline and resources_dir and os.path.isdir(resources_dir):
+        app_names.append("OpenClaw离线安装器")
+    app_names.append("OpenClaw卸载工具")
     for app_name in app_names:
         if is_macos():
             exe_path = os.path.join(output_dir, f"{app_name}.app")

@@ -20,7 +20,7 @@ from src.models.config import (
     ConfigProgress,
     ConfigResult,
 )
-from src.models.utils import remove_readonly, resolve_openclaw_cmd
+from src.models.utils import force_rmtree, resolve_openclaw_cmd
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD, TIMEOUT_NODE_MSI_INSTALL
 from src.contracts.define_base_manager import BaseOpenClawManager
 from src.contracts.define_decorators import log_method
@@ -1443,13 +1443,12 @@ class OpenClawManager(BaseOpenClawManager):
         ]
         for d in dirs_to_remove:
             if os.path.exists(d):
-                try:
-                    shutil.rmtree(d, onerror=remove_readonly)
+                if force_rmtree(d, on_log):
                     if on_log:
                         on_log(f"已删除: {d}")
-                except (OSError, shutil.Error) as e:
+                else:
                     if on_log:
-                        on_log(f"删除 {d} 失败: {e}")
+                        on_log(f"删除 {d} 失败")
                     all_ok = False
 
         # 3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）
@@ -1499,13 +1498,10 @@ class OpenClawManager(BaseOpenClawManager):
         # 5. 删除离线安装器创建的 Node.js 目录
         openclaw_node_dir = os.path.join(home, ".openclaw-node")
         if os.path.exists(openclaw_node_dir):
-            try:
-                shutil.rmtree(openclaw_node_dir, onerror=remove_readonly)
+            if force_rmtree(openclaw_node_dir, on_log):
                 if on_log:
                     on_log(f"已删除: {openclaw_node_dir}")
-            except (OSError, shutil.Error) as e:
-                if on_log:
-                    on_log(f"删除 {openclaw_node_dir} 失败: {e}")
+            else:
                 all_ok = False
 
         # 6. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目

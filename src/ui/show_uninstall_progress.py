@@ -68,6 +68,7 @@ class UninstallProgressPage(QWidget):
         self.log_edit.setReadOnly(True)
         self.log_edit.setObjectName("logArea")
         self.log_edit.setMinimumHeight(200)
+        self.log_edit.setStyleSheet("color: #e0e0e0; background-color: transparent; border: none;")
 
         log_layout.addWidget(self.log_edit)
 

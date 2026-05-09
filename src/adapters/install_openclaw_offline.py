@@ -423,6 +423,160 @@ class OfflineOpenClawInstaller(BaseInstaller):
 
         return True
 
+    def _locate_internal_git(self, git_dest: Path) -> tuple[Path | None, Path | None]:
+        """在解压目录中定位内部 git 的 bin/ 和 libexec/git-core/ 路径。
+
+        支持两种常见目录结构：
+        1. 有中间层目录（如 git-test/）：git-test/bin/git + git-test/libexec/git-core
+        2. 无中间层：bin/git + libexec/git-core
+
+        Args:
+            git_dest: git 解压根目录（~/.openclaw-git）。
+
+        Returns:
+            (bin_dir, exec_dir) 或 (None, None)。
+        """
+        # 先尝试常见子目录名
+        for subdir_name in ["git-test", "git", "usr"]:
+            candidate_bin = git_dest / subdir_name / "bin"
+            candidate_exec = git_dest / subdir_name / "libexec" / "git-core"
+            git_binary = candidate_bin / "git"
+            if git_binary.is_file() and candidate_exec.is_dir():
+                return candidate_bin, candidate_exec
+
+        # 回退：递归查找 bin/git，再推断 libexec/git-core
+        for git_binary in git_dest.rglob("bin/git"):
+            inferred_exec = git_binary.parent.parent / "libexec" / "git-core"
+            if inferred_exec.is_dir():
+                return git_binary.parent, inferred_exec
+
+        # 最后回退：只要找到 bin/git 就返回（可能没有 libexec）
+        for git_binary in git_dest.rglob("bin/git"):
+            return git_binary.parent, git_binary.parent.parent / "libexec" / "git-core"
+
+        return None, None
+
+    def _setup_git_if_needed(self) -> None:
+        """macOS 离线版：检测 Xcode CLT 是否已安装，未安装则使用打包的 git。
+
+        macOS 未安装 Xcode Command Line Tools 时，即使 /usr/bin/git 存在（>100KB），
+        调用时仍可能弹出"需要开发者命令行工具"对话框。本方法通过 xcode-select -p
+        检测 Xcode CLT 安装状态，未安装时解压并使用安装器内置的完整 git。
+        """
+        if not is_macos():
+            return
+
+        # 通过 Apple 官方命令检测 Xcode CLT 是否已安装
+        try:
+            result = subprocess.run(
+                ["xcode-select", "-p"],
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_SHORT_CMD,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                self._log(f"Xcode CLT 已安装 ({result.stdout.strip()})，使用系统 git")
+                return
+            self._log("Xcode CLT 未安装，将使用内部 git")
+        except (OSError, subprocess.SubprocessError):
+            self._log("Xcode CLT 检测失败，将使用内部 git")
+
+        # 查找打包的 git tarball
+        git_tgz_pattern = f"git-{self._platform}*.tar.gz"
+        matches = sorted(Path(self._resource_dir).glob(git_tgz_pattern))
+        if not matches:
+            self._log(f"未找到内部 git 资源: {git_tgz_pattern}")
+            return
+
+        git_tgz = str(matches[0])
+        git_dest = Path(self._home) / ".openclaw-git"
+
+        # 如果已存在且不是空目录，跳过解压
+        if git_dest.exists() and any(git_dest.iterdir()):
+            self._log(f"内部 git 已存在: {git_dest}")
+        else:
+            self._log(f"正在解压内部 git: {Path(git_tgz).name}")
+            git_dest.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(git_tgz, "r:gz") as tar:
+                    safe_tar_extract(tar, git_dest, self._log)
+                self._log(f"内部 git 解压完成: {git_dest}")
+            except (OSError, tarfile.TarError) as e:
+                self._log(f"内部 git 解压失败: {e}")
+                return
+
+        # 确定内部 git 的实际路径（自动检测 tarball 解压后的目录结构）
+        git_bin, git_exec = self._locate_internal_git(git_dest)
+        if not git_bin or not git_exec:
+            self._log("内部 git 目录结构异常，无法定位 bin/ 或 libexec/git-core/")
+            return
+
+        git_bin_str = str(git_bin)
+        git_exec_str = str(git_exec)
+        git_binary_path = os.path.join(git_bin_str, "git")
+
+        if not os.path.isfile(git_binary_path):
+            self._log(f"内部 git 二进制不存在: {git_binary_path}")
+            return
+
+        # 关键验证：直接执行内部 git，确认不会触发 xcode-select 弹窗
+        self._log(f"测试内部 git: {git_binary_path}")
+        test_env = os.environ.copy()
+        test_env["GIT_EXEC_PATH"] = git_exec_str
+        test_env["PATH"] = git_bin_str + os.pathsep + test_env.get("PATH", "")
+        try:
+            test_result = subprocess.run(
+                [git_binary_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_SHORT_CMD,
+                env=test_env,
+            )
+            if test_result.returncode == 0 and "git version" in test_result.stdout:
+                self._log(f"内部 git 验证通过: {test_result.stdout.strip()}")
+            else:
+                err = test_result.stderr.strip()[:200] if test_result.stderr else "无输出"
+                self._log(f"内部 git 测试失败 (rc={test_result.returncode}): {err}")
+                # 测试失败说明打包的 git 可能仍是 shim，不创建 wrapper（避免误导用户）
+                return
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self._log(f"内部 git 测试异常: {e}")
+            return
+
+        # 设置环境变量，让当前安装器进程内的子进程使用内部 git
+        os.environ["GIT_EXEC_PATH"] = git_exec_str
+        current_path = os.environ.get("PATH", "")
+        if git_bin_str not in current_path.split(os.pathsep):
+            os.environ["PATH"] = git_bin_str + os.pathsep + current_path
+            self._log(f"已设置内部 git PATH: {git_bin_str}")
+
+        # 创建 ~/.local/bin/git wrapper 脚本
+        # wrapper 中加 set -e 和存在性检查：若路径错误直接报错退出，
+        # 绝不 fallback 到 /usr/bin/git（否则会触发 xcode-select 弹窗）。
+        local_bin = Path.home() / ".local" / "bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        git_wrapper = local_bin / "git"
+        wrapper_script = f'''#!/bin/bash
+# OpenClaw 内部 git wrapper
+# 离线版 macOS：使用安装器内置的完整 git，避免 Xcode CLT 弹窗。
+set -e
+
+GIT_BIN="{git_binary_path}"
+if [ ! -x "$GIT_BIN" ]; then
+    echo "错误: 找不到内部 git: $GIT_BIN" >&2
+    exit 1
+fi
+
+export GIT_EXEC_PATH="{git_exec_str}"
+exec "$GIT_BIN" "$@"
+'''
+        try:
+            git_wrapper.write_text(wrapper_script, encoding="utf-8")
+            git_wrapper.chmod(0o755)
+            self._log(f"已创建 git wrapper: {git_wrapper}")
+        except OSError as e:
+            self._log(f"创建 git wrapper 失败: {e}")
+
     def _create_wrappers(self) -> bool:
         """创建全局命令包装器。
 
@@ -439,6 +593,13 @@ class OfflineOpenClawInstaller(BaseInstaller):
 
         # 离线版无需注入 CLAWHUB_REGISTRY(无网络可用)
         success = self._write_command_wrappers(bin_dir, self._project_dir, registry=None)
+
+        # 把 wrapper 目录加入当前进程 PATH，使后续 _verify_installation 能立刻找到命令
+        bin_str = str(bin_dir)
+        current_path = os.environ.get("PATH", "")
+        if bin_str not in current_path.split(os.pathsep):
+            os.environ["PATH"] = bin_str + os.pathsep + current_path
+            self._log(f"已将 {bin_str} 加入当前进程 PATH")
 
         # *nix 下额外保证 ~/.local/bin 在 shell 启动时进入 PATH
         if success and not is_windows():
@@ -566,6 +727,9 @@ class OfflineOpenClawInstaller(BaseInstaller):
         self.start_time = time.time()
 
         try:
+
+            # 步骤 0: macOS 离线版设置内部 git（避免 Xcode CLT shim 弹窗）
+            self._setup_git_if_needed()
 
             # 步骤 1: 检测/安装 Node.js
             self._log_progress(_PROGRESS_NODEJS, "检测系统环境...", "检查 Node.js", on_progress)

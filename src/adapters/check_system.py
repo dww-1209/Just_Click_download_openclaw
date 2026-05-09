@@ -196,9 +196,12 @@ def _check_permission() -> PermissionResult:
 
 def _ensure_local_bin_in_rc() -> None:
     """将 ~/.local/bin 添加到用户 shell 配置文件中（如果不存在）"""
+    import sys
+
     home = os.path.expanduser("~")
     local_bin = os.path.join(home, ".local", "bin")
     path_export = f'export PATH="{local_bin}:$PATH"'
+    written = False
     for rc_file in [".bashrc", ".zshrc", ".profile"]:
         rc_path = os.path.join(home, rc_file)
         if os.path.exists(rc_path):
@@ -206,11 +209,23 @@ def _ensure_local_bin_in_rc() -> None:
                 with open(rc_path, "r", encoding="utf-8") as f:
                     content = f.read()
                 if local_bin in content:
+                    written = True
                     continue
                 with open(rc_path, "a", encoding="utf-8") as f:
                     f.write(f"\n# Added by OpenClaw Installer\n{path_export}\n")
+                written = True
             except (OSError, ValueError):
                 pass
+
+    # 如果没有任何 rc 文件存在（全新系统），主动创建一个
+    if not written:
+        default_rc = ".zshrc" if sys.platform == "darwin" else ".bashrc"
+        rc_path = os.path.join(home, default_rc)
+        try:
+            with open(rc_path, "w", encoding="utf-8") as f:
+                f.write(f"# Created by OpenClaw Installer\n{path_export}\n")
+        except (OSError, ValueError):
+            pass
 
 
 

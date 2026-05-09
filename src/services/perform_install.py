@@ -12,6 +12,7 @@ from src.models.install import (
     ErrorCategory,
 )
 from src.contracts.define_installer import IInstaller
+from src.models.utils import force_rmtree
 
 
 class ReinstallWorker(QThread):
@@ -47,14 +48,8 @@ class ReinstallWorker(QThread):
             # 删除本地构建目录
             for d in [os.path.expanduser("~/openclaw-cn"), os.path.expanduser("~/.openclaw")]:
                 if os.path.exists(d):
-                    try:
-                        def _remove_readonly(func, path, _) -> None:
-                            os.chmod(path, stat.S_IWRITE)
-                            func(path)
-                        shutil.rmtree(d, onerror=_remove_readonly)
+                    if force_rmtree(d, lambda msg: self.log_line.emit(msg)):
                         self.log_line.emit(f"已删除: {d}")
-                    except (OSError, shutil.Error):
-                        pass
 
             # 卸载全局 npm 包（兼容旧版直接 npm install -g 的情况）
             for pkg in ["openclaw-cn", "openclaw"]:

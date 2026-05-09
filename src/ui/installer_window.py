@@ -377,9 +377,7 @@ class InstallerWindow:
         self.env_check_page.next_clicked.connect(self._on_env_check_next)
         self.env_check_page.back_clicked.connect(self._on_env_check_back)
         self.env_check_page.openclaw_quick_start.connect(self._on_openclaw_quick_start)
-        self.env_check_page.openclaw_config_and_start.connect(self._on_openclaw_config_and_start)
         self.env_check_page.openclaw_provider_config.connect(self._on_openclaw_provider_config)
-        self.env_check_page.openclaw_manual_config.connect(self._on_openclaw_manual_config)
         self.env_check_page.openclaw_reinstall.connect(self._on_openclaw_reinstall)
 
         # 环境检测服务信号:结果反馈到 env_check_page
@@ -475,12 +473,6 @@ class InstallerWindow:
         self.stacked_widget.setCurrentIndex(5)
         self._start_startup(quick_start=True)
 
-    def _on_openclaw_config_and_start(self) -> None:
-        """已安装分支 — 重新配置并启动:进入默认配置页"""
-        self.current_stage = "configuring"
-        self.stacked_widget.setCurrentIndex(3)
-        self._start_config()
-
     def _on_openclaw_provider_config(self) -> None:
         """已安装分支 — 配置模型:直接进入 Provider 配置页并加载已有配置"""
         self.current_stage = "provider_config"
@@ -488,11 +480,6 @@ class InstallerWindow:
         self.provider_config_page.reset()
         existing = self.openclaw_manager.read_existing_provider_config()
         self.provider_config_page.load_config(existing)
-
-    def _on_openclaw_manual_config(self) -> None:
-        """已安装分支 — 手动配置:打开系统终端执行 openclaw config"""
-        self._open_manual_config_terminal()
-        self.env_check_page.status_label.setText("请完成手动配置后,点击'重新配置并启动'")
 
     def _on_openclaw_reinstall(self) -> None:
         """已安装分支 — 重新下载:在后台线程清理旧安装后重新执行完整安装流程

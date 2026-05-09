@@ -64,15 +64,12 @@ class OpenClawInstalledWidget(QWidget):
     """OpenClaw 已安装选项组件（US-02 分支场景）。
 
     职责：当环境检测到 OpenClaw 已安装时，代替常规的「下一步」按钮，
-    向用户提供 5 种快捷操作。该组件默认隐藏，仅在检测到已安装状态后显示。
-    设计上采用两行按钮布局：第一行为高频正向操作（启动/配置），
-    第二行为低频或破坏性操作（手动配置/重新下载），降低误触风险。
+    向用户提供 3 种快捷操作。该组件默认隐藏，仅在检测到已安装状态后显示。
+    三个按钮并排：快速启动、配置模型、重新下载。
     """
 
     quick_start_clicked = Signal()       # 用户点击「快速启动」——直接拉起已有 Gateway
-    config_and_start_clicked = Signal()  # 用户点击「重新配置并启动」——清空配置后重新 onboarding
     provider_config_clicked = Signal()   # 用户点击「配置模型」——跳转到 Provider 配置页
-    manual_config_clicked = Signal()     # 用户点击「手动配置」——打开配置文件目录供用户手动编辑
     reinstall_clicked = Signal()         # 用户点击「重新下载」——删除旧版本后重新执行 US-04 安装流程
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -102,44 +99,26 @@ class OpenClawInstalledWidget(QWidget):
         self.quick_start_btn.setObjectName("primaryButton")
         self.quick_start_btn.clicked.connect(self.quick_start_clicked.emit)
 
-        self.config_and_start_btn = QPushButton("重新配置并启动")
-        self.config_and_start_btn.setFixedSize(140, 36)
-        self.config_and_start_btn.setObjectName("primaryButton")
-        self.config_and_start_btn.clicked.connect(self.config_and_start_clicked.emit)
-
         self.provider_config_btn = QPushButton("配置模型")
         self.provider_config_btn.setFixedSize(140, 36)
         self.provider_config_btn.setObjectName("primaryButton")
         self.provider_config_btn.clicked.connect(self.provider_config_clicked.emit)
 
-        quick_layout.addWidget(self.quick_start_btn)
-        quick_layout.addWidget(self.config_and_start_btn)
-        quick_layout.addWidget(self.provider_config_btn)
-        quick_layout.addStretch(1)
-
-        # 第二行按钮：低频或偏门操作，使用默认样式，视觉上弱于第一行
-        other_layout = QHBoxLayout()
-        other_layout.addStretch(1)
-
-        self.manual_config_btn = QPushButton("手动配置")
-        self.manual_config_btn.setFixedSize(120, 36)
-        self.manual_config_btn.clicked.connect(self.manual_config_clicked.emit)
-
         self.reinstall_btn = QPushButton("重新下载")
-        self.reinstall_btn.setFixedSize(120, 36)
+        self.reinstall_btn.setFixedSize(140, 36)
+        self.reinstall_btn.setObjectName("primaryButton")
         self.reinstall_btn.clicked.connect(self.reinstall_clicked.emit)
 
-        other_layout.addWidget(self.manual_config_btn)
-        other_layout.addWidget(self.reinstall_btn)
-        other_layout.addStretch(1)
+        quick_layout.addWidget(self.quick_start_btn)
+        quick_layout.addWidget(self.provider_config_btn)
+        quick_layout.addWidget(self.reinstall_btn)
+        quick_layout.addStretch(1)
 
         layout.addWidget(title)
         layout.addSpacing(10)
         layout.addWidget(desc)
         layout.addSpacing(15)
         layout.addLayout(quick_layout)
-        layout.addSpacing(10)
-        layout.addLayout(other_layout)
 
 
 class EnvCheckPage(QWidget):
@@ -155,9 +134,7 @@ class EnvCheckPage(QWidget):
     next_clicked = Signal()              # 检测通过且为全新安装时，用户点击「下一步」触发
     back_clicked = Signal()              # 用户点击「返回」回到欢迎页
     openclaw_quick_start = Signal()      # 已安装场景：用户选择「快速启动」
-    openclaw_config_and_start = Signal() # 已安装场景：用户选择「重新配置并启动」
     openclaw_provider_config = Signal()  # 已安装场景：用户选择「配置模型」
-    openclaw_manual_config = Signal()    # 已安装场景：用户选择「手动配置」
     openclaw_reinstall = Signal()        # 已安装场景：用户选择「重新下载」
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -180,6 +157,14 @@ class EnvCheckPage(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 滚动条样式：滑块用灰色、轨道用浅灰，确保在白色背景上清晰可见
+        scroll_area.setStyleSheet(
+            "QScrollArea { border: none; }"
+            "QScrollBar:vertical { background: #f0f0f0; width: 8px; border-radius: 4px; }"
+            "QScrollBar::handle:vertical { background: #aaa; border-radius: 4px; min-height: 30px; }"
+            "QScrollBar::handle:vertical:hover { background: #888; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        )
 
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
@@ -210,14 +195,8 @@ class EnvCheckPage(QWidget):
         self.openclaw_widget.quick_start_clicked.connect(
             self.openclaw_quick_start.emit
         )
-        self.openclaw_widget.config_and_start_clicked.connect(
-            self.openclaw_config_and_start.emit
-        )
         self.openclaw_widget.provider_config_clicked.connect(
             self.openclaw_provider_config.emit
-        )
-        self.openclaw_widget.manual_config_clicked.connect(
-            self.openclaw_manual_config.emit
         )
         self.openclaw_widget.reinstall_clicked.connect(self.openclaw_reinstall.emit)
 

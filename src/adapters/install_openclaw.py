@@ -6,6 +6,7 @@ import shutil
 import time
 import sys
 import stat
+import shlex
 import tarfile
 import threading
 import zipfile
@@ -28,7 +29,6 @@ from src.models.install import (
 )
 from src.adapters.install_git import ensure_git_installed
 from src.adapters.run_shell import run_shell, ShellResult
-from src.adapters.provide_utils import remove_readonly
 from src.models.constants import (
     is_windows, is_macos, is_linux,
     TIMEOUT_SHORT_CMD, TIMEOUT_OPENCLAW_CMD, TIMEOUT_INSTALL_CMD,
@@ -36,7 +36,7 @@ from src.models.constants import (
     NODEJS_MSI_MIRRORS, NODEJS_PKG_MIRRORS,
     REGISTRY_NPM_MIRROR, REGISTRY_CLAWHUB,
 )
-from src.models.utils import ensure_local_bin_in_path
+from src.models.utils import ensure_dir_in_path, ensure_local_bin_in_path, force_rmtree
 from src.contracts.define_base_installer import BaseInstaller
 from src.contracts.define_decorators import log_method
 
@@ -278,11 +278,10 @@ class OpenClawInstaller(BaseInstaller):
                 ])
             for d in cleanup_dirs:
                 if os.path.exists(d):
-                    try:
-                        shutil.rmtree(d, onerror=remove_readonly)
+                    if force_rmtree(d, self._log):
                         self._log(f"已清理残留目录: {d}")
-                    except (OSError, shutil.Error) as e:
-                        self._log(f"清理残留目录失败 {d}: {e}")
+                    else:
+                        self._log(f"清理残留目录失败 {d}")
 
             # ========================
             # 阶段 2：进入统一本地构建流程
@@ -319,13 +318,17 @@ class OpenClawInstaller(BaseInstaller):
         """检测命令是否在 PATH 中可用。"""
         if self._inst_is_win:
             return self._run_shell_cmd(f"where {cmd_name}", timeout=TIMEOUT_SHORT_CMD).returncode == 0
-        return subprocess.run(["which", cmd_name], capture_output=True, timeout=TIMEOUT_SHORT_CMD).returncode == 0
+        return subprocess.run(
+            ["which", cmd_name], capture_output=True, timeout=TIMEOUT_SHORT_CMD, env=self._inst_env
+        ).returncode == 0
 
     def _verify_command(self, cmd_name: str) -> bool:
         """验证命令是否在 PATH 中可解析。"""
         if self._inst_is_win:
             return self._run_shell_cmd(f"where {cmd_name}", timeout=TIMEOUT_NODE_MSI_INSTALL).returncode == 0
-        return subprocess.run(["which", cmd_name], capture_output=True, timeout=TIMEOUT_SHORT_CMD).returncode == 0
+        return subprocess.run(
+            ["which", cmd_name], capture_output=True, timeout=TIMEOUT_SHORT_CMD, env=self._inst_env
+        ).returncode == 0
 
     def _resolve_nodejs_archive_name(self) -> Optional[str]:
         """根据当前平台解析 Node.js 预编译归档文件名。
@@ -421,10 +424,8 @@ class OpenClawInstaller(BaseInstaller):
 
         # 清理旧版本
         if self._node_dir.exists():
-            try:
-                shutil.rmtree(self._node_dir, onerror=remove_readonly)
-            except (OSError, shutil.Error) as e:
-                self._log(f"清理旧 Node.js 目录失败: {e}")
+            if not force_rmtree(self._node_dir, self._log):
+                self._log(f"清理旧 Node.js 目录失败: {self._node_dir}")
 
         # 解压
         if not self._extract_nodejs_archive(archive_path, self._node_dir):
@@ -561,24 +562,64 @@ class OpenClawInstaller(BaseInstaller):
         return None
 
     def _step3_clone_repository(self) -> Optional[InstallResult]:
-        """步骤 3：从 Gitee 克隆仓库。"""
+        """步骤 3：从 Gitee 克隆仓库，带自动重试机制。
+
+        大仓库克隆偶尔因网络波动导致 RPC failed / early EOF，
+        支持最多 3 次重试，遇到可重试网络错误时自动清理残留并重试。
+        """
         self._log("正在从 Gitee 下载 openclaw-cn...")
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.DOWNLOADING, progress_percent=20, message="正在下载 OpenClaw...", current_task="git clone"))
 
-        clone_result = self._run_shell_cmd(
-            f'git clone https://gitee.com/OpenClaw-CN/openclaw-cn.git "{self._inst_project_dir}"',
-            timeout=TIMEOUT_INSTALL_CMD,
-        )
-        if clone_result.stdout:
-            for line in clone_result.stdout.splitlines()[-50:]:
-                if line.strip():
-                    self._log(line.strip())
-        if clone_result.stderr:
-            for line in clone_result.stderr.splitlines()[-20:]:
-                if line.strip():
-                    self._log(line.strip())
-        if clone_result.returncode != 0:
+        # 保险：如果目标目录仍存在（前期清理未彻底），先强制删除
+        if self._inst_project_dir.exists():
+            self._log(f"目标目录仍存在，尝试强制删除: {self._inst_project_dir}")
+            force_rmtree(self._inst_project_dir, self._log)
+            if self._inst_project_dir.exists():
+                return InstallResult(
+                    status=InstallStatus.FAILED, message="目录清理失败",
+                    error_message=f"无法删除旧目录 {self._inst_project_dir}，可能是文件权限问题。\n\n建议：\n1. 手动执行: chmod -R +w {self._inst_project_dir} && rm -rf {self._inst_project_dir}\n2. 重启电脑后重试",
+                    log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                )
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            if self.is_cancelled:
+                return self._build_cancelled_result()
+
+            self._log(f"第 {attempt}/{max_retries} 次尝试克隆...")
+            clone_result = self._run_shell_cmd(
+                f'git clone https://gitee.com/OpenClaw-CN/openclaw-cn.git {shlex.quote(str(self._inst_project_dir))}',
+                timeout=TIMEOUT_INSTALL_CMD,
+            )
+            if clone_result.stdout:
+                for line in clone_result.stdout.splitlines()[-50:]:
+                    if line.strip():
+                        self._log(line.strip())
+            if clone_result.stderr:
+                for line in clone_result.stderr.splitlines()[-20:]:
+                    if line.strip():
+                        self._log(line.strip())
+
+            if clone_result.returncode == 0:
+                self._log("仓库克隆完成")
+                return None
+
+            # 判断是否为可重试的网络错误
+            err_text = (clone_result.stderr or "").lower()
+            retryable = any(k in err_text for k in [
+                "rpc failed", "early eof", "transfer closed",
+                "unexpected disconnect", "index-pack",
+            ])
+            if retryable and attempt < max_retries:
+                self._log(f"克隆中断（网络波动），{3 if attempt == 1 else 1} 秒后重试...")
+                time.sleep(3 if attempt == 1 else 1)
+                # 清理可能残留的不完整目录
+                if self._inst_project_dir.exists():
+                    force_rmtree(self._inst_project_dir, self._log)
+                continue
+
+            # 非网络错误或已用完重试次数
             err_detail = clone_result.error_detail if hasattr(clone_result, "error_detail") else None
             user_msg = "从 Gitee 克隆仓库失败，请检查网络或 Git 安装后重试"
             if err_detail:
@@ -589,7 +630,7 @@ class OpenClawInstaller(BaseInstaller):
                 log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
                 error_detail=err_detail,
             )
-        self._log("仓库克隆完成")
+
         return None
 
     def _step4_set_pnpm_registry(self) -> None:
@@ -940,8 +981,11 @@ class OpenClawInstaller(BaseInstaller):
             if result:
                 return result
 
-            self._inst_env["PATH"] = os.environ.get("PATH", "")
             self._log("Node.js 安装完成，PATH 已刷新")
+
+        # 无论 Node.js 是新安装还是已存在，都同步 PATH 到 _inst_env
+        # _check_nodejs_version 可能已将 nvm/fnm/Homebrew 的 bin 加入 os.environ
+        self._inst_env["PATH"] = os.environ.get("PATH", "")
 
         # 步骤 2：检查/安装 pnpm
         cancelled = self._check_cancelled_result()

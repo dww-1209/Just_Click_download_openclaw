@@ -20,18 +20,86 @@ from typing import Callable, Any, Optional
 from src.models.constants import is_windows, TIMEOUT_SHORT_CMD
 
 
-def remove_readonly(func: Callable[[str], None], path: str, _: Any) -> None:
+def force_rmtree(path: str | Path, on_log: Callable[[str], None] | None = None) -> bool:
+    """强制删除目录树，处理只读文件和复杂目录结构。
+
+    Python 3.12+ 的 shutil.rmtree 使用 _rmtree_safe_fd，onerror 回调
+    在处理 os.open 时存在重试语义问题，可能导致子树未被删除。本函数
+    绕过 Python shutil：先给整棵树加写权限，再用平台原生命令删除。
+
+    Args:
+        path: 要删除的目录路径。
+        on_log: 可选的日志回调。
+
+    Returns:
+        True 表示删除成功或目录不存在；False 表示删除失败。
+    """
+    path_str = str(path)
+    if not os.path.exists(path_str):
+        return True
+
+    if is_windows():
+        # 先去掉只读属性，再强制删除
+        try:
+            subprocess.run(
+                ["cmd", "/c", "attrib", "-R", path_str + "\\*", "/S", "/D"],
+                capture_output=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            result = subprocess.run(
+                ["cmd", "/c", "rmdir", "/s", "/q", path_str],
+                capture_output=True, timeout=60,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError) as e:
+            if on_log:
+                on_log(f"删除 {path_str} 失败: {e}")
+            return False
+    else:
+        # 先 chmod -R +w 给所有文件/目录加上写权限。
+        # 某些 pnpm 依赖目录权限极端（如 d-w-------，只有写无读/执行），
+        # rm -rf 需要遍历（读+执行）和删除（写）权限，这里统一加写权限即可，
+        # 比 777 更收敛，避免临时暴露敏感文件给其他用户。
+        try:
+            subprocess.run(
+                ["chmod", "-R", "+w", path_str],
+                capture_output=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            result = subprocess.run(
+                ["rm", "-rf", path_str],
+                capture_output=True, timeout=60,
+            )
+            if result.returncode != 0 and on_log:
+                err = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+                on_log(f"删除 {path_str} 失败: {err}")
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError) as e:
+            if on_log:
+                on_log(f"删除 {path_str} 失败: {e}")
+            return False
+
+
+def remove_readonly(func: Callable[..., None], path: str, _: Any) -> None:
     """shutil.rmtree 的 onerror 回调：移除只读属性后重试删除操作。
 
     用途：删除可能包含只读文件（如 Git 仓库中的文件）的目录时，
     先修改文件权限再重试删除操作。
 
-    Args:
-        func: 原始删除函数（如 os.unlink 或 os.rmdir）。
-        path: 要删除的文件或目录路径。
-        _: excinfo 占位参数（未使用）。
+    注意：Python 3.12+ 的 shutil.rmtree 内部使用 _rmtree_safe_fd，
+    此时 func 可能是 os.open（需要 flags 参数）。遇到 os.open 时只修改
+    权限并返回，让 rmtree 自动重试；其他情况（os.unlink/os.rmdir）
+    正常调用删除。
     """
     os.chmod(path, stat.S_IWRITE)
+    if func is os.open:
+        # os.open 需要 flags 参数，在 _rmtree_safe_fd 内部使用。
+        # 我们只负责修改权限，rmtree 会自动重试。
+        return
     func(path)
 
 
@@ -85,6 +153,7 @@ def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = No
     path_export = f'export PATH="{directory}:$PATH"'
 
     home = os.path.expanduser("~")
+    written = False
     for rc_file in [".bashrc", ".zshrc", ".profile"]:
         rc_path = os.path.join(home, rc_file)
         if os.path.exists(rc_path):
@@ -94,14 +163,30 @@ def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = No
                 if directory in content:
                     if on_log:
                         on_log(f"{rc_file} 已包含 {directory}")
+                    written = True
                     continue
                 with open(rc_path, "a", encoding="utf-8") as f:
                     f.write(f"\n# Added by OpenClaw Installer\n{path_export}\n")
                 if on_log:
                     on_log(f"已将 {directory} 添加到 {rc_file}")
+                written = True
             except OSError as e:
                 if on_log:
                     on_log(f"修改 {rc_file} 失败: {e}")
+
+    # 如果没有任何 rc 文件存在（全新系统），主动创建一个
+    if not written:
+        # macOS 默认 zsh，Linux 默认 bash
+        default_rc = ".zshrc" if sys.platform == "darwin" else ".bashrc"
+        rc_path = os.path.join(home, default_rc)
+        try:
+            with open(rc_path, "w", encoding="utf-8") as f:
+                f.write(f"# Created by OpenClaw Installer\n{path_export}\n")
+            if on_log:
+                on_log(f"已创建 {default_rc} 并添加 {directory}")
+        except OSError as e:
+            if on_log:
+                on_log(f"创建 {default_rc} 失败: {e}")
 
 
 def ensure_local_bin_in_path(on_log: Callable[[str], None] | None = None) -> None:
