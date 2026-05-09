@@ -80,96 +80,115 @@ uv run python launch_uninstaller.py
 
 `resources/` 目录是打包时的输入，GitHub 仓库中只保留空目录结构（通过 `.gitkeep`），实际资源文件需在本地准备。
 
-#### 资源文件清单
+资源按**是否分平台**分类：
 
-| 文件 | 位置 | 用途 | 准备方式 |
-|---|---|---|---|
-| `pnpm-*.tgz` | `resources/` 根目录 | 跨平台共用的 pnpm npm tarball | `prepare_offline_resources.py` 自动下载 |
-| `node-v*-darwin-*.tar.gz` | `resources/macos/` | macOS Node.js 预编译包 | `prepare_offline_resources.py` 自动下载 |
-| `node-v*-win-*.zip` | `resources/windows/` | Windows Node.js 预编译包 | `prepare_offline_resources.py` 自动下载 |
-| `openclaw-prebuilt-*.tar.gz` | `resources/{platform}/` | OpenClaw 预构建产物 | **必须用** `prepare_offline_resources.py` 打包 |
-| `git-*.tar.gz` / `git-*.zip` | `resources/{platform}/` | 内部 git（绕过系统 git 限制） | **手动准备**，详见下方 |
+#### 不分平台（所有平台共用）
 
-> **文件名不硬编码版本号**：安装器使用 glob 匹配（如 `node-v*.tar.gz`），支持任意版本，按版本号降序选择最新版。
+| 文件 | 位置 | 说明 |
+|---|---|---|
+| `pnpm-*.tgz` | `resources/` 根目录 | pnpm 的 npm tarball，跨平台通用。安装时通过 `npm install -g` 本地安装。 |
 
-#### 1. 自动下载的资源（Node.js + pnpm）
+**获取方式**：`prepare_offline_resources.py` 自动从 npm registry（国内镜像优先）下载。
 
 ```bash
-# 下载 Node.js 预编译包 + pnpm npm tarball
-uv run python prepare_offline_resources.py --platform macos --skip-prebuilt --skip-git
+uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-prebuilt --skip-git
 ```
 
-#### 2. 预构建产物（离线版必需）
+#### 分平台（各平台独立准备）
 
-**⚠️ 不能用简单的 `tar czf` 打包。** pnpm workspace 会产生 symlink/junction 循环链接（如 `extensions/bluebubbles/node_modules/openclaw` 指向项目根目录），直接压缩会导致无限递归或软链接丢失。
+| 文件 | 位置 | 说明 |
+|---|---|---|
+| `node-v*-darwin-*.tar.gz` / `node-v*-win-*.zip` | `resources/{platform}/` | Node.js 官方预编译二进制包。安装器按 glob 匹配，支持任意版本。 |
+| `openclaw-prebuilt-*.tar.gz` | `resources/{platform}/` | ⚠️ **离线版必需**。OpenClaw 预构建产物（含 `node_modules` + `dist`）。 |
+| `git-macos-*.tar.gz` | `resources/macos/` | ⚠️ **macOS 在线/离线版都必需**。内部 git，非官网安装包。 |
+| `git-*.zip` / `MinGit-*.zip` | `resources/windows/` | Windows 离线版才需准备。在线版安装器可直接网络下载 git。 |
 
-**正确做法**：
+**获取方式**：Node.js 由 `prepare_offline_resources.py` 自动从 nodejs.org 下载。其余需按下方步骤手动准备。
+
+---
+
+#### 1. Node.js 预编译包
+
+```bash
+# 自动下载当前平台的 Node.js 官方包
+uv run python prepare_offline_resources.py --platform macos --skip-pnpm --skip-prebuilt --skip-git
+```
+
+安装器使用 glob 匹配文件名（如 `node-v*.tar.gz`），**不硬编码版本号**，支持任意版本。
+
+---
+
+#### 2. OpenClaw 预构建产物（离线版必需）
+
+**⚠️ 禁止直接用 `tar czf` 手动打包。** pnpm workspace 会产生 symlink/junction 循环链接（如 `extensions/bluebubbles/node_modules/openclaw` 指向项目根目录），简单压缩会导致无限递归或软链接丢失，最终产物无法使用。
+
+**必须使用 `prepare_offline_resources.py` 打包**，它会：
+- Windows：调用系统 tar（MSYS2/Git Bash）正确处理 junction
+- 回退：Python tarfile 手动遍历，遇到 symlink/junction 只记录链接本身，绝不跟随进入
+
+**步骤**：
 
 ```bash
 # 步骤 A：先通过在线安装器完成构建，生成 ~/openclaw-cn
 uv run python launch_installer.py
 
-# 步骤 B：使用 prepare_offline_resources.py 打包（自动处理 symlink/junction）
+# 步骤 B：使用脚本打包（自动处理 symlink/junction）
 uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm --skip-git
 ```
 
-`prepare_offline_resources.py` 的处理逻辑：
-- **Windows**：优先调用系统 tar（MSYS2/Git Bash），能正确处理 junction
-- **回退**：Python tarfile 手动遍历，遇到 symlink/junction 只记录链接本身，绝不跟随进入
+---
 
-#### 3. 内部 git 资源（macOS 必需，Windows 推荐）
+#### 3. macOS 内部 git（在线/离线版都必需）
 
-**这不是从 git 官网下载的安装包。** 全新 macOS 上的 `/usr/bin/git` 是一个 shim（约 100KB），调用时会触发"安装开发者命令行工具"弹窗，而 Xcode CLT 体积巨大（约 2GB）。
+**⚠️ 这不是从 git 官网下载的安装包。** 全新 macOS 的 `/usr/bin/git` 是一个 shim（约 100KB），调用时会触发"安装开发者命令行工具"弹窗，而 Xcode CLT 体积约 2GB。我们的内部 git 是从 Xcode CLT 复制的**真正 git 二进制 + 辅助程序**，绕过弹窗。
 
-**macOS 内部 git 的制作方式**：
-
-从**已安装 Xcode Command Line Tools** 的 Mac 上，复制真正的 git 二进制和辅助程序：
+**必须从已安装 Xcode Command Line Tools 的 Mac 上复制制作**：
 
 ```bash
 # 1. 创建临时目录
 mkdir -p /tmp/git-macos-arm64/bin
 mkdir -p /tmp/git-macos-arm64/libexec
 
-# 2. 从 Xcode CLT 复制真正的 git 二进制（不是 /usr/bin/git shim）
+# 2. 复制真正的 git 二进制（来源必须是 Xcode CLT，不能是 /usr/bin/git shim）
 cp /Library/Developer/CommandLineTools/usr/bin/git /tmp/git-macos-arm64/bin/
 
-# 3. 复制 git-core 辅助程序（git 子命令依赖这些）
+# 3. 复制 git-core 辅助程序（git clone 等子命令依赖）
 cp -R /Library/Developer/CommandLineTools/usr/libexec/git-core /tmp/git-macos-arm64/libexec/
 
-# 4. 如有其他必要目录（lib/、share/ 等），也一并复制
-# cp -R /Library/Developer/CommandLineTools/usr/libexec/... /tmp/git-macos-arm64/...
-
-# 5. 打包
+# 4. 打包并移动到资源目录
 cd /tmp && tar czf git-macos-arm64.tar.gz git-macos-arm64/
-
-# 6. 移动到资源目录
 mv git-macos-arm64.tar.gz resources/macos/
 ```
 
-**关键说明**：
-- 来源必须是 `/Library/Developer/CommandLineTools/usr/bin/git`（真正的二进制），**不能**是 `/usr/bin/git`（shim）
-- 必须同时包含 `libexec/git-core/` 目录，否则 git 子命令（如 `git clone`）无法运行
-- 需要区分 ARM64 和 Intel x64 架构，文件名建议带架构标识（如 `git-macos-arm64.tar.gz`）
-- 安装器会在目标机器上解压到 `~/.openclaw-git/`，创建 `~/.local/bin/git` wrapper 脚本，设置 `GIT_EXEC_PATH` 环境变量
+**关键约束**：
+- 来源必须是 `/Library/Developer/CommandLineTools/usr/bin/git`（真正二进制），**绝对不能**用 `/usr/bin/git`（shim）
+- 必须包含 `libexec/git-core/` 目录，否则 git 子命令无法运行
+- 文件名需带架构标识（如 `git-macos-arm64.tar.gz` 或 `git-macos-x64.tar.gz`）
+- 安装器会解压到 `~/.openclaw-git/`，创建 wrapper 脚本并设置 `GIT_EXEC_PATH`
 
-**Windows 内部 git**：下载 [MinGit](https://github.com/git-for-windows/git/releases) 便携版 zip，或提供完整的 PortableGit 目录压缩包。安装器会解压到 `~/.openclaw-git/` 并加入 PATH。
+---
+
+#### 4. Windows 内部 git（仅离线版需要）
+
+Windows 在线版安装器可直接从网络下载 git，无需准备资源。
+
+离线版需准备：下载 [MinGit](https://github.com/git-for-windows/git/releases) 便携版 zip（如 `MinGit-2.54.0-64-bit.zip`），或提供 PortableGit 目录压缩包，放入 `resources/windows/`。安装器会解压到 `~/.openclaw-git/` 并加入 PATH。
+
+---
 
 #### 打包可执行文件
 
 ```bash
-# 默认输出到 dist/（自动检测 resources/{platform}/ 是否存在，存在则同时构建离线版）
+# 默认输出到 dist/（自动检测 resources/{platform}/，有内容则同时构建离线版）
 uv run python build.py
 
 # 显式指定离线资源目录
 uv run python build.py --offline --resources-dir resources/macos
-
-# 仅清理构建文件
-uv run python build.py --clean-only
 ```
 
-打包完成后：
+打包产出：
 - **Windows**：`dist/OpenClaw安装器.exe`、`dist/OpenClaw离线安装器.exe`、`dist/OpenClaw卸载工具.exe`
-- **macOS**：`dist/OpenClaw安装器.app`、`dist/OpenClaw离线安装器.app`、`dist/OpenClaw卸载工具.app` + 对应的 `.command` 辅助脚本
+- **macOS**：`dist/OpenClaw安装器.app`、`dist/OpenClaw离线安装器.app`、`dist/OpenClaw卸载工具.app` + `.command` 辅助脚本
 
 ### 架构图（六层 + Composition Root）
 
