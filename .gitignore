@@ -50,5 +50,13 @@ provider.txt
 promote.txt
 agentclaw/
 
+# Offline resources (large binaries > 100MB, user-provided)
+# Directory structure is preserved via .gitkeep
+resources/**/*.tar.gz
+resources/**/*.tar.xz
+resources/**/*.zip
+resources/**/*.tgz
+!resources/**/.gitkeep
+
 # Claude Code local state
 .claude/

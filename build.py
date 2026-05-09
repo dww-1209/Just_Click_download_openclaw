@@ -268,9 +268,13 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
         # pnpm npm tarball 在 resources/ 根目录，跨平台共用，也需要打包
         for pnpm_tgz in Path("resources").glob("pnpm-*.tgz"):
             add_data_offline.append(f"{pnpm_tgz}{sep}resources")
-        # macOS 离线版需要自带 git（避免 Xcode CLT shim 弹窗）
+        # 离线版自带 git（macOS 避免 Xcode CLT 弹窗，Windows 避免依赖系统 git）
         for git_tgz in Path(resources_dir).glob("git-*.tar.gz"):
             add_data_offline.append(f"{git_tgz}{sep}resources/{platform_name}")
+        for git_zip in Path(resources_dir).glob("git-*.zip"):
+            add_data_offline.append(f"{git_zip}{sep}resources/{platform_name}")
+        for mingit_zip in Path(resources_dir).glob("MinGit-*.zip"):
+            add_data_offline.append(f"{mingit_zip}{sep}resources/{platform_name}")
         ok_offline = _build_single(
             output_dir=output_dir,
             entry_file="launch_installer_offline.py",

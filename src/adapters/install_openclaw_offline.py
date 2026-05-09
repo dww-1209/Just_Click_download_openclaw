@@ -457,15 +457,25 @@ class OfflineOpenClawInstaller(BaseInstaller):
         return None, None
 
     def _setup_git_if_needed(self) -> None:
-        """macOS 离线版：检测 Xcode CLT 是否已安装，未安装则使用打包的 git。
+        """离线版：在未安装 git 的系统上使用打包的内部 git。
 
-        macOS 未安装 Xcode Command Line Tools 时，即使 /usr/bin/git 存在（>100KB），
-        调用时仍可能弹出"需要开发者命令行工具"对话框。本方法通过 xcode-select -p
-        检测 Xcode CLT 安装状态，未安装时解压并使用安装器内置的完整 git。
+        macOS：检测 Xcode CLT，未安装时解压内部 git 并创建 wrapper 脚本，
+               避免弹出"需要开发者命令行工具"对话框。
+        Windows：直接解压 MinGit 便携版到 ~/.openclaw-git/ 并加入 PATH。
+        Linux：暂不支持内置 git。
         """
-        if not is_macos():
+        if is_linux():
             return
 
+        git_dest = Path(self._home) / ".openclaw-git"
+
+        if is_macos():
+            self._setup_git_macos(git_dest)
+        else:
+            self._setup_git_windows(git_dest)
+
+    def _setup_git_macos(self, git_dest: Path) -> None:
+        """macOS：检测 Xcode CLT，未安装时使用内部 git。"""
         # 通过 Apple 官方命令检测 Xcode CLT 是否已安装
         try:
             result = subprocess.run(
@@ -489,7 +499,6 @@ class OfflineOpenClawInstaller(BaseInstaller):
             return
 
         git_tgz = str(matches[0])
-        git_dest = Path(self._home) / ".openclaw-git"
 
         # 如果已存在且不是空目录，跳过解压
         if git_dest.exists() and any(git_dest.iterdir()):
@@ -505,7 +514,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
                 self._log(f"内部 git 解压失败: {e}")
                 return
 
-        # 确定内部 git 的实际路径（自动检测 tarball 解压后的目录结构）
+        # 确定内部 git 的实际路径
         git_bin, git_exec = self._locate_internal_git(git_dest)
         if not git_bin or not git_exec:
             self._log("内部 git 目录结构异常，无法定位 bin/ 或 libexec/git-core/")
@@ -519,7 +528,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
             self._log(f"内部 git 二进制不存在: {git_binary_path}")
             return
 
-        # 关键验证：直接执行内部 git，确认不会触发 xcode-select 弹窗
+        # 关键验证：直接执行内部 git
         self._log(f"测试内部 git: {git_binary_path}")
         test_env = os.environ.copy()
         test_env["GIT_EXEC_PATH"] = git_exec_str
@@ -537,13 +546,12 @@ class OfflineOpenClawInstaller(BaseInstaller):
             else:
                 err = test_result.stderr.strip()[:200] if test_result.stderr else "无输出"
                 self._log(f"内部 git 测试失败 (rc={test_result.returncode}): {err}")
-                # 测试失败说明打包的 git 可能仍是 shim，不创建 wrapper（避免误导用户）
                 return
         except (OSError, subprocess.TimeoutExpired) as e:
             self._log(f"内部 git 测试异常: {e}")
             return
 
-        # 设置环境变量，让当前安装器进程内的子进程使用内部 git
+        # 设置环境变量
         os.environ["GIT_EXEC_PATH"] = git_exec_str
         current_path = os.environ.get("PATH", "")
         if git_bin_str not in current_path.split(os.pathsep):
@@ -551,8 +559,6 @@ class OfflineOpenClawInstaller(BaseInstaller):
             self._log(f"已设置内部 git PATH: {git_bin_str}")
 
         # 创建 ~/.local/bin/git wrapper 脚本
-        # wrapper 中加 set -e 和存在性检查：若路径错误直接报错退出，
-        # 绝不 fallback 到 /usr/bin/git（否则会触发 xcode-select 弹窗）。
         local_bin = Path.home() / ".local" / "bin"
         local_bin.mkdir(parents=True, exist_ok=True)
         git_wrapper = local_bin / "git"
@@ -576,6 +582,82 @@ exec "$GIT_BIN" "$@"
             self._log(f"已创建 git wrapper: {git_wrapper}")
         except OSError as e:
             self._log(f"创建 git wrapper 失败: {e}")
+
+    def _setup_git_windows(self, git_dest: Path) -> None:
+        """Windows：解压 MinGit 便携版并加入 PATH。
+
+        MinGit 是自包含的 git 核心命令集合，解压后把 cmd/ 目录加入 PATH 即可使用，
+        无需安装 Git for Windows，也无需 wrapper 脚本。
+        """
+        # 查找打包的 MinGit zip
+        git_zip_pattern = "git-*.zip"
+        matches = sorted(Path(self._resource_dir).glob(git_zip_pattern))
+        if not matches:
+            self._log(f"未找到内部 git 资源: {git_zip_pattern}")
+            return
+
+        git_zip = str(matches[0])
+
+        # 如果已存在且不是空目录，跳过解压
+        if git_dest.exists() and any(git_dest.iterdir()):
+            self._log(f"内部 git 已存在: {git_dest}")
+        else:
+            self._log(f"正在解压内部 git: {Path(git_zip).name}")
+            git_dest.mkdir(parents=True, exist_ok=True)
+            try:
+                with zipfile.ZipFile(git_zip, "r") as zf:
+                    for name in zf.namelist():
+                        if name.startswith("/") or ".." in Path(name).parts:
+                            self._log(f"拒绝不安全的 zip 成员: {name}")
+                            return
+                    zf.extractall(git_dest)
+                self._log(f"内部 git 解压完成: {git_dest}")
+            except (OSError, zipfile.BadZipFile) as e:
+                self._log(f"内部 git 解压失败: {e}")
+                return
+
+        # MinGit 的 git.exe 通常在 cmd/ 子目录下
+        git_cmd_dir = git_dest / "cmd"
+        if not (git_cmd_dir / "git.exe").is_file():
+            # 回退：递归查找 git.exe
+            for git_exe in git_dest.rglob("git.exe"):
+                git_cmd_dir = git_exe.parent
+                break
+
+        if not (git_cmd_dir / "git.exe").is_file():
+            self._log("内部 git 目录结构异常，找不到 git.exe")
+            return
+
+        git_cmd_str = str(git_cmd_dir)
+        git_binary_path = str(git_cmd_dir / "git.exe")
+
+        # 验证 git 可用
+        self._log(f"测试内部 git: {git_binary_path}")
+        test_env = os.environ.copy()
+        test_env["PATH"] = git_cmd_str + os.pathsep + test_env.get("PATH", "")
+        try:
+            test_result = subprocess.run(
+                [git_binary_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_SHORT_CMD,
+                env=test_env,
+            )
+            if test_result.returncode == 0 and "git version" in test_result.stdout:
+                self._log(f"内部 git 验证通过: {test_result.stdout.strip()}")
+            else:
+                err = test_result.stderr.strip()[:200] if test_result.stderr else "无输出"
+                self._log(f"内部 git 测试失败 (rc={test_result.returncode}): {err}")
+                return
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self._log(f"内部 git 测试异常: {e}")
+            return
+
+        # 设置 PATH，让当前安装器进程内的子进程使用内部 git
+        current_path = os.environ.get("PATH", "")
+        if git_cmd_str not in current_path.split(os.pathsep):
+            os.environ["PATH"] = git_cmd_str + os.pathsep + current_path
+            self._log(f"已设置内部 git PATH: {git_cmd_str}")
 
     def _create_wrappers(self) -> bool:
         """创建全局命令包装器。

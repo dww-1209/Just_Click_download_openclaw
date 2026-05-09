@@ -34,6 +34,7 @@ from urllib.error import URLError
 # 默认版本号
 DEFAULT_NODEJS_VERSION = "22.14.0"
 DEFAULT_PNPM_VERSION = "10.10.0"
+DEFAULT_GIT_VERSION = "2.54.0"  # MinGit for Windows
 
 
 def detect_platform() -> str:
@@ -142,6 +143,66 @@ def download_pnpm(output_dir: Path, version: str, platform_name: str, arch: str)
         f"  https://registry.npmmirror.com/pnpm/-/pnpm-{version}.tgz\n"
         f"  -> {dest}"
     )
+
+
+def download_git(output_dir: Path, version: str, platform_name: str, arch: str) -> Path | None:
+    """下载/准备内部 git 资源。
+
+    Windows：从 GitHub releases 下载 MinGit 便携版（zip 格式）。
+    macOS：内部 git 需要手动从 Xcode CLT 复制，本函数仅做存在性检查。
+    Linux：暂不支持。
+
+    Returns:
+        下载后的文件路径，或 None（如果平台不需要/不支持）。
+    """
+    if platform_name == "windows":
+        filename = f"MinGit-{version}-64-bit.zip"
+        dest = output_dir / filename
+
+        if dest.exists():
+            print(f"MinGit 已存在，跳过下载: {dest}")
+            return dest
+
+        # GitHub releases 为主源，npmmirror 为备用镜像
+        mirrors = [
+            f"https://github.com/git-for-windows/git/releases/download/v{version}.windows.1/{filename}",
+        ]
+        for url in mirrors:
+            try:
+                _download_with_progress(url, dest)
+                print(f"MinGit 下载完成: {dest}")
+                return dest
+            except URLError as e:
+                print(f"从 {url} 下载失败: {e}")
+                continue
+
+        print(
+            f"无法自动下载 MinGit。请手动下载并放置到:\n"
+            f"  https://github.com/git-for-windows/git/releases/download/v{version}.windows.1/{filename}\n"
+            f"  -> {dest}"
+        )
+        return None
+
+    if platform_name == "macos":
+        # macOS 内部 git 需要从 Xcode CLT 手动复制打包
+        git_tgz = output_dir / f"git-macos-{arch}.tar.gz"
+        if git_tgz.exists():
+            print(f"内部 git 已存在: {git_tgz}")
+            return git_tgz
+        print(
+            f"注意: macOS 离线版需要手动准备内部 git tarball。\n"
+            f"  请从 Xcode CLT 复制 git 二进制 + libexec/git-core/，打包为:\n"
+            f"  -> {git_tgz}\n"
+            f"  示例命令:\n"
+            f"    mkdir -p /tmp/git-macos-{arch} && "
+            f"cp -R /Library/Developer/CommandLineTools/usr/bin/git /tmp/git-macos-{arch}/bin/ && "
+            f"cp -R /Library/Developer/CommandLineTools/usr/libexec/git-core /tmp/git-macos-{arch}/libexec/ && "
+            f"cd /tmp && tar czf git-macos-{arch}.tar.gz git-macos-{arch}/"
+        )
+        return None
+
+    # Linux 暂不支持
+    return None
 
 
 def _is_junction(path: Path) -> bool:
@@ -323,6 +384,16 @@ def main() -> None:
         action="store_true",
         help="跳过预构建产物打包",
     )
+    parser.add_argument(
+        "--skip-git",
+        action="store_true",
+        help="跳过内部 git 下载/检查",
+    )
+    parser.add_argument(
+        "--git-version",
+        default=DEFAULT_GIT_VERSION,
+        help=f"MinGit 版本 (默认: {DEFAULT_GIT_VERSION})",
+    )
 
     args = parser.parse_args()
 
@@ -365,7 +436,18 @@ def main() -> None:
     else:
         print("跳过 pnpm 下载")
 
-    # 3. 打包预构建产物
+    # 3. 下载/检查内部 git
+    if not args.skip_git:
+        try:
+            download_git(output_dir, args.git_version, platform_name, arch)
+            print()
+        except Exception as e:
+            print(f"内部 git 准备失败: {e}")
+            # git 下载失败不阻塞流程（部分平台不需要）
+    else:
+        print("跳过内部 git 下载")
+
+    # 4. 打包预构建产物
     if not args.skip_prebuilt:
         try:
             pack_prebuilt(source_dir, output_dir, platform_name)

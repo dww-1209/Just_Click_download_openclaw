@@ -162,7 +162,7 @@ uv run python build.py --offline --resources-dir resources/macos
 ├── launch_installer.py               # 安装器入口（6 步流程，Composition Root）
 ├── launch_installer_offline.py       # 离线安装器入口（Composition Root）
 ├── launch_uninstaller.py             # 卸载工具入口（Composition Root）
-├── build.py                          # PyInstaller 打包脚本（双程序）
+├── build.py                          # PyInstaller 打包脚本（三个程序）
 ├── src/
 │   ├── ui/                           # UI 层：PySide6 页面
 │   │   ├── show_welcome.py           # 欢迎页
@@ -208,7 +208,22 @@ uv run python build.py --offline --resources-dir resources/macos
 │       ├── provider_config.py        # Provider 配置数据定义
 │       ├── user_messages.py          # 用户友好错误消息翻译
 │       └── utils.py                  # 纯工具函数（命令解析、权限处理等）
+├── prepare_offline_resources.py      # 离线资源准备脚本（下载 Node.js / pnpm / 打包预构建产物）
+├── resources/                        # 离线资源目录（仓库中为空，需自行准备，详见下方）
+│   ├── pnpm-10.10.0.tgz              # 跨平台共用的 pnpm npm tarball（需自行下载）
+│   ├── macos/                        # macOS 离线资源
+│   │   ├── node-v22.14.0-darwin-arm64.tar.gz  # ARM64 Node.js 预编译包
+│   │   ├── node-v22.14.0-darwin-x64.tar.gz    # Intel x64 Node.js 预编译包
+│   │   ├── openclaw-prebuilt-macos.tar.gz     # OpenClaw 预构建产物（需先 build）
+│   │   └── git-macos-arm64.tar.gz             # macOS ARM64 内部 git（从 Xcode CLT 复制）
+│   ├── windows/                      # Windows 离线资源
+│   │   ├── node-v22.14.0-win-x64.zip          # Windows x64 Node.js 预编译包
+│   │   ├── openclaw-prebuilt-windows.tar.gz   # OpenClaw 预构建产物（需先 build）
+│   │   └── git-windows-x64.zip                # Windows 内部 git（PortableGit / 安装目录）
+│   └── linux/                        # Linux 离线资源（预留）
 ```
+
+> **注意**：`resources/` 目录中的二进制文件体积较大（总计可达数百 MB），超出 Git 传输限制，因此仓库中只保留空目录结构（通过 `.gitkeep`）。实际资源文件请通过 `prepare_offline_resources.py` 脚本自动下载或手动准备，具体步骤见下文"准备离线资源"部分。
 
 ### 双仓库工作流
 
