@@ -258,6 +258,13 @@ def safe_tar_extract(
                 on_log(msg)
             raise tarfile.TarError(msg)
 
+        # 拒绝设备文件（字符设备/块设备），防止恶意 tar 包创建设备节点
+        if member.isdev():
+            msg = f"拒绝 tar 设备文件: {member.name}"
+            if on_log:
+                on_log(msg)
+            raise tarfile.TarError(msg)
+
         # 校验软链接目标是否逃逸出目标目录
         # 注意：软链接目标应相对于软链接文件所在目录解析，而非解压目标目录
         if member.issym() or member.islnk():

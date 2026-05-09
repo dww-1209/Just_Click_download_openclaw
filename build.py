@@ -224,6 +224,20 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
         output_dir = "dist"
     os.makedirs(output_dir, exist_ok=True)
 
+    # 自动检测当前平台的离线资源目录
+    auto_resources_dir = None
+    platform_name = "windows" if is_windows() else ("macos" if is_macos() else "linux")
+    candidate = f"resources/{platform_name}"
+    if os.path.isdir(candidate) and any(os.scandir(candidate)):
+        auto_resources_dir = candidate
+
+    # 显式参数优先，未指定时回退到自动检测
+    if not offline and auto_resources_dir:
+        offline = True
+        resources_dir = auto_resources_dir
+    elif offline and not resources_dir and auto_resources_dir:
+        resources_dir = auto_resources_dir
+
     print("=" * 50)
     if offline:
         print("OpenClaw 离线打包工具")
@@ -248,6 +262,13 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     native_cache_dir = "resources/native-cache"
     if os.path.isdir(native_cache_dir):
         add_data_online.append(f"{native_cache_dir}{sep}resources/native-cache")
+
+    # macOS 在线版自带 git，避免 Xcode CLT 弹窗
+    # Node.js 由在线安装器从网络镜像下载，不打包以减小体积
+    if is_macos():
+        for git_tgz in Path("resources/macos").glob("git-*.tar.gz"):
+            add_data_online.append(f"{git_tgz}{sep}resources/macos")
+
     ok_online = _build_single(
         output_dir=output_dir,
         entry_file="launch_installer.py",

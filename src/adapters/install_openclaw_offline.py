@@ -64,43 +64,11 @@ class OfflineOpenClawInstaller(BaseInstaller):
     def __init__(self) -> None:
         """初始化离线安装器。"""
         super().__init__()
-        self._platform = self._detect_platform()
-        self._resource_dir = self._resolve_resource_dir()
         self._home = Path.home()
         self._project_dir = self._home / "openclaw-cn"
         self._node_dir = self._home / ".openclaw-node"
         self._pnpm_path: str | None = None
         self._running = False
-
-    def _detect_platform(self) -> str:
-        """检测当前平台，返回 resources/ 子目录名。"""
-        if is_windows():
-            return "windows"
-        if is_macos():
-            return "macos"
-        return "linux"
-
-    def _resolve_resource_dir(self) -> str:
-        """解析资源目录路径。
-
-        按以下优先级查找：
-        1. PyInstaller 运行时：sys._MEIPASS 临时目录
-        2. 可执行文件同目录（支持分发时 resources/ 与 exe 同目录）
-        3. 开发模式：项目根目录下的 resources/
-        """
-        # PyInstaller 模式
-        if getattr(sys, "_MEIPASS", None):
-            return os.path.join(sys._MEIPASS, "resources", self._platform)
-
-        # 可执行文件同目录模式
-        exe_dir = Path(sys.executable).parent.resolve()
-        candidate = exe_dir / "resources" / self._platform
-        if candidate.exists():
-            return str(candidate)
-
-        # 开发模式：从 adapters/ 向上两级到项目根
-        project_root = Path(__file__).parent.parent.parent.resolve()
-        return str(project_root / "resources" / self._platform)
 
     def _resource_exists(self, filename: str) -> bool:
         """检查指定资源文件是否存在。"""
@@ -178,44 +146,65 @@ class OfflineOpenClawInstaller(BaseInstaller):
     def _install_nodejs(self) -> bool:
         """从资源目录安装 Node.js。
 
-        优先使用预编译二进制包（.tar.gz / .tar.xz / .zip）直接解压到用户目录，
-        无需管理员权限。
+        使用 glob 匹配 resources/{platform}/ 下任意版本的 Node.js 预编译包，
+        不依赖硬编码版本号。匹配到的包按版本号降序排列（优先用新版），
+        解压后通过 node --version 校验主版本 >= 22。
 
         Returns:
             True 如果安装成功。
         """
-        self._log("正在安装 Node.js 22...")
+        self._log("正在安装 Node.js >= 22...")
 
-        # 按优先级尝试不同格式的资源
-        candidates = []
-        version = NODEJS_VERSION
+        # 按平台构造 glob 模式，匹配任意版本（如 node-v22.14.0-darwin-arm64.tar.gz）
+        patterns = []
         if is_macos():
-            candidates = [
-                f"node-v{version}-darwin-arm64.tar.gz",
-                f"node-v{version}-darwin-x64.tar.gz",
-            ]
+            patterns = ["node-v*-darwin-arm64.tar.gz", "node-v*-darwin-x64.tar.gz"]
         elif is_windows():
-            candidates = [
-                f"node-v{version}-win-x64.zip",
-                f"node-v{version}-win-x64.tar.gz",
-            ]
+            patterns = ["node-v*-win-x64.zip", "node-v*-win-x64.tar.gz"]
         else:
-            candidates = [
-                f"node-v{version}-linux-x64.tar.xz",
-                f"node-v{version}-linux-x64.tar.gz",
-            ]
+            patterns = ["node-v*-linux-x64.tar.xz", "node-v*-linux-x64.tar.gz"]
 
-        for filename in candidates:
-            path = os.path.join(self._resource_dir, filename)
-            if not os.path.exists(path):
-                continue
+        # 收集所有匹配文件
+        all_matches: list[Path] = []
+        for pattern in patterns:
+            all_matches.extend(Path(self._resource_dir).glob(pattern))
 
+        # 诊断：如果未找到，打印资源目录内容帮助定位问题
+        if not all_matches:
+            self._log(f"[诊断] _resource_dir = {self._resource_dir}")
+            self._log(f"[诊断] _resource_dir exists = {os.path.isdir(self._resource_dir)}")
+            try:
+                if os.path.isdir(self._resource_dir):
+                    files = os.listdir(self._resource_dir)
+                    self._log(f"[诊断] 目录内容: {files}")
+                else:
+                    self._log("[诊断] 资源目录不存在")
+            except OSError as e:
+                self._log(f"[诊断] 读取目录失败: {e}")
+            self._log("未找到任何 Node.js 离线资源")
+            return False
+
+        # 按文件名中的版本号降序排列（v23.1.0 > v22.14.0 > v22.13.0）
+        def _extract_version(path: Path) -> tuple[int, ...]:
+            """从 node-v{version}-... 文件名中提取版本号元组。"""
+            name = path.name
+            try:
+                # node-v22.14.0-darwin-arm64.tar.gz -> "22.14.0"
+                ver_str = name.split("-")[1].lstrip("v")
+                return tuple(int(x) for x in ver_str.split("."))
+            except (IndexError, ValueError):
+                return (0, 0, 0)
+
+        all_matches.sort(key=_extract_version, reverse=True)
+        self._log(f"找到 {len(all_matches)} 个 Node.js 离线资源，按版本排序")
+
+        for archive_path in all_matches:
+            self._log(f"尝试解压: {archive_path.name}")
             self._node_dir.mkdir(parents=True, exist_ok=True)
 
-            if not self._extract_nodejs_archive(path, self._node_dir):
-                return False
-
-            self._log(f"已解压 Node.js: {filename}")
+            if not self._extract_nodejs_archive(str(archive_path), self._node_dir):
+                self._log(f"解压失败，尝试下一个")
+                continue
 
             # 将 ~/.openclaw-node/bin 加入当前进程 PATH
             node_bin = str(self._node_dir / "bin")
@@ -228,10 +217,13 @@ class OfflineOpenClawInstaller(BaseInstaller):
                     self._log(f"{node_bin} 已在 PATH 中")
                 ensure_dir_in_path(node_bin, self._on_log)
 
+            # 验证版本 >= 22（会运行刚解压的 node --version）
             if self._check_nodejs_version():
                 return True
 
-        self._log("未找到可用的 Node.js 离线资源")
+            self._log(f"{archive_path.name} 版本不满足 >= 22，尝试下一个")
+
+        self._log("所有 Node.js 离线资源均不可用（版本 < 22 或解压失败）")
         return False
 
     def _check_pnpm(self) -> bool:
@@ -300,15 +292,30 @@ class OfflineOpenClawInstaller(BaseInstaller):
             if os.path.isfile(npm_candidate):
                 return npm_candidate
 
-        # 3. 常见路径
+        # 3. 常见路径 + 动态查找 nvm 最新版本
         home = os.path.expanduser("~")
-        for path in [
+        common_paths = [
             "/usr/local/bin/npm",
             "/opt/homebrew/bin/npm",
-            os.path.join(home, ".nvm", "versions", "node", "v22.14.0", "bin", "npm"),
             os.path.join(home, ".local", "bin", "npm"),
             str(self._node_dir / "bin" / "npm"),
-        ]:
+        ]
+
+        # 动态查找 nvm 已安装的最新版本
+        nvm_dir = os.path.join(home, ".nvm", "versions", "node")
+        if os.path.isdir(nvm_dir):
+            try:
+                versions = sorted(
+                    [d for d in os.listdir(nvm_dir) if d.startswith("v")],
+                    key=lambda x: tuple(int(p) for p in x.lstrip("v").split(".")),
+                    reverse=True,
+                )
+                if versions:
+                    common_paths.insert(0, os.path.join(nvm_dir, versions[0], "bin", "npm"))
+            except (OSError, ValueError):
+                pass
+
+        for path in common_paths:
             if os.path.isfile(path):
                 return path
 
@@ -422,242 +429,6 @@ class OfflineOpenClawInstaller(BaseInstaller):
             return False
 
         return True
-
-    def _locate_internal_git(self, git_dest: Path) -> tuple[Path | None, Path | None]:
-        """在解压目录中定位内部 git 的 bin/ 和 libexec/git-core/ 路径。
-
-        支持两种常见目录结构：
-        1. 有中间层目录（如 git-test/）：git-test/bin/git + git-test/libexec/git-core
-        2. 无中间层：bin/git + libexec/git-core
-
-        Args:
-            git_dest: git 解压根目录（~/.openclaw-git）。
-
-        Returns:
-            (bin_dir, exec_dir) 或 (None, None)。
-        """
-        # 先尝试常见子目录名
-        for subdir_name in ["git-test", "git", "usr"]:
-            candidate_bin = git_dest / subdir_name / "bin"
-            candidate_exec = git_dest / subdir_name / "libexec" / "git-core"
-            git_binary = candidate_bin / "git"
-            if git_binary.is_file() and candidate_exec.is_dir():
-                return candidate_bin, candidate_exec
-
-        # 回退：递归查找 bin/git，再推断 libexec/git-core
-        for git_binary in git_dest.rglob("bin/git"):
-            inferred_exec = git_binary.parent.parent / "libexec" / "git-core"
-            if inferred_exec.is_dir():
-                return git_binary.parent, inferred_exec
-
-        # 最后回退：只要找到 bin/git 就返回（可能没有 libexec）
-        for git_binary in git_dest.rglob("bin/git"):
-            return git_binary.parent, git_binary.parent.parent / "libexec" / "git-core"
-
-        return None, None
-
-    def _setup_git_if_needed(self) -> None:
-        """离线版：在未安装 git 的系统上使用打包的内部 git。
-
-        macOS：检测 Xcode CLT，未安装时解压内部 git 并创建 wrapper 脚本，
-               避免弹出"需要开发者命令行工具"对话框。
-        Windows：直接解压 MinGit 便携版到 ~/.openclaw-git/ 并加入 PATH。
-        Linux：暂不支持内置 git。
-        """
-        if is_linux():
-            return
-
-        git_dest = Path(self._home) / ".openclaw-git"
-
-        if is_macos():
-            self._setup_git_macos(git_dest)
-        else:
-            self._setup_git_windows(git_dest)
-
-    def _setup_git_macos(self, git_dest: Path) -> None:
-        """macOS：检测 Xcode CLT，未安装时使用内部 git。"""
-        # 通过 Apple 官方命令检测 Xcode CLT 是否已安装
-        try:
-            result = subprocess.run(
-                ["xcode-select", "-p"],
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_SHORT_CMD,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                self._log(f"Xcode CLT 已安装 ({result.stdout.strip()})，使用系统 git")
-                return
-            self._log("Xcode CLT 未安装，将使用内部 git")
-        except (OSError, subprocess.SubprocessError):
-            self._log("Xcode CLT 检测失败，将使用内部 git")
-
-        # 查找打包的 git tarball
-        git_tgz_pattern = f"git-{self._platform}*.tar.gz"
-        matches = sorted(Path(self._resource_dir).glob(git_tgz_pattern))
-        if not matches:
-            self._log(f"未找到内部 git 资源: {git_tgz_pattern}")
-            return
-
-        git_tgz = str(matches[0])
-
-        # 如果已存在且不是空目录，跳过解压
-        if git_dest.exists() and any(git_dest.iterdir()):
-            self._log(f"内部 git 已存在: {git_dest}")
-        else:
-            self._log(f"正在解压内部 git: {Path(git_tgz).name}")
-            git_dest.mkdir(parents=True, exist_ok=True)
-            try:
-                with tarfile.open(git_tgz, "r:gz") as tar:
-                    safe_tar_extract(tar, git_dest, self._log)
-                self._log(f"内部 git 解压完成: {git_dest}")
-            except (OSError, tarfile.TarError) as e:
-                self._log(f"内部 git 解压失败: {e}")
-                return
-
-        # 确定内部 git 的实际路径
-        git_bin, git_exec = self._locate_internal_git(git_dest)
-        if not git_bin or not git_exec:
-            self._log("内部 git 目录结构异常，无法定位 bin/ 或 libexec/git-core/")
-            return
-
-        git_bin_str = str(git_bin)
-        git_exec_str = str(git_exec)
-        git_binary_path = os.path.join(git_bin_str, "git")
-
-        if not os.path.isfile(git_binary_path):
-            self._log(f"内部 git 二进制不存在: {git_binary_path}")
-            return
-
-        # 关键验证：直接执行内部 git
-        self._log(f"测试内部 git: {git_binary_path}")
-        test_env = os.environ.copy()
-        test_env["GIT_EXEC_PATH"] = git_exec_str
-        test_env["PATH"] = git_bin_str + os.pathsep + test_env.get("PATH", "")
-        try:
-            test_result = subprocess.run(
-                [git_binary_path, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_SHORT_CMD,
-                env=test_env,
-            )
-            if test_result.returncode == 0 and "git version" in test_result.stdout:
-                self._log(f"内部 git 验证通过: {test_result.stdout.strip()}")
-            else:
-                err = test_result.stderr.strip()[:200] if test_result.stderr else "无输出"
-                self._log(f"内部 git 测试失败 (rc={test_result.returncode}): {err}")
-                return
-        except (OSError, subprocess.TimeoutExpired) as e:
-            self._log(f"内部 git 测试异常: {e}")
-            return
-
-        # 设置环境变量
-        os.environ["GIT_EXEC_PATH"] = git_exec_str
-        current_path = os.environ.get("PATH", "")
-        if git_bin_str not in current_path.split(os.pathsep):
-            os.environ["PATH"] = git_bin_str + os.pathsep + current_path
-            self._log(f"已设置内部 git PATH: {git_bin_str}")
-
-        # 创建 ~/.local/bin/git wrapper 脚本
-        local_bin = Path.home() / ".local" / "bin"
-        local_bin.mkdir(parents=True, exist_ok=True)
-        git_wrapper = local_bin / "git"
-        wrapper_script = f'''#!/bin/bash
-# OpenClaw 内部 git wrapper
-# 离线版 macOS：使用安装器内置的完整 git，避免 Xcode CLT 弹窗。
-set -e
-
-GIT_BIN="{git_binary_path}"
-if [ ! -x "$GIT_BIN" ]; then
-    echo "错误: 找不到内部 git: $GIT_BIN" >&2
-    exit 1
-fi
-
-export GIT_EXEC_PATH="{git_exec_str}"
-exec "$GIT_BIN" "$@"
-'''
-        try:
-            git_wrapper.write_text(wrapper_script, encoding="utf-8")
-            git_wrapper.chmod(0o755)
-            self._log(f"已创建 git wrapper: {git_wrapper}")
-        except OSError as e:
-            self._log(f"创建 git wrapper 失败: {e}")
-
-    def _setup_git_windows(self, git_dest: Path) -> None:
-        """Windows：解压 MinGit 便携版并加入 PATH。
-
-        MinGit 是自包含的 git 核心命令集合，解压后把 cmd/ 目录加入 PATH 即可使用，
-        无需安装 Git for Windows，也无需 wrapper 脚本。
-        """
-        # 查找打包的 MinGit zip
-        git_zip_pattern = "git-*.zip"
-        matches = sorted(Path(self._resource_dir).glob(git_zip_pattern))
-        if not matches:
-            self._log(f"未找到内部 git 资源: {git_zip_pattern}")
-            return
-
-        git_zip = str(matches[0])
-
-        # 如果已存在且不是空目录，跳过解压
-        if git_dest.exists() and any(git_dest.iterdir()):
-            self._log(f"内部 git 已存在: {git_dest}")
-        else:
-            self._log(f"正在解压内部 git: {Path(git_zip).name}")
-            git_dest.mkdir(parents=True, exist_ok=True)
-            try:
-                with zipfile.ZipFile(git_zip, "r") as zf:
-                    for name in zf.namelist():
-                        if name.startswith("/") or ".." in Path(name).parts:
-                            self._log(f"拒绝不安全的 zip 成员: {name}")
-                            return
-                    zf.extractall(git_dest)
-                self._log(f"内部 git 解压完成: {git_dest}")
-            except (OSError, zipfile.BadZipFile) as e:
-                self._log(f"内部 git 解压失败: {e}")
-                return
-
-        # MinGit 的 git.exe 通常在 cmd/ 子目录下
-        git_cmd_dir = git_dest / "cmd"
-        if not (git_cmd_dir / "git.exe").is_file():
-            # 回退：递归查找 git.exe
-            for git_exe in git_dest.rglob("git.exe"):
-                git_cmd_dir = git_exe.parent
-                break
-
-        if not (git_cmd_dir / "git.exe").is_file():
-            self._log("内部 git 目录结构异常，找不到 git.exe")
-            return
-
-        git_cmd_str = str(git_cmd_dir)
-        git_binary_path = str(git_cmd_dir / "git.exe")
-
-        # 验证 git 可用
-        self._log(f"测试内部 git: {git_binary_path}")
-        test_env = os.environ.copy()
-        test_env["PATH"] = git_cmd_str + os.pathsep + test_env.get("PATH", "")
-        try:
-            test_result = subprocess.run(
-                [git_binary_path, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_SHORT_CMD,
-                env=test_env,
-            )
-            if test_result.returncode == 0 and "git version" in test_result.stdout:
-                self._log(f"内部 git 验证通过: {test_result.stdout.strip()}")
-            else:
-                err = test_result.stderr.strip()[:200] if test_result.stderr else "无输出"
-                self._log(f"内部 git 测试失败 (rc={test_result.returncode}): {err}")
-                return
-        except (OSError, subprocess.TimeoutExpired) as e:
-            self._log(f"内部 git 测试异常: {e}")
-            return
-
-        # 设置 PATH，让当前安装器进程内的子进程使用内部 git
-        current_path = os.environ.get("PATH", "")
-        if git_cmd_str not in current_path.split(os.pathsep):
-            os.environ["PATH"] = git_cmd_str + os.pathsep + current_path
-            self._log(f"已设置内部 git PATH: {git_cmd_str}")
 
     def _create_wrappers(self) -> bool:
         """创建全局命令包装器。

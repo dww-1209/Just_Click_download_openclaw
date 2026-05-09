@@ -76,47 +76,100 @@ uv run python launch_installer_offline.py
 uv run python launch_uninstaller.py
 ```
 
-**准备资源（首次构建或更新资源时）：**
+### 准备资源
 
-在线版只需要 Node.js 预编译包，离线版额外需要 OpenClaw 预构建产物：
+`resources/` 目录是打包时的输入，GitHub 仓库中只保留空目录结构（通过 `.gitkeep`），实际资源文件需在本地准备。
+
+#### 资源文件清单
+
+| 文件 | 位置 | 用途 | 准备方式 |
+|---|---|---|---|
+| `pnpm-*.tgz` | `resources/` 根目录 | 跨平台共用的 pnpm npm tarball | `prepare_offline_resources.py` 自动下载 |
+| `node-v*-darwin-*.tar.gz` | `resources/macos/` | macOS Node.js 预编译包 | `prepare_offline_resources.py` 自动下载 |
+| `node-v*-win-*.zip` | `resources/windows/` | Windows Node.js 预编译包 | `prepare_offline_resources.py` 自动下载 |
+| `openclaw-prebuilt-*.tar.gz` | `resources/{platform}/` | OpenClaw 预构建产物 | **必须用** `prepare_offline_resources.py` 打包 |
+| `git-*.tar.gz` / `git-*.zip` | `resources/{platform}/` | 内部 git（绕过系统 git 限制） | **手动准备**，详见下方 |
+
+> **文件名不硬编码版本号**：安装器使用 glob 匹配（如 `node-v*.tar.gz`），支持任意版本，按版本号降序选择最新版。
+
+#### 1. 自动下载的资源（Node.js + pnpm）
 
 ```bash
-# 1. 准备基础资源（Node.js + pnpm npm tarball）
-uv run python prepare_offline_resources.py --platform macos --skip-prebuilt
-
-# 2. 安装 OpenClaw 在线版（获取最新源码并构建）
-# 运行一次在线安装器，完成构建后 ~/openclaw-cn 目录即为预构建产物
-
-# 3. 打包 OpenClaw 预构建产物（离线版需要）
-uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm
+# 下载 Node.js 预编译包 + pnpm npm tarball
+uv run python prepare_offline_resources.py --platform macos --skip-prebuilt --skip-git
 ```
 
-**资源说明：**
-- `prepare_offline_resources.py` 从 nodejs.org 下载 Node.js 官方预编译包
-- pnpm 从 npm registry（国内镜像优先）下载 npm tarball（`.tgz`），跨平台共用
-- OpenClaw 预构建产物需先通过在线安装器完成 `pnpm install && pnpm build` 后打包
-- 所有资源输出到 `resources/{platform}/`，项目已配置自动读取
+#### 2. 预构建产物（离线版必需）
 
-**打包可执行文件：**
+**⚠️ 不能用简单的 `tar czf` 打包。** pnpm workspace 会产生 symlink/junction 循环链接（如 `extensions/bluebubbles/node_modules/openclaw` 指向项目根目录），直接压缩会导致无限递归或软链接丢失。
+
+**正确做法**：
+
 ```bash
-# 默认输出到 dist/
+# 步骤 A：先通过在线安装器完成构建，生成 ~/openclaw-cn
+uv run python launch_installer.py
+
+# 步骤 B：使用 prepare_offline_resources.py 打包（自动处理 symlink/junction）
+uv run python prepare_offline_resources.py --platform macos --skip-nodejs --skip-pnpm --skip-git
+```
+
+`prepare_offline_resources.py` 的处理逻辑：
+- **Windows**：优先调用系统 tar（MSYS2/Git Bash），能正确处理 junction
+- **回退**：Python tarfile 手动遍历，遇到 symlink/junction 只记录链接本身，绝不跟随进入
+
+#### 3. 内部 git 资源（macOS 必需，Windows 推荐）
+
+**这不是从 git 官网下载的安装包。** 全新 macOS 上的 `/usr/bin/git` 是一个 shim（约 100KB），调用时会触发"安装开发者命令行工具"弹窗，而 Xcode CLT 体积巨大（约 2GB）。
+
+**macOS 内部 git 的制作方式**：
+
+从**已安装 Xcode Command Line Tools** 的 Mac 上，复制真正的 git 二进制和辅助程序：
+
+```bash
+# 1. 创建临时目录
+mkdir -p /tmp/git-macos-arm64/bin
+mkdir -p /tmp/git-macos-arm64/libexec
+
+# 2. 从 Xcode CLT 复制真正的 git 二进制（不是 /usr/bin/git shim）
+cp /Library/Developer/CommandLineTools/usr/bin/git /tmp/git-macos-arm64/bin/
+
+# 3. 复制 git-core 辅助程序（git 子命令依赖这些）
+cp -R /Library/Developer/CommandLineTools/usr/libexec/git-core /tmp/git-macos-arm64/libexec/
+
+# 4. 如有其他必要目录（lib/、share/ 等），也一并复制
+# cp -R /Library/Developer/CommandLineTools/usr/libexec/... /tmp/git-macos-arm64/...
+
+# 5. 打包
+cd /tmp && tar czf git-macos-arm64.tar.gz git-macos-arm64/
+
+# 6. 移动到资源目录
+mv git-macos-arm64.tar.gz resources/macos/
+```
+
+**关键说明**：
+- 来源必须是 `/Library/Developer/CommandLineTools/usr/bin/git`（真正的二进制），**不能**是 `/usr/bin/git`（shim）
+- 必须同时包含 `libexec/git-core/` 目录，否则 git 子命令（如 `git clone`）无法运行
+- 需要区分 ARM64 和 Intel x64 架构，文件名建议带架构标识（如 `git-macos-arm64.tar.gz`）
+- 安装器会在目标机器上解压到 `~/.openclaw-git/`，创建 `~/.local/bin/git` wrapper 脚本，设置 `GIT_EXEC_PATH` 环境变量
+
+**Windows 内部 git**：下载 [MinGit](https://github.com/git-for-windows/git/releases) 便携版 zip，或提供完整的 PortableGit 目录压缩包。安装器会解压到 `~/.openclaw-git/` 并加入 PATH。
+
+#### 打包可执行文件
+
+```bash
+# 默认输出到 dist/（自动检测 resources/{platform}/ 是否存在，存在则同时构建离线版）
 uv run python build.py
 
-# 指定输出路径
-uv run python build.py --output ~/Desktop
+# 显式指定离线资源目录
+uv run python build.py --offline --resources-dir resources/macos
 
 # 仅清理构建文件
 uv run python build.py --clean-only
-
-# 打包离线版
-uv run python build.py --offline --resources-dir resources/macos
 ```
 
-> **注意：打包离线版之前，必须先完成上述"准备资源"步骤。** 离线版依赖 `resources/{platform}/` 中的预构建产物和 Node.js 预编译包，若该目录不存在或缺少文件，请按上面三步流程执行。
-
 打包完成后：
-- **Windows**：`dist/OpenClaw安装器.exe`、`dist/OpenClaw卸载工具.exe`
-- **macOS**：`dist/OpenClaw安装器.app` + `双击运行-OpenClaw安装器.command`
+- **Windows**：`dist/OpenClaw安装器.exe`、`dist/OpenClaw离线安装器.exe`、`dist/OpenClaw卸载工具.exe`
+- **macOS**：`dist/OpenClaw安装器.app`、`dist/OpenClaw离线安装器.app`、`dist/OpenClaw卸载工具.app` + 对应的 `.command` 辅助脚本
 
 ### 架构图（六层 + Composition Root）
 
@@ -211,19 +264,20 @@ uv run python build.py --offline --resources-dir resources/macos
 ├── prepare_offline_resources.py      # 离线资源准备脚本（下载 Node.js / pnpm / 打包预构建产物）
 ├── resources/                        # 离线资源目录（仓库中为空，需自行准备，详见下方）
 │   ├── pnpm-10.10.0.tgz              # 跨平台共用的 pnpm npm tarball（需自行下载）
-│   ├── macos/                        # macOS 离线资源
-│   │   ├── node-v22.14.0-darwin-arm64.tar.gz  # ARM64 Node.js 预编译包
-│   │   ├── node-v22.14.0-darwin-x64.tar.gz    # Intel x64 Node.js 预编译包
+│   ├── macos/                        # macOS 离线资源（示例文件名，支持 glob 匹配）
+│   │   ├── node-v*-darwin-*.tar.gz            # Node.js 预编译包（ARM64 或 x64）
 │   │   ├── openclaw-prebuilt-macos.tar.gz     # OpenClaw 预构建产物（需先 build）
-│   │   └── git-macos-arm64.tar.gz             # macOS ARM64 内部 git（从 Xcode CLT 复制）
-│   ├── windows/                      # Windows 离线资源
-│   │   ├── node-v22.14.0-win-x64.zip          # Windows x64 Node.js 预编译包
+│   │   └── git-macos-*.tar.gz                 # 内部 git（从 Xcode CLT 复制，见下方说明）
+│   ├── windows/                      # Windows 离线资源（示例文件名，支持 glob 匹配）
+│   │   ├── node-v*-win-*.zip                  # Node.js 预编译包
 │   │   ├── openclaw-prebuilt-windows.tar.gz   # OpenClaw 预构建产物（需先 build）
-│   │   └── git-windows-x64.zip                # Windows 内部 git（PortableGit / 安装目录）
+│   │   └── git-*.zip / MinGit-*.zip           # 内部 git（MinGit / PortableGit）
 │   └── linux/                        # Linux 离线资源（预留）
 ```
 
-> **注意**：`resources/` 目录中的二进制文件体积较大（总计可达数百 MB），超出 Git 传输限制，因此仓库中只保留空目录结构（通过 `.gitkeep`）。实际资源文件请通过 `prepare_offline_resources.py` 脚本自动下载或手动准备，具体步骤见下文"准备离线资源"部分。
+> **注意**：`resources/` 目录中的二进制文件体积较大（总计可达数百 MB），超出 Git 传输限制，因此 GitHub 仓库中只保留空目录结构（通过 `.gitkeep` 占位）。实际资源文件请在本地准备，详见下方"准备资源"部分。
+>
+> **文件名不硬编码版本号**：安装器使用 glob 模式匹配（如 `node-v*.tar.gz`、`git-*.tar.gz`），支持任意版本，按版本号降序自动选择最新版。
 
 ### 双仓库工作流
 

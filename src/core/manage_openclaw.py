@@ -1440,6 +1440,8 @@ class OpenClawManager(BaseOpenClawManager):
         dirs_to_remove = [
             os.path.join(home, "openclaw-cn"),
             os.path.join(home, ".openclaw"),
+            os.path.join(home, ".openclaw-git"),
+            os.path.join(home, ".openclaw-node"),
         ]
         for d in dirs_to_remove:
             if os.path.exists(d):
@@ -1481,7 +1483,8 @@ class OpenClawManager(BaseOpenClawManager):
             wrappers = ["openclaw.cmd", "openclaw-cn.cmd"]
         else:
             wrapper_dir = os.path.join(home, ".local", "bin")
-            wrappers = ["openclaw", "openclaw-cn"]
+            # macOS 在线版会创建 git wrapper，卸载时一并清理
+            wrappers = ["openclaw", "openclaw-cn", "git"]
 
         for w in wrappers:
             wpath = os.path.join(wrapper_dir, w)
@@ -1495,16 +1498,7 @@ class OpenClawManager(BaseOpenClawManager):
                         on_log(f"删除 {wpath} 失败: {e}")
                     all_ok = False
 
-        # 5. 删除离线安装器创建的 Node.js 目录
-        openclaw_node_dir = os.path.join(home, ".openclaw-node")
-        if os.path.exists(openclaw_node_dir):
-            if force_rmtree(openclaw_node_dir, on_log):
-                if on_log:
-                    on_log(f"已删除: {openclaw_node_dir}")
-            else:
-                all_ok = False
-
-        # 6. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目
+        # 5. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目
         if os_type != "win32":
             for rc_file in [".bashrc", ".zshrc", ".profile"]:
                 rc_path = os.path.join(home, rc_file)

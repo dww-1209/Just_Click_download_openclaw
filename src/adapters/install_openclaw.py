@@ -35,8 +35,9 @@ from src.models.constants import (
     TIMEOUT_NODE_MSI_INSTALL, TIMEOUT_GIT_INSTALL_MAX, TIMEOUT_BUILD_CMD,
     NODEJS_MSI_MIRRORS, NODEJS_PKG_MIRRORS,
     REGISTRY_NPM_MIRROR, REGISTRY_CLAWHUB,
+    NODEJS_VERSION, NODEJS_ARCHIVE_MIRROR_BASES,
 )
-from src.models.utils import ensure_dir_in_path, ensure_local_bin_in_path, force_rmtree
+from src.models.utils import ensure_dir_in_path, ensure_local_bin_in_path, force_rmtree, safe_tar_extract
 from src.contracts.define_base_installer import BaseInstaller
 from src.contracts.define_decorators import log_method
 
@@ -133,79 +134,42 @@ class OpenClawInstaller(BaseInstaller):
                 self._log("Git 已就绪")
 
             elif self.os_type == "macos":
-                # macOS：系统通常预装 git/curl，但全新系统可能缺失；
-                # 若缺失 git，自动调用 xcode-select --install 弹出系统安装对话框
+                # macOS：检查 curl（系统自带），然后设置内部 git 避免 Xcode CLT 弹窗
                 self._log("检查前置依赖 (git, curl)...")
-                for cmd, name in [("git", "Git"), ("curl", "curl")]:
-                    try:
-                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
-                        if result.returncode != 0:
-                            raise FileNotFoundError()
-                    except FileNotFoundError:
-                        if cmd == "git":
-                            self._log("系统未找到 Git，正在为您启动 Xcode Command Line Tools 安装...")
-                            if on_progress:
-                                on_progress(InstallProgress(
-                                    stage=InstallStage.DOWNLOADING,
-                                    progress_percent=5,
-                                    message="检测到缺少 Git，正在启动系统安装程序，请按提示操作...",
-                                    current_task="安装 Git (Xcode Command Line Tools)",
-                                ))
-                            subprocess.run(["xcode-select", "--install"], capture_output=True)
 
-                            # 循环等待用户完成安装，最多 10 分钟（120 次 × 5 秒）
-                            # 设计意图：系统对话框需要用户手动点击，无法自动完成，因此只能轮询检测
-                            git_installed = False
-                            for attempt in range(120):
-                                # 检查用户是否取消安装，允许中断等待
-                                if self.is_cancelled:
-                                    self._log("用户取消安装，终止 Git 等待")
-                                    break
-                                time.sleep(5)
-                                try:
-                                    check = subprocess.run(["git", "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
-                                    if check.returncode == 0:
-                                        git_installed = True
-                                        self._log("Git 安装完成")
-                                        break
-                                except FileNotFoundError:
-                                    pass
-                                elapsed = (attempt + 1) * 5
-                                self._log(f"等待 Git 安装中... ({elapsed}秒)")
-                                if on_progress and elapsed % 30 == 0:
-                                    on_progress(InstallProgress(
-                                        stage=InstallStage.DOWNLOADING,
-                                        progress_percent=5,
-                                        message=f"正在等待 Git 安装完成，已等待 {elapsed} 秒，请按系统提示完成安装...",
-                                        current_task="安装 Git (Xcode Command Line Tools)",
-                                    ))
+                # curl：macOS 自带，极少缺失
+                try:
+                    result = subprocess.run(["curl", "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
+                    if result.returncode != 0:
+                        raise FileNotFoundError()
+                except FileNotFoundError:
+                    return InstallResult(
+                        status=InstallStatus.FAILED,
+                        message="缺少 curl",
+                        error_message="系统未找到 curl，macOS 通常自带 curl，若缺失请重新安装系统。",
+                        log_lines=self.log_lines.copy(),
+                        duration_seconds=time.time() - self.start_time,
+                    )
 
-                            if not git_installed:
-                                return InstallResult(
-                                    status=InstallStatus.FAILED,
-                                    message="Git 安装超时",
-                                    error_message=(
-                                        "自动安装 Xcode Command Line Tools 超时，可能是连接 Apple 服务器较慢。\n\n"
-                                        "建议尝试以下方案：\n"
-                                        "1. 重新运行程序再次尝试自动安装\n"
-                                        "2. 手动从 Apple 官网下载安装：\n"
-                                        "   a. 访问 https://developer.apple.com/download/all/\n"
-                                        "   b. 使用 Apple ID 登录\n"
-                                        "   c. 搜索 'Command Line Tools for Xcode' 下载并安装\n"
-                                        "3. 安装完成后重新运行本程序"
-                                    ),
-                                    log_lines=self.log_lines.copy(),
-                                    duration_seconds=time.time() - self.start_time,
-                                )
-                        else:
-                            # curl 缺失（极少见，macOS 系统预装）
-                            return InstallResult(
-                                status=InstallStatus.FAILED,
-                                message=f"缺少 {name}",
-                                error_message=f"系统未找到 {name}，请安装 Xcode Command Line Tools 后重试。",
-                                log_lines=self.log_lines.copy(),
-                                duration_seconds=time.time() - self.start_time,
-                            )
+                # git：使用安装器内置的 git，绕过 Xcode CLT 弹窗
+                # _setup_git_if_needed() 会检测 Xcode CLT 是否已安装，
+                # 已安装则直接使用系统 git，未安装则解压并使用内部 git。
+                self._setup_git_if_needed()
+
+                # 验证 git 可用
+                try:
+                    result = subprocess.run(["git", "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
+                    if result.returncode != 0:
+                        raise FileNotFoundError()
+                except FileNotFoundError:
+                    return InstallResult(
+                        status=InstallStatus.FAILED,
+                        message="Git 不可用",
+                        error_message="系统未找到可用的 Git，且安装器内置的 Git 也无法使用。请确保资源包中包含 git 文件。",
+                        log_lines=self.log_lines.copy(),
+                        duration_seconds=time.time() - self.start_time,
+                    )
+
                 self._log("前置依赖已就绪")
 
             else:
@@ -376,11 +340,14 @@ class OpenClawInstaller(BaseInstaller):
         return str(project_root / "resources" / self._platform)
 
     def _install_nodejs(self) -> Optional[InstallResult]:
-        """从本地资源安装 Node.js:检测系统已有版本,缺失则从 resources/ 解压。
+        """从网络镜像下载并安装 Node.js 预编译二进制包。
 
-        在线版和离线版共用同一套本地资源解压逻辑,无需管理员权限,
-        不依赖网络下载,支持 Windows/macOS/Linux。
+        在线版安装器不打包 Node.js，而是从国内镜像下载 tarball/zip，
+        解压到 ~/.openclaw-node/ 并加入 PATH。无需管理员权限。
         """
+        import urllib.request
+        import tempfile
+
         # 检测现有 Node.js
         if self._check_nodejs_version():
             self._log("Node.js 已满足要求,跳过安装")
@@ -408,19 +375,53 @@ class OpenClawInstaller(BaseInstaller):
                 duration_seconds=time.time() - self.start_time,
             )
 
-        # 从本地 resources 查找
-        resource_dir = self._resolve_resource_dir()
-        archive_path = Path(resource_dir) / filename
-        if not archive_path.exists() or archive_path.stat().st_size <= 10 * 1024 * 1024:
+        # 从镜像源下载
+        download_path = None
+        for base_url in NODEJS_ARCHIVE_MIRROR_BASES:
+            if self.is_cancelled:
+                return self._build_cancelled_result()
+
+            url = f"{base_url}/{filename}"
+            self._log(f"正在下载 Node.js: {url}")
+            try:
+                fd, download_path = tempfile.mkstemp(suffix=f"_{filename}")
+                os.close(fd)
+
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "OpenClaw-Installer/1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=180) as response:
+                    with open(download_path, "wb") as f:
+                        while True:
+                            chunk = response.read(8192)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+
+                file_size = os.path.getsize(download_path)
+                self._log(f"下载完成: {file_size / 1024 / 1024:.1f} MB")
+                if file_size < 10 * 1024 * 1024:
+                    self._log("下载文件过小，尝试下一个镜像...")
+                    os.remove(download_path)
+                    download_path = None
+                    continue
+                break
+            except Exception as e:
+                self._log(f"下载失败: {e}")
+                if download_path and os.path.exists(download_path):
+                    os.remove(download_path)
+                    download_path = None
+                continue
+
+        if not download_path:
             return InstallResult(
                 status=InstallStatus.FAILED,
-                message="缺少 Node.js 本地资源",
-                error_message=f"未在 resources/{self._platform}/ 找到 {filename},请确保打包时包含该资源",
+                message="Node.js 下载失败",
+                error_message="无法从任何镜像源下载 Node.js，请检查网络连接后重试",
                 log_lines=self.log_lines.copy(),
                 duration_seconds=time.time() - self.start_time,
             )
-
-        self._log(f"使用本地 Node.js 资源: {archive_path}")
 
         # 清理旧版本
         if self._node_dir.exists():
@@ -428,14 +429,41 @@ class OpenClawInstaller(BaseInstaller):
                 self._log(f"清理旧 Node.js 目录失败: {self._node_dir}")
 
         # 解压
-        if not self._extract_nodejs_archive(archive_path, self._node_dir):
+        self._node_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if download_path.endswith(".zip"):
+                with zipfile.ZipFile(download_path, "r") as zf:
+                    zf.extractall(self._node_dir)
+            else:
+                with tarfile.open(download_path, "r:*") as tar:
+                    safe_tar_extract(tar, self._node_dir, self._log)
+        except (OSError, tarfile.TarError, zipfile.BadZipFile) as e:
+            os.remove(download_path)
             return InstallResult(
                 status=InstallStatus.FAILED,
                 message="Node.js 解压失败",
-                error_message="Node.js 安装包解压失败,资源文件可能损坏",
+                error_message=f"Node.js 安装包解压失败: {e}",
                 log_lines=self.log_lines.copy(),
                 duration_seconds=time.time() - self.start_time,
             )
+        finally:
+            if os.path.exists(download_path):
+                os.remove(download_path)
+
+        # Flatten: 如果解压后只有一个 node-v* 子目录，把内容提到根目录
+        subdirs = [d for d in self._node_dir.iterdir() if d.is_dir() and d.name.startswith("node-v")]
+        if len(subdirs) == 1:
+            subdir = subdirs[0]
+            for item in subdir.iterdir():
+                target = self._node_dir / item.name
+                if target.exists():
+                    if item.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                shutil.move(str(item), str(target))
+            subdir.rmdir()
+            self._log(f"已 flatten 目录: {subdir.name}")
 
         # 确定 PATH 中的可执行目录
         if is_windows():
@@ -1160,15 +1188,18 @@ class OpenClawInstaller(BaseInstaller):
                 pass
         except (OSError, subprocess.SubprocessError):
             pass
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                shell=False,
-                capture_output=True,
-                timeout=TIMEOUT_NODE_MSI_INSTALL,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
+
+        # taskkill 仅在 Windows 上存在，其他平台跳过
+        if is_windows():
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    shell=False,
+                    capture_output=True,
+                    timeout=TIMEOUT_NODE_MSI_INSTALL,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     def _terminate_process(self) -> None:
         """终止当前正在执行的安装子进程。
