@@ -8,7 +8,7 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QProgressBar, QTextEdit, QFrame,
+    QProgressBar, QPlainTextEdit, QFrame,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -64,8 +64,15 @@ class UninstallProgressPage(QWidget):
         log_layout = QVBoxLayout(log_frame)
         log_layout.setContentsMargins(10, 10, 10, 10)
 
-        self.log_edit = QTextEdit()
+        # 用 QPlainTextEdit + setMaximumBlockCount 而不是 QTextEdit:
+        # QTextEdit.append 是富文本路径,每次插入都重做 HTML 解析+完整 layout。
+        # Windows 上一旦短时间涌入上千条日志(npm uninstall/pnpm 输出经过
+        # _run_cmd_with_streaming 逐行 emit),主线程槽函数被堆满,5 秒内来不及
+        # 处理 DWM 探测就触发"程序无响应"弹窗。QPlainTextEdit 是纯文本路径,
+        # 配合 200 行上限,即使瞬时大量日志也能流畅追加。
+        self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.setMaximumBlockCount(200)
         self.log_edit.setObjectName("logArea")
         self.log_edit.setMinimumHeight(200)
         self.log_edit.setStyleSheet("color: #e0e0e0; background-color: transparent; border: none;")
@@ -98,7 +105,7 @@ class UninstallProgressPage(QWidget):
         """重置页面状态，恢复到初始值。"""
         self.progress_bar.setValue(0)
         self.progress_label.setText("准备卸载...")
-        self.log_edit.clear()
+        self.log_edit.clear()  # QPlainTextEdit 也有 clear() 方法
         self.cancel_btn.setEnabled(True)
         self.cancel_btn.setText("取消")
 
@@ -109,7 +116,8 @@ class UninstallProgressPage(QWidget):
 
     def add_log(self, line: str) -> None:
         """追加日志行并自动滚动到底部。"""
-        self.log_edit.append(line)
+        # appendPlainText 是 QPlainTextEdit 的纯文本快路径,比 QTextEdit.append 快一个数量级
+        self.log_edit.appendPlainText(line)
         scrollbar = self.log_edit.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 

@@ -487,11 +487,22 @@ class InstallerWindow:
         清理内容包括:停止 Gateway、删除源码和配置目录、卸载全局 npm 包。
         所有阻塞操作委托给 ReinstallWorker 执行,避免 UI 冻结。
         完成后自动跳转到 US-04 安装阶段。
+
+        UX 关键: 立即切到 installing_page 展示日志,而不是把日志路由到
+        env_check_page 的单行 status_label。后者每来一条 log 就 setText 覆盖
+        前一条,Windows 上删除 100k 个文件的几十秒内,用户看不到任何进度变化,
+        会误以为程序卡死。installing_page 自带 QPlainTextEdit 日志框
+        (setMaximumBlockCount=100),日志流式滚动,体验和正常安装一致。
         """
-        self.env_check_page.status_label.setText("正在清理旧安装,请稍候...")
+        self.current_stage = "installing"
+        self.installing_page.reset()
+        self.installing_page.start_installing()
+        self.installing_page.add_log_line("正在清理旧安装,请稍候...")
+        self.stacked_widget.setCurrentIndex(2)
+
         self.reinstall_worker = ReinstallWorker()
         self.reinstall_worker.complete.connect(self._on_reinstall_complete)
-        self.reinstall_worker.log_line.connect(self.env_check_page.status_label.setText)
+        self.reinstall_worker.log_line.connect(self.installing_page.add_log_line)
         self.reinstall_worker.start()
 
     def _on_reinstall_complete(self, ok: bool) -> None:

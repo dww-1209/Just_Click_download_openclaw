@@ -178,7 +178,9 @@ def force_rmtree(path: str | Path, on_log: Callable[[str], None] | None = None) 
     # 逐文件删除: 遇到锁住/权限不够的跳过,能删多少删多少。
     # 这等效 Mac 上 rm -rf 的语义 —— 不像 Windows rmdir /s /q 那样
     # "一个文件锁了整棵树留下",而是逐个文件尝试,失败的跳过,其他照删。
-    _rmtree_skip_locked(path_str)
+    # 传入 on_log 让删除大目录(node_modules ~100k 文件)时定期发心跳,
+    # 否则 Windows + Defender 下几十秒一句话不输出,用户会以为程序卡死。
+    _rmtree_skip_locked(path_str, on_log)
 
     # 目录已清空
     if not os.path.exists(path_str):
@@ -215,13 +217,21 @@ def force_rmtree(path: str | Path, on_log: Callable[[str], None] | None = None) 
         return False
 
 
-def _rmtree_skip_locked(root_path: str) -> None:
+def _rmtree_skip_locked(
+    root_path: str,
+    on_log: Callable[[str], None] | None = None,
+) -> None:
     """逐文件删除目录树,锁住/权限不够的文件跳过,能删多少删多少。
 
     自底向上(os.walk topdown=False)遍历:先删子文件再删父目录。
     单个文件失败只跳过这一个,不影响其他文件的删除。这是 Mac rm -rf 的行为。
+
+    Args:
+        root_path: 要删除的目录树根路径。
+        on_log: 可选的日志回调。删除大目录(node_modules)时,Windows+Defender
+            可能让总耗时达分钟级,期间没有任何输出会让用户以为程序卡死。
+            因此每删 5000 个 entry 输出一次心跳。
     """
-    # 收集删除列表(从叶子到根)
     entries: list[tuple[str, bool]] = []  # [(path, is_dir), ...]
     try:
         for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
@@ -232,6 +242,13 @@ def _rmtree_skip_locked(root_path: str) -> None:
     except OSError:
         pass
 
+    total = len(entries)
+    # 大目录(>10k entry)才出心跳,小目录避免噪音
+    heartbeat = on_log is not None and total > 10000
+    if heartbeat and on_log:
+        on_log(f"开始删除 {total} 个文件/目录(大型目录可能需要数分钟,请耐心等待)...")
+
+    deleted = 0
     for entry_path, is_dir in entries:
         try:
             if is_dir:
@@ -248,6 +265,12 @@ def _rmtree_skip_locked(root_path: str) -> None:
                     os.unlink(entry_path)
             except OSError:
                 pass  # 真删不掉就算了,最后剩下的会被 rename 出去
+
+        deleted += 1
+        # 每 5000 个 entry 一次心跳。频率不高于 ~30Hz 才不会拖累 UI(信号洪水),
+        # 5000 文件在 SSD+无 Defender 是 ~0.5s,Windows+Defender 是 ~30s。
+        if heartbeat and on_log and deleted % 5000 == 0:
+            on_log(f"已删除 {deleted}/{total} ({deleted * 100 // total}%)...")
 
 
 def remove_readonly(func: Callable[..., None], path: str, _: Any) -> None:

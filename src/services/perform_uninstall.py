@@ -155,7 +155,13 @@ class UninstallService(QObject):
             self.worker.cancel()
 
     def stop(self) -> None:
-        """强制停止卸载线程。请求取消并等待线程自然结束。"""
+        """强制停止卸载线程。请求取消,但不在主线程同步等待。
+
+        Windows 关键问题: worker.wait() 是阻塞调用,会让 Qt 主线程在用户点
+        "取消"或关窗口时同步等几十秒(force_rmtree 删 100k 个文件),5 秒内
+        不响应 DWM 探测就触发"程序无响应"弹窗。
+        改成只设置 cancel 标志,Worker 会在下一次 cancel_event 检查点自行退出。
+        若调用方需要阻塞等待(如 closeEvent),应自己用带 timeout 的 wait。
+        """
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
-            self.worker.wait()

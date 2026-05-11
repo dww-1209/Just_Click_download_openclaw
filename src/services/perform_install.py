@@ -187,8 +187,12 @@ class InstallService(QObject):
             self.worker.cancel()
 
     def stop(self) -> None:
-        """强制停止安装线程。先请求取消，再退出并等待线程结束。"""
+        """请求取消安装线程,但不在主线程同步等待。
+
+        Windows 上 worker.wait() 会让主线程同步阻塞几十秒(等 pnpm install
+        完成或被 kill),触发"程序无响应"弹窗。改为只设置 cancel 标志,Worker
+        会在下一个检查点退出,主线程不阻塞。
+        """
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
             self.worker.quit()
-            self.worker.wait()
