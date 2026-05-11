@@ -5,11 +5,11 @@
 """
 
 import subprocess
-import platform
 import os
 import time
+import shlex
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 from src.models.install import ErrorCategory, InstallErrorDetail
 from src.models.constants import is_windows, is_macos, is_linux
@@ -80,7 +80,7 @@ def get_hidden_startupinfo() -> None:
 
 
 def run_shell(
-    command: str,
+    command: Union[str, List[str]],
     timeout: float = 300,
     env: Optional[Dict[str, str]] = None,
     cwd: Optional[str] = None,
@@ -101,11 +101,13 @@ def run_shell(
     - PermissionError：分类为 PERMISSION_DENIED。
 
     Args:
-        command: 要执行的命令字符串。
+        command: 要执行的命令字符串，或参数列表。当传入列表时自动强制 shell=False，
+                 避免在 Windows 上因 shlex.quote 产生的不正确转义引发命令注入风险。
         timeout: 超时时间（秒），默认 300 秒。
         env: 额外的环境变量字典，会合并到当前进程环境中。
         cwd: 子进程工作目录。
         shell: 是否通过系统 shell 执行（默认 True，支持管道、重定向等）。
+               command 为列表时该参数被强制覆盖为 False。
         capture_output: 是否捕获 stdout/stderr（默认 True）。
         context: 错误上下文描述（如"正在下载 Node.js"），用于生成用户友好提示。
         stage: 当前阶段标识（如 DOWNLOADING, INSTALLING），用于错误分类统计。
@@ -114,6 +116,16 @@ def run_shell(
         ShellResult: 包含返回码、输出、耗时及结构化错误详情的执行结果。
     """
     start_time = time.time()
+
+    # 列表参数强制 shell=False，规避 Windows 路径含空格时 shlex.quote 转义错误
+    is_list_cmd = isinstance(command, list)
+    if is_list_cmd:
+        shell = False
+        # 用于日志展示和错误分类的命令字符串（仅展示，subprocess 收到的仍是列表）
+        display_command = " ".join(shlex.quote(part) for part in command)
+    else:
+        display_command = command
+
     kwargs = {
         "shell": shell,
         "cwd": cwd,
@@ -136,7 +148,7 @@ def run_shell(
     kwargs["encoding"] = "utf-8"
     kwargs["errors"] = "replace"
 
-    result = ShellResult(command=command)
+    result = ShellResult(command=display_command)
 
     try:
         proc = subprocess.run(command, timeout=timeout, **kwargs)
@@ -167,7 +179,7 @@ def run_shell(
             stage=stage,
             context=context,
             raw_error=f"命令执行超时（超过 {timeout} 秒）\n\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}",
-            command=command,
+            command=display_command,
             returncode=None,
         )
 
@@ -179,7 +191,7 @@ def run_shell(
             stage=stage,
             context=context,
             raw_error=str(e),
-            command=command,
+            command=display_command,
         )
 
     except PermissionError as e:
@@ -190,7 +202,7 @@ def run_shell(
             stage=stage,
             context=context,
             raw_error=str(e),
-            command=command,
+            command=display_command,
         )
 
     except (OSError, ValueError, TypeError, RuntimeError) as e:
@@ -202,7 +214,7 @@ def run_shell(
             stage=stage,
             context=context,
             raw_error=f"{type(e).__name__}: {e}",
-            command=command,
+            command=display_command,
         )
 
     # 如果命令执行了但返回非零，尝试根据输出内容进一步分类错误
@@ -435,62 +447,110 @@ def _get_suggestion(category: ErrorCategory) -> str:
     每条建议针对对应错误场景给出最常见的排查/解决步骤，
     在 UI 中以弹窗或提示区形式展示给用户。
 
+    部分场景的建议在不同平台差异显著（如 PERMISSION_DENIED、NETWORK_DNS、
+    ANTIVIRUS_BLOCKED），此处按当前运行平台动态选择文案。
+
     Args:
         category: 错误分类。
 
     Returns:
         str: 多行建议文本。
     """
+    # ----- 平台相关分支 -----
+    if category == ErrorCategory.PERMISSION_DENIED:
+        # 安装器走 asInvoker(无 UAC),所有产物都在用户家目录,
+        # "以管理员身份运行"几乎不会真正解决问题。Windows 的真实根因
+        # 大多是杀毒软件实时防护拦截写入。
+        if is_windows():
+            return (
+                "1. 暂时关闭 Windows Defender 实时防护或第三方杀毒软件后重试\n"
+                "2. 检查 ~/openclaw-cn 与 ~/.openclaw 所在磁盘是否可写\n"
+                "3. 在公司电脑上可能是组策略拦截,请联系 IT"
+            )
+        if is_macos():
+            return (
+                "1. 在「系统设置 → 隐私与安全性」中允许本程序运行\n"
+                "2. 确认 ~/openclaw-cn 与 ~/.openclaw 属于当前用户(终端执行 ls -l ~)\n"
+                "3. 公司 Mac 可能受 MDM 限制,请联系 IT"
+            )
+        return (
+            "1. 检查 ~/openclaw-cn 与 ~/.openclaw 是否当前用户可写\n"
+            "2. 若安装到非家目录(/opt 等),用 sudo 重试或改回家目录路径"
+        )
+
+    if category == ErrorCategory.NETWORK_DNS:
+        if is_windows():
+            return (
+                "1. 检查 DNS 设置,尝试更换为 114.114.114.114 或 8.8.8.8\n"
+                "2. 刷新 DNS 缓存:在命令提示符执行 ipconfig /flushdns\n"
+                "3. 检查是否使用了公司内网,可能需要联系 IT 开启访问权限"
+            )
+        if is_macos():
+            return (
+                "1. 检查 DNS 设置(系统设置 → 网络),尝试改为 114.114.114.114 或 8.8.8.8\n"
+                "2. 刷新 DNS 缓存:终端执行 sudo dscacheutil -flushcache\n"
+                "3. 公司 Wi-Fi 可能拦截外网,请联系 IT"
+            )
+        return (
+            "1. 检查 /etc/resolv.conf 或 NetworkManager 配置中的 DNS\n"
+            "2. 尝试将 DNS 改为 114.114.114.114 或 8.8.8.8\n"
+            "3. 刷新 DNS 缓存:执行 sudo systemd-resolve --flush-caches"
+        )
+
+    if category == ErrorCategory.ANTIVIRUS_BLOCKED:
+        if is_windows():
+            return (
+                "1. 暂时关闭 Windows Defender 或第三方杀毒软件\n"
+                "2. 将本程序添加到杀毒软件白名单\n"
+                "3. 右键安装包选择\"属性\",勾选\"解除锁定\"后重试"
+            )
+        if is_macos():
+            return (
+                "1. 在「系统设置 → 隐私与安全性」中允许本程序运行\n"
+                "2. 若被 Gatekeeper 拦截,通过启动项目下方「双击运行-*.command」绕过\n"
+                "3. 关闭第三方安全软件(如 Lulu / Little Snitch)后重试"
+            )
+        return (
+            "1. 关闭 SELinux/AppArmor 等强制访问控制,或调整策略后重试\n"
+            "2. 关闭第三方安全工具后重试"
+        )
+
+    # ----- 平台无关 -----
     suggestions = {
         ErrorCategory.NETWORK_TIMEOUT: (
             "1. 检查网络连接是否稳定\n"
-            "2. 尝试切换网络（如使用手机热点）\n"
+            "2. 尝试切换网络(如使用手机热点)\n"
             "3. 暂时关闭 VPN 或代理后重试\n"
-            "4. 如果网络较慢，请耐心等待，或稍后重试"
-        ),
-        ErrorCategory.NETWORK_DNS: (
-            "1. 检查 DNS 设置，尝试更换为 114.114.114.114 或 8.8.8.8\n"
-            "2. 刷新 DNS 缓存：在命令提示符执行 ipconfig /flushdns\n"
-            "3. 检查是否使用了公司内网，可能需要联系 IT 开启访问权限"
+            "4. 如果网络较慢,请耐心等待,或稍后重试"
         ),
         ErrorCategory.NETWORK_SSL: (
-            "1. 检查系统时间是否正确（错误的系统时间会导致 SSL 验证失败）\n"
-            "2. 如果是公司内网，可能是中间人设备拦截了 HTTPS，请联系 IT\n"
+            "1. 检查系统时间是否正确(错误的系统时间会导致 SSL 验证失败)\n"
+            "2. 如果是公司内网,可能是中间人设备拦截了 HTTPS,请联系 IT\n"
             "3. 尝试更换网络环境后重试"
         ),
         ErrorCategory.NETWORK_HTTP_ERROR: (
-            "1. 可能是镜像源暂时不可用，请稍后重试\n"
-            "2. 检查程序版本是否过旧，安装包路径可能已变更\n"
+            "1. 可能是镜像源暂时不可用,请稍后重试\n"
+            "2. 检查程序版本是否过旧,安装包路径可能已变更\n"
             "3. 尝试手动访问下载地址确认文件是否存在"
         ),
-        ErrorCategory.PERMISSION_DENIED: (
-            "1. 右键点击本程序，选择\"以管理员身份运行\"\n"
-            "2. 暂时关闭杀毒软件或防火墙后重试\n"
-            "3. 检查目标目录是否有写入权限"
-        ),
         ErrorCategory.DISK_FULL: (
-            "1. 清理磁盘空间（尤其是系统盘）\n"
+            "1. 清理磁盘空间(尤其是系统盘)\n"
             "2. 检查临时目录空间是否充足\n"
             "3. 卸载不常用的软件释放空间"
         ),
         ErrorCategory.PROCESS_TIMEOUT: (
-            "1. 网络较慢时可能需要更长时间，请重试\n"
+            "1. 网络较慢时可能需要更长时间,请重试\n"
             "2. 尝试连接更稳定的网络\n"
             "3. 暂时关闭其他占用带宽的程序"
         ),
         ErrorCategory.PROCESS_NOT_FOUND: (
-            "1. 系统缺少必要的组件（如 PowerShell 或 Git）\n"
-            "2. 如果是公司电脑，可能是组策略限制了程序使用，请联系 IT"
+            "1. 系统缺少必要的组件(如 PowerShell 或 Git)\n"
+            "2. 如果是公司电脑,可能是组策略限制了程序使用,请联系 IT"
         ),
         ErrorCategory.PROCESS_CRASHED: (
-            "1. 可能是安全软件阻止了安装程序，请暂时关闭杀毒软件后重试\n"
+            "1. 可能是安全软件阻止了安装程序,请暂时关闭杀毒软件后重试\n"
             "2. 检查是否已有相同程序正在运行\n"
             "3. 重启电脑后重试"
-        ),
-        ErrorCategory.ANTIVIRUS_BLOCKED: (
-            "1. 暂时关闭 Windows Defender 或第三方杀毒软件\n"
-            "2. 将本程序添加到杀毒软件白名单\n"
-            "3. 右键安装包选择\"属性\"，勾选\"解除锁定\"后重试"
         ),
         ErrorCategory.ALREADY_EXISTS: (
             "1. 等待其他安装程序完成后再试\n"
@@ -498,11 +558,10 @@ def _get_suggestion(category: ErrorCategory) -> str:
         ),
         ErrorCategory.UNKNOWN: (
             "1. 重试安装\n"
-            "2. 以管理员身份运行本程序\n"
-            "3. 重启电脑后重试\n"
-            "4. 查看高级模式中的完整日志，联系技术支持"
+            "2. 重启电脑后重试\n"
+            "3. 查看高级模式中的完整日志,联系技术支持"
         ),
     }
     return suggestions.get(
-        category, "请重试，如果问题持续请联系技术支持"
+        category, "请重试,如果问题持续请联系技术支持"
     )

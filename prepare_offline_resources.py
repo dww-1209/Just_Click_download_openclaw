@@ -34,7 +34,7 @@ from urllib.error import URLError
 # 默认版本号
 DEFAULT_NODEJS_VERSION = "22.14.0"
 DEFAULT_PNPM_VERSION = "10.10.0"
-DEFAULT_GIT_VERSION = "2.54.0"  # MinGit for Windows
+DEFAULT_GIT_VERSION = "2.54.0"  # 仅作历史参考；Windows 完整版 Git 资源需手动打包,见 README §4
 
 
 def detect_platform() -> str:
@@ -148,20 +148,23 @@ def download_pnpm(output_dir: Path, version: str, platform_name: str, arch: str)
 def download_git(output_dir: Path, version: str, platform_name: str, arch: str) -> Path | None:
     """下载/准备内部 git 资源。
 
-    Windows：从 GitHub releases 下载 MinGit 便携版（zip 格式）。
+    Windows：检查是否已存在 git-*.zip（手动准备的完整版 Git for Windows 便携包），
+            不再自动下载 MinGit（功能受限,且与项目期望的完整布局不一致）。
     macOS：内部 git 需要手动从 Xcode CLT 复制，本函数仅做存在性检查。
     Linux：暂不支持。
 
     Returns:
-        下载后的文件路径，或 None（如果平台不需要/不支持）。
+        已存在的 zip 路径,或 None(未找到/不需要/不支持)。
     """
     if platform_name == "windows":
-        git_zip = output_dir / f"git-windows-{arch}.zip"
-        if git_zip.exists():
-            print(f"内部 git 已存在: {git_zip}")
-            return git_zip
+        # 1) 优先复用已存在的 git-*.zip（支持手动打包的任意文件名,兼容 README §4 的手动流程）
+        existing = sorted(output_dir.glob("git-*.zip"))
+        if existing:
+            print(f"已检测到 Windows git 资源: {existing[0].name}")
+            return existing[0]
 
-        # 1. 检测系统 git 安装位置
+        # 2) 自动从系统 Git for Windows 安装目录打包，避免手动操作
+        git_zip = output_dir / f"git-windows-{arch}.zip"
         git_exe = shutil.which("git")
         if git_exe:
             git_exe_path = Path(git_exe).resolve()
@@ -177,7 +180,7 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
                 with tempfile.TemporaryDirectory(prefix="git-win-") as tmpdir:
                     stage = Path(tmpdir) / f"git-windows-{arch}"
 
-                    # 复制必要目录
+                    # 复制必要目录(完整版 Git for Windows，不能用 MinGit 精简版)
                     dirs_to_copy = ["cmd", "mingw64", "usr"]
                     for dname in dirs_to_copy:
                         src = git_root / dname
@@ -186,7 +189,6 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
                             shutil.copytree(src, dst, dirs_exist_ok=True)
                             print(f"  复制: {dname}/")
 
-                    # 打包
                     print(f"  正在打包: {git_zip}")
                     try:
                         shutil.make_archive(
@@ -205,10 +207,15 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
         else:
             print("未在 PATH 中找到 git.exe。")
 
+        # 3) 自动失败 → 给出手动准备指引（详细步骤见 README §4）
         print(
-            f"请在已安装 Git for Windows 的机器上运行此脚本，\n"
-            f"或手动将 git 安装目录打包为 zip 放置到:\n"
-            f"  -> {git_zip}"
+            "未找到 Windows git 资源(resources/windows/git-*.zip)。\n"
+            "请在已装 Git for Windows 的机器上运行本脚本以自动打包，\n"
+            "或手动准备(见 README §4):\n"
+            "  1. 进入完整版 Git 安装目录(如 D:\\Git\\)\n"
+            "  2. zip -r -q -6 git-<version>-windows-x64.zip . -x \"unins000.*\" \"tmp/*\" \"tmp\"\n"
+            "  3. 放入 resources/windows/(文件名必须以 git- 开头)\n"
+            "在线版安装器可直接从网络下载 git，本资源仅离线版需要。"
         )
         return None
 
@@ -470,7 +477,7 @@ def main() -> None:
     parser.add_argument(
         "--git-version",
         default=DEFAULT_GIT_VERSION,
-        help=f"MinGit 版本 (默认: {DEFAULT_GIT_VERSION})",
+        help=f"git 版本占位 (默认: {DEFAULT_GIT_VERSION},当前未使用,Windows git 需手动打包)",
     )
 
     args = parser.parse_args()

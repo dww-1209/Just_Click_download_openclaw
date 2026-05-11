@@ -1,4 +1,4 @@
-"""安装器抽象基类
+"""安装器共享基类
 
 职责:为所有安装器实现类提供共享工具和横切关注钩子,
 消除 _log()、is_cancelled、cancel()、命令包装器创建、Node.js 版本检查等
@@ -7,7 +7,8 @@
 设计原则:
 - 本基类是可选的:实现类可以选择继承本基类(获得默认实现),
   或仅实现 IInstaller Protocol(保持灵活)。
-- 基类提供的是"能力"而非"契约",真正的契约仍由 Protocol 定义。
+- 因为继承本基类不是契约约束,这里没有用 ABC/@abstractmethod;
+  真正的契约由 src/contracts/define_installer.py 的 IInstaller Protocol 定义。
 - 所有子类共享的纯逻辑(无平台特化的 streaming 子进程管理)集中在此处,
   平台/runtime 特化逻辑仍由各 adapter 自行实现。
 """
@@ -22,7 +23,6 @@ import sys
 import tarfile
 import time
 import zipfile
-from abc import ABC
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -35,8 +35,8 @@ from src.models.utils import safe_tar_extract
 _NODE_VERSION_CHECK_TIMEOUT = 10
 
 
-class BaseInstaller(ABC):
-    """安装器抽象基类。
+class BaseInstaller:
+    """安装器共享基类。
 
     提供以下默认实现:
     - 统一日志记录(_log):自动过滤 ANSI 颜色码、追加时间戳并回调 UI。
@@ -469,7 +469,17 @@ exec "$GIT_BIN" "$@"
             self._log(f"创建 git wrapper 失败: {e}")
 
     def _setup_git_windows(self, git_dest: Path) -> None:
-        """Windows：解压 MinGit 便携版并加入 PATH。"""
+        """Windows：解压完整版 Git for Windows 便携包并加入 PATH。
+
+        资源要求 (resources/windows/git-*.zip):
+        - 完整版 Git for Windows(包含 cmd/、bin/、mingw64/、usr/ 的便携布局),
+          不要用 MinGit 精简版,完整版功能齐全且与 in-tree git 行为一致。
+        - 来源: 已装 Git for Windows 的机器上,把 安装目录(如 C:\\Program Files\\Git\\)
+          内部内容直接 zip,排除 unins000.* 和 tmp/。zip 根直接是 cmd/、bin/ 等,
+          不要带额外的顶层目录(否则只能命中 rglob 兜底)。
+        - 命名: 必须以 git- 开头(匹配 glob "git-*.zip"),例如
+          git-2.53.0-windows-x64.zip。
+        """
         git_zip_pattern = "git-*.zip"
         matches = sorted(Path(self._resource_dir).glob(git_zip_pattern))
         if not matches:

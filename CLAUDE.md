@@ -149,9 +149,75 @@ git <command>
 - 设置 `GIT_EXEC_PATH` 环境变量让内部 git 找到辅助程序
 - 创建 wrapper 前会先**测试执行**内部 git（`git --version`），只有测试通过才创建 wrapper
 
-### 6. `force_rmtree` — 绕过 Python 3.12+ 的 shutil.rmtree 限制
+### 6. `force_rmtree` — 平台统一的三步删除
 
-Python 3.12 的 `shutil.rmtree` 使用 `_rmtree_safe_fd`，`onerror` 回调中调用 `os.open(path)` 会因缺少 `flags` 参数而失败，导致子树未被删除。`src/models/utils.py` 中的 `force_rmtree()` 直接用平台原生命令：`chmod -R +w && rm -rf`（macOS/Linux）或 `attrib -R && rmdir /s /q`（Windows）。
+Python 3.12 的 `shutil.rmtree` 使用 `_rmtree_safe_fd`，`onerror` 回调中调用 `os.open(path)` 会因缺少 `flags` 参数而失败。`src/models/utils.py` 中的 `force_rmtree()` 自己实现，三平台统一逻辑：
+
+1. **去只读属性**：`attrib -R /S /D`（Win）或 `chmod -R +w`（Mac/Linux）
+2. **逐文件删除**：`_rmtree_skip_locked()` — `os.walk` 自底向上遍历，逐个 `os.unlink` / `os.rmdir`。单个文件失败（锁住/权限不够）只跳过这一个，不影响其他文件。**不用 `rmdir /s /q`（Windows 全或无）或 `rm -rf`（单个失败即停）**。
+3. **残留 rename 兜底**：还有删不掉的文件就用 `os.rename` 把目录移出权威路径（`xxx._residue.<ts>`），残渣后台清理。NTFS rename 不受子文件锁影响，几乎瞬间完成。
+
+**注意**：永远不要用 `cmd /c rmdir /s /q` 清大目录 — 一个子文件被锁整棵树保留。**永远不要在 force_rmtree 里加 retry 循环或 taskkill** — 那是把 Windows 文件锁问题复杂化的死胡同，逐文件跳过 + rename 兜底就够了。
+
+### 7. Windows 与 Mac 关键差异
+
+以下差异是在 Windows 上反复踩坑后总结的，**修改任一项前必须确认两边行为一致**：
+
+#### 7.1 PATHEXT / shell=False — Windows 头号坑
+
+Windows 上 `pnpm`、`npm`、`openclaw-cn` 实际是 **`.cmd` 批处理包装器**，不是 `.exe`。`subprocess.Popen(cmd, shell=False)` 走 `CreateProcess`，**不查 PATHEXT**，裸名不带 `.cmd` 后缀就报 `[WinError 2] 系统找不到指定的文件`。`where` 命令和 `shell=True`（走 cmd.exe）会查 PATHEXT，所以出现"检测说已存在，Popen 说找不到"的经典矛盾。
+
+**铁律**：任何 Windows 上 `shell=False` 的子进程调用，`cmd[0]` 必须先 `shutil.which(head, path=env["PATH"])` 解析成完整 `.cmd` 路径。`shutil.which` 查 PATHEXT，会把 `pnpm` 解析成 `C:\Users\xxx\AppData\Roaming\npm\pnpm.cmd`。
+
+中过招的位置（全部已修，修改时注意回归）：
+- `install_openclaw.py:_run_cmd_with_streaming` — pnpm config/install/build
+- `manage_openclaw.py:_run_openclaw_command` — openclaw-cn config/onboard
+- `manage_openclaw.py:_start_gateway` — gateway 前台启动的 Popen
+- `cleanup_reinstall.py:_quiet_run` — npm uninstall 用 `"npm.cmd"` 硬编码
+
+#### 7.2 命令包装器路径
+
+| | Windows | macOS / Linux |
+|---|---|---|
+| 目录 | `%APPDATA%\Roaming\npm\` | `~/.local/bin/` |
+| 文件名 | `openclaw.cmd`, `openclaw-cn.cmd` | `openclaw`, `openclaw-cn` |
+| 删除 | `os.remove(.cmd)` | `os.remove(无后缀)` |
+
+**`cleanup_for_reinstall` 必须删 wrapper**，不仅删目录。之前只删了 `~/openclaw-cn` 和 `~/.openclaw`，漏了 wrapper，导致重装后终端 `openclaw` 命令还在。对齐了 `manager.uninstall()` 的逻辑。
+
+#### 7.3 进程管理
+
+| 操作 | Windows | macOS / Linux |
+|---|---|---|
+| 查端口占用 | `netstat -ano` | `lsof -ti :<port>` |
+| 杀进程 | `taskkill /F /IM <name> /T` | `kill -9 <pid>` |
+| 隐藏子进程窗口 | `STARTUPINFO(SW_HIDE)` + `CREATE_NO_WINDOW` | 不需要 |
+
+所有子进程调用统一通过 `windows_hidden_subprocess_kwargs()` 获取隐藏参数，**不要在 Adapters/Core 层手写 STARTUPINFO**。
+
+#### 7.4 Git 浅克隆（国内 Gitee）
+
+在线版从 Gitee 克隆 openclaw-cn 必须带这些参数（否则 RPC failed / curl 18 频繁中断）：
+```
+git -c http.postBuffer=524288000 -c core.compression=0 clone --depth 1 --single-branch
+```
+- `--depth 1 --single-branch`：浅克隆，只拉 HEAD。安装器不需要历史。
+- `http.postBuffer=524288000`：缓冲提到 500MB，解决 "transfer closed with outstanding read data"。
+- `core.compression=0`：关客户端压缩，服务端已经压缩过。
+
+#### 7.5 pnpm 检测不能单靠 `where`
+
+`where pnpm` 找到 `.cmd` 不代表 pnpm 能跑（可能是卸载残留的孤儿包装器）。必须再跑 `pnpm --version` 实机验证，返回非零就当没装，走 `npm install -g pnpm` 重装。`install_openclaw.py:_step2_check_and_install_pnpm` 已实现。
+
+#### 7.6 卸载/重装清理清单
+
+重装时 `cleanup_for_reinstall` 必须清理以下所有项（之前漏了 wrapper）：
+1. 杀 Gateway 进程（`kill_port_process(18789)`，不调 CLI）
+2. 删 `~/openclaw-cn`、`~/.openclaw`（`force_rmtree`）
+3. **删 wrapper**（Windows `%APPDATA%\npm\*.cmd`，Mac `~/.local/bin/openclaw*`）
+4. `npm uninstall -g openclaw-cn openclaw`（兼容旧版）
+
+卸载器 `manager.uninstall()` 额外清理 `~/.openclaw-git`、`~/.openclaw-node`、shell rc 文件中的 PATH 条目。
 
 ## 修改方向参考
 

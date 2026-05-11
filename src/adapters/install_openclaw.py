@@ -1,12 +1,11 @@
 import subprocess
-import platform
 import os
+import platform  # 仅用于 platform.machine() 获取 CPU 架构；OS 判断统一走 is_windows/is_macos/is_linux
 import signal
 import shutil
 import time
 import sys
 import stat
-import shlex
 import tarfile
 import threading
 import zipfile
@@ -14,8 +13,17 @@ import zipfile
 from pathlib import Path
 from typing import List, Callable, Optional
 
+from src.models.constants import (
+    is_windows, is_macos, is_linux,
+    TIMEOUT_SHORT_CMD, TIMEOUT_OPENCLAW_CMD, TIMEOUT_INSTALL_CMD,
+    TIMEOUT_NODE_MSI_INSTALL, TIMEOUT_GIT_INSTALL_MAX, TIMEOUT_BUILD_CMD,
+    NODEJS_MSI_MIRRORS, NODEJS_PKG_MIRRORS,
+    REGISTRY_NPM_MIRROR, REGISTRY_CLAWHUB,
+    NODEJS_VERSION, NODEJS_ARCHIVE_MIRROR_BASES,
+)
+
 # 只在非 Windows 平台导入 select（Windows 下 select.select 不支持文件描述符）
-if platform.system().lower() != "windows":
+if not is_windows():
     import select
 
 from src.models.install import (
@@ -29,14 +37,6 @@ from src.models.install import (
 )
 from src.adapters.install_git import ensure_git_installed
 from src.adapters.run_shell import run_shell, ShellResult
-from src.models.constants import (
-    is_windows, is_macos, is_linux,
-    TIMEOUT_SHORT_CMD, TIMEOUT_OPENCLAW_CMD, TIMEOUT_INSTALL_CMD,
-    TIMEOUT_NODE_MSI_INSTALL, TIMEOUT_GIT_INSTALL_MAX, TIMEOUT_BUILD_CMD,
-    NODEJS_MSI_MIRRORS, NODEJS_PKG_MIRRORS,
-    REGISTRY_NPM_MIRROR, REGISTRY_CLAWHUB,
-    NODEJS_VERSION, NODEJS_ARCHIVE_MIRROR_BASES,
-)
 from src.models.utils import ensure_dir_in_path, ensure_local_bin_in_path, force_rmtree, safe_tar_extract
 from src.contracts.define_base_installer import BaseInstaller
 from src.contracts.define_decorators import log_method
@@ -55,13 +55,18 @@ class OpenClawInstaller(BaseInstaller):
         """初始化安装器，自动识别或接受外部传入的操作系统类型。
 
         Args:
-            os_type: 可选，强制指定操作系统类型。默认通过 platform.system() 自动判断。
-                     会将 "darwin" 统一映射为 "macos"，简化后续分支判断。
+            os_type: 可选，强制指定操作系统类型（"windows" / "macos" / "linux"）。
+                     默认通过 is_windows()/is_macos()/is_linux() 自动判断。
         """
         super().__init__()
-        self.os_type = os_type or platform.system().lower()
-        if is_macos():
+        if os_type:
+            self.os_type = os_type
+        elif is_windows():
+            self.os_type = "windows"
+        elif is_macos():
             self.os_type = "macos"
+        else:
+            self.os_type = "linux"
 
         self.process: Optional[subprocess.Popen] = None
         self.start_time: float = 0.0
@@ -229,7 +234,9 @@ class OpenClawInstaller(BaseInstaller):
             # ========================
             # 阶段 1：清理残留目录
             # ========================
-            # 避免旧版本文件与新构建产物冲突，尤其是 npm 全局包与本地仓库
+            # 避免旧版本文件与新构建产物冲突。注意:如果是从"重新下载"进来的,
+            # ReinstallWorker 已经清理过 ~/openclaw-cn 和 ~/.openclaw,这里会跳过;
+            # 但 npm 全局 node_modules 目录(Windows)可能残留,仍需兜底。
             cleanup_dirs = [
                 os.path.expanduser("~\\openclaw") if is_windows() else os.path.expanduser("~/.openclaw"),
                 os.path.expanduser("~\\openclaw-cn") if is_windows() else os.path.expanduser("~/openclaw-cn"),
@@ -240,6 +247,9 @@ class OpenClawInstaller(BaseInstaller):
                     os.path.expanduser(r"~\AppData\Roaming\npm\node_modules\openclaw"),
                     os.path.expanduser(r"~\AppData\Roaming\npm\node_modules\openclaw-cn"),
                 ])
+            has_cleanup = any(os.path.exists(d) for d in cleanup_dirs)
+            if has_cleanup:
+                self._log("正在清理残留目录...")
             for d in cleanup_dirs:
                 if os.path.exists(d):
                     if force_rmtree(d, self._log):
@@ -300,14 +310,13 @@ class OpenClawInstaller(BaseInstaller):
         Returns:
             归档文件名(如 node-v22.14.0-darwin-arm64.tar.gz),不支持的平 台返回 None。
         """
-        system = platform.system().lower()
         machine = platform.machine().lower()
         version = NODEJS_VERSION
-        if system == "darwin":
+        if is_macos():
             if machine in ("arm64", "aarch64"):
                 return f"node-v{version}-darwin-arm64.tar.gz"
             return f"node-v{version}-darwin-x64.tar.gz"
-        elif system == "windows" or system == "win32":
+        elif is_windows():
             return f"node-v{version}-win-x64.zip"
         else:  # linux
             if machine in ("arm64", "aarch64"):
@@ -497,15 +506,21 @@ class OpenClawInstaller(BaseInstaller):
         self._log("Node.js 安装成功")
         return None
 
-    def _run_in_project_dir(self, cmd: list[str], timeout: float = 300, progress: InstallProgress = None) -> int:
+    def _run_in_project_dir(self, cmd: list[str], silence_timeout: float = 300, progress: InstallProgress = None) -> int:
         """在 project_dir 目录下执行命令，并可选地发送进度更新。
 
         安全策略：使用 shell=False + cwd 参数，彻底避免命令注入风险。
+
+        Args:
+            cmd: 要执行的命令参数列表。
+            silence_timeout: 无输出静默超时阈值（秒）。这不是命令总耗时上限，
+                而是"连续无输出多久判定假死"的阈值；详见 _run_cmd_with_streaming 文档。
+            progress: 可选的进度对象，会在执行前推送到 UI。
         """
         if progress and self._inst_on_progress:
             self._inst_on_progress(progress)
         return self._run_cmd_with_streaming(
-            cmd, self._inst_env, timeout,
+            cmd, self._inst_env, silence_timeout,
             self._inst_startupinfo, self._inst_creationflags, self._inst_on_log,
             cwd=str(self._inst_project_dir),
         )
@@ -524,7 +539,20 @@ class OpenClawInstaller(BaseInstaller):
     def _step2_check_and_install_pnpm(self) -> Optional[InstallResult]:
         """步骤 2：检查/安装 pnpm。"""
         self._log("检查 pnpm 环境...")
-        if not self._which_cmd("pnpm"):
+        # 先用 where/which 快查 PATH 是否有 pnpm 命令包装器,有再跑一次 --version 验证它能不能用。
+        # 单查 where 不够 —— Windows 上 npm 卸载偶尔会留下孤儿 pnpm.cmd 壳子(指向已删的 node_modules),
+        # where 看到文件就算命中,但实际跑会报"找不到模块"或 silent 失败。
+        pnpm_works = False
+        if self._which_cmd("pnpm"):
+            verify = self._run_shell_cmd("pnpm --version", timeout=30)
+            ver_out = (verify.stdout or "").strip()
+            if verify.returncode == 0 and ver_out:
+                self._log(f"pnpm {ver_out} 已存在")
+                pnpm_works = True
+            else:
+                err = (verify.stderr or verify.stdout or "无输出").strip()
+                self._log(f"pnpm 包装器存在但运行失败 ({err}),将重新安装...")
+        if not pnpm_works:
             self._log("正在安装 pnpm...")
             if self._inst_on_progress:
                 self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=15, message="正在安装系统依赖...", current_task="安装 pnpm"))
@@ -585,8 +613,6 @@ class OpenClawInstaller(BaseInstaller):
                             self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}")
                 except (OSError, subprocess.SubprocessError) as e:
                     self._log(f"获取 npm 全局 bin 路径失败: {e}")
-        else:
-            self._log("pnpm 已存在")
         return None
 
     def _step3_clone_repository(self) -> Optional[InstallResult]:
@@ -599,16 +625,19 @@ class OpenClawInstaller(BaseInstaller):
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.DOWNLOADING, progress_percent=20, message="正在下载 OpenClaw...", current_task="git clone"))
 
-        # 保险：如果目标目录仍存在（前期清理未彻底），先强制删除
+        # 保险：如果目标目录仍存在（前期清理未彻底），先强制删除。
+        # 删不掉就改名(force_rmtree 内部已有 rename 兜底),改名也失败就用临时目录。
+        target_dir = str(self._inst_project_dir)
         if self._inst_project_dir.exists():
-            self._log(f"目标目录仍存在，尝试强制删除: {self._inst_project_dir}")
+            self._log(f"目标目录仍存在,尝试清理: {self._inst_project_dir}")
             force_rmtree(self._inst_project_dir, self._log)
-            if self._inst_project_dir.exists():
-                return InstallResult(
-                    status=InstallStatus.FAILED, message="目录清理失败",
-                    error_message=f"无法删除旧目录 {self._inst_project_dir}，可能是文件权限问题。\n\n建议：\n1. 手动执行: chmod -R +w {self._inst_project_dir} && rm -rf {self._inst_project_dir}\n2. 重启电脑后重试",
-                    log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
-                )
+        if self._inst_project_dir.exists():
+            # force_rmtree 两次都失败了(rmdir + rename),目录被外部进程锁死。
+            # 不硬阻断安装,改为 clone 到临时目录再 rename 过去。
+            import time as _ctime
+            fallback_dir = Path(f"{target_dir}.tmp.{int(_ctime.time())}")
+            self._log(f"目录被占用,clone 到临时位置: {fallback_dir}")
+            self._inst_project_dir = fallback_dir
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
@@ -616,9 +645,33 @@ class OpenClawInstaller(BaseInstaller):
                 return self._build_cancelled_result()
 
             self._log(f"第 {attempt}/{max_retries} 次尝试克隆...")
-            clone_result = self._run_shell_cmd(
-                f'git clone https://gitee.com/OpenClaw-CN/openclaw-cn.git {shlex.quote(str(self._inst_project_dir))}',
+            # 用列表参数 + shell=False 调用，规避 Windows 路径含空格时 shlex.quote 转义错误
+            #
+            # 几个关键参数:
+            # - --depth 1 + --single-branch: 浅克隆,只拉默认分支的 HEAD 这一个 commit。
+            #   安装器只需要源码用于 pnpm install/build,不需要历史。完整克隆 6500+ 文件
+            #   带全部历史在 Gitee 国内网络上经常 RPC failed / early EOF;浅克隆把传输量
+            #   缩到几十 MB,断流概率大幅下降。
+            # - http.postBuffer=524288000: HTTP 接收缓冲增大到 500MB(默认 1MB)。
+            #   sideband 包写满缓冲就会触发 "transfer closed with outstanding read data",
+            #   这是用户日志里那个 curl 18 的根因。
+            # - core.compression=0: 关 client 端压缩。Gitee 服务端已经压缩过,客户端再
+            #   解压+压缩反而占 CPU 拖慢传输,关掉对网络弱机器有帮助。
+            clone_result = run_shell(
+                [
+                    "git",
+                    "-c", "http.postBuffer=524288000",
+                    "-c", "core.compression=0",
+                    "clone",
+                    "--depth", "1",
+                    "--single-branch",
+                    "https://gitee.com/OpenClaw-CN/openclaw-cn.git",
+                    str(self._inst_project_dir),
+                ],
                 timeout=TIMEOUT_INSTALL_CMD,
+                env=self._inst_env,
+                context="从 Gitee 克隆 openclaw-cn 仓库",
+                stage="DOWNLOADING",
             )
             if clone_result.stdout:
                 for line in clone_result.stdout.splitlines()[-50:]:
@@ -663,14 +716,14 @@ class OpenClawInstaller(BaseInstaller):
 
     def _step4_set_pnpm_registry(self) -> None:
         """步骤 4：设置 pnpm 国内镜像。"""
-        self._run_in_project_dir(['pnpm', 'config', 'set', 'registry', REGISTRY_NPM_MIRROR], timeout=TIMEOUT_OPENCLAW_CMD)
+        self._run_in_project_dir(['pnpm', 'config', 'set', 'registry', REGISTRY_NPM_MIRROR], silence_timeout=TIMEOUT_OPENCLAW_CMD)
 
     def _step5_pnpm_install_deps(self) -> Optional[InstallResult]:
         """步骤 5：pnpm install（安装项目依赖）。"""
         self._log("正在安装依赖...")
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=35, message="正在安装依赖...", current_task="pnpm install"))
-        rc = self._run_in_project_dir(['pnpm', 'install'], timeout=TIMEOUT_BUILD_CMD)
+        rc = self._run_in_project_dir(['pnpm', 'install'], silence_timeout=TIMEOUT_BUILD_CMD)
         if rc != 0:
             recent_logs = "\n".join(self.log_lines[-30:])
             return InstallResult(
@@ -733,14 +786,13 @@ class OpenClawInstaller(BaseInstaller):
             return
 
         # 确定当前平台对应的 .node 文件名
-        system = platform.system().lower()
         machine = platform.machine().lower()
-        if system == "darwin":
+        if is_macos():
             if machine in ("arm64", "aarch64"):
                 node_file = "matrix-sdk-crypto.darwin-arm64.node"
             else:
                 node_file = "matrix-sdk-crypto.darwin-x64.node"
-        elif system == "windows" or system == "win32":
+        elif is_windows():
             if machine == "arm64":
                 node_file = "matrix-sdk-crypto.win32-arm64-msvc.node"
             elif machine in ("amd64", "x86_64", "x64"):
@@ -793,7 +845,7 @@ class OpenClawInstaller(BaseInstaller):
         self._log("正在构建前端界面...")
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=55, message="正在构建前端界面...", current_task="pnpm ui:build"))
-        rc = self._run_in_project_dir(['pnpm', 'ui:build'], timeout=TIMEOUT_INSTALL_CMD)
+        rc = self._run_in_project_dir(['pnpm', 'ui:build'], silence_timeout=TIMEOUT_INSTALL_CMD)
         if rc != 0:
             recent_logs = "\n".join(self.log_lines[-20:])
             return InstallResult(
@@ -833,7 +885,7 @@ class OpenClawInstaller(BaseInstaller):
         self._log("正在构建核心服务...")
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=70, message="正在构建核心服务...", current_task="pnpm build"))
-        rc = self._run_in_project_dir(['pnpm', 'build'], timeout=TIMEOUT_INSTALL_CMD)
+        rc = self._run_in_project_dir(['pnpm', 'build'], silence_timeout=TIMEOUT_INSTALL_CMD)
         if rc != 0:
             recent_logs = "\n".join(self.log_lines[-20:])
             return InstallResult(
@@ -862,7 +914,7 @@ class OpenClawInstaller(BaseInstaller):
             self._inst_on_progress(InstallProgress(stage=InstallStage.CONFIGURING, progress_percent=85, message="正在初始化配置...", current_task="pnpm openclaw onboard"))
         rc = self._run_in_project_dir(
             ['pnpm', 'openclaw', 'onboard', '--non-interactive', '--accept-risk', '--mode', 'local', '--skip-skills', '--skip-health', '--no-install-daemon', '--node-manager', 'pnpm', '--skip-channels'],
-            timeout=TIMEOUT_INSTALL_CMD,
+            silence_timeout=TIMEOUT_INSTALL_CMD,
         )
         if rc != 0:
             self._log("onboard 返回非零，但可能已部分完成，继续尝试...")
@@ -904,6 +956,66 @@ class OpenClawInstaller(BaseInstaller):
             ensure_local_bin_in_path(self._inst_on_log)
             return str(local_bin)
 
+    def _persist_user_path_via_winreg(self, new_dir: str) -> bool:
+        """通过 winreg 将目录追加到 HKCU\\Environment\\Path（用户级 PATH）。
+
+        为何不用 setx：
+        - setx 有 1024 字符截断限制，开发机 PATH 容易超过。
+        - setx 写入的 %PATH% 在 cmd 中展开时会合并 USER + SYSTEM 路径，
+          再写回 USER PATH 时会把系统路径重复写进用户 PATH。
+        - winreg 直接读写注册表，无截断、不混淆 USER/SYSTEM。
+
+        实现要点：
+        1. 仅修改 HKCU\\Environment\\Path（用户级），不需要管理员权限。
+        2. 保留原始值类型（REG_EXPAND_SZ 用于含 %VAR% 的展开变量；REG_SZ 用于纯字符串）。
+        3. 写入后广播 WM_SETTINGCHANGE，让 Explorer / 新启动的 cmd 立即读取新值。
+        4. 任何异常都吞掉记日志，不影响主流程（PATH 持久化失败只影响后续新终端，本进程已通过 _inst_env 注入）。
+
+        Args:
+            new_dir: 要追加的绝对目录路径。
+
+        Returns:
+            True 表示已写入或已存在；False 表示发生异常。
+        """
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE
+            ) as key:
+                try:
+                    current_value, value_type = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    current_value, value_type = "", winreg.REG_EXPAND_SZ
+
+                # 解析现有 PATH，防止重复添加（大小写不敏感比对）
+                existing = [p for p in current_value.split(";") if p]
+                if any(new_dir.lower() == p.strip().lower() for p in existing):
+                    self._log(f"用户 PATH 已包含 {new_dir}，无需重复写入")
+                    return True
+
+                new_value = (current_value.rstrip(";") + ";" + new_dir) if current_value else new_dir
+                winreg.SetValueEx(key, "Path", 0, value_type, new_value)
+                self._log(f"已通过 winreg 将 {new_dir} 写入用户 PATH")
+
+            # 广播 WM_SETTINGCHANGE，通知系统环境变量变更
+            try:
+                import ctypes
+                HWND_BROADCAST = 0xFFFF
+                WM_SETTINGCHANGE = 0x001A
+                SMTO_ABORTIFHUNG = 0x0002
+                result = ctypes.c_long()
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                    "Environment", SMTO_ABORTIFHUNG, 5000, ctypes.byref(result),
+                )
+            except (OSError, AttributeError) as e:
+                self._log(f"广播环境变量变更失败（非致命）: {e}")
+
+            return True
+        except (OSError, ImportError) as e:
+            self._log(f"通过 winreg 写入用户 PATH 失败: {e}")
+            return False
+
     def _step10_refresh_path_and_verify(self, npm_bin_dir: str) -> Optional[InstallResult]:
         """步骤 10：刷新 PATH 并验证命令可用性。"""
         self._log("刷新 PATH 并验证 openclaw 命令...")
@@ -935,10 +1047,9 @@ class OpenClawInstaller(BaseInstaller):
 
         if not self._verify_command("openclaw-cn") and not self._verify_command("openclaw"):
             if self._inst_is_win and npm_bin_dir:
-                try:
-                    self._run_shell_cmd(f'setx PATH "%PATH%;{npm_bin_dir}"', timeout=TIMEOUT_NODE_MSI_INSTALL)
-                except (OSError, subprocess.SubprocessError):
-                    pass
+                # 用 winreg 直接写 HKCU\Environment\Path，规避 setx 的 1024 字符截断
+                # 以及 %PATH% 在 cmd 展开时合并 USER+SYSTEM 导致的 PATH 污染。
+                self._persist_user_path_via_winreg(npm_bin_dir)
                 self._inst_env["Path"] = os.environ.get("Path", "")
                 if not self._verify_command("openclaw-cn") and not self._verify_command("openclaw"):
                     return InstallResult(
@@ -1087,7 +1198,7 @@ class OpenClawInstaller(BaseInstaller):
         self,
         cmd: list[str],
         env: dict,
-        timeout: float,
+        silence_timeout: float,
         startupinfo,
         creationflags: int,
         on_log: Callable[[str], None],
@@ -1099,13 +1210,15 @@ class OpenClawInstaller(BaseInstaller):
 
         设计意图：
         - pnpm install / build 等命令耗时很长，用户需要看到实时进度以避免焦虑。
-        - 某些网络/构建过程会假死（持续无输出），通过 last_output_time 检测并在超过 timeout 后强制 kill。
+        - 某些网络/构建过程会假死（持续无输出），通过 last_output_time 检测并在超过 silence_timeout 后强制 kill。
         - 每 30 秒输出一次心跳日志，告知用户"程序仍在工作"。
 
         Args:
             cmd: 要执行的命令参数列表（如 ["pnpm", "install"]）。
             env: 环境变量字典。
-            timeout: 无输出超时阈值（秒）。
+            silence_timeout: **无输出**静默超时阈值（秒）。注意这不是命令总耗时上限，
+                而是"连续多少秒没有任何输出就判定为假死"。命令实际可以运行远超此值，
+                只要它不停产生输出。
             startupinfo: Windows 专用启动信息（隐藏窗口）。
             creationflags: Windows 专用创建标志。
             on_log: 日志回调。
@@ -1114,6 +1227,19 @@ class OpenClawInstaller(BaseInstaller):
         Returns:
             int: 进程退出码；若被强制终止则返回 -1。
         """
+        # Windows + shell=False + Popen 不查 PATHEXT —— 用户装的 pnpm 实际是
+        # %APPDATA%\Roaming\npm\pnpm.cmd 这种批处理包装器,直接传 ["pnpm", ...]
+        # 给 Popen 会报 [WinError 2] 系统找不到指定的文件。shutil.which 会查
+        # PATHEXT,把 cmd[0] 解析成完整的 .cmd 路径再交给 Popen 就能执行(.cmd 文件
+        # CreateProcess 接收完整路径时会自动通过 cmd.exe 执行)。
+        # `where` 命中但 Popen 找不到 = 这一类 bug 的典型特征。
+        if self._inst_is_win and cmd:
+            head = cmd[0]
+            # 已经是完整路径(含分隔符)或已带扩展名就不再 which
+            if not (os.path.sep in head or "/" in head) and not os.path.splitext(head)[1]:
+                resolved = shutil.which(head, path=env.get("PATH"))
+                if resolved:
+                    cmd = [resolved] + cmd[1:]
         self._log(f"启动命令: {' '.join(cmd)}")
         kwargs = {
             "shell": False,
@@ -1161,8 +1287,8 @@ class OpenClawInstaller(BaseInstaller):
                     self._log(f"命令仍在运行中，已等待 {elapsed} 秒，请耐心等待...")
                     next_heartbeat = now + 30
                 # 无输出超时检测：防止假死进程无限占用
-                if now - last_output_time[0] > timeout:
-                    self._log(f"命令超过 {int(timeout)} 秒无输出，判定为卡住，强制终止...")
+                if now - last_output_time[0] > silence_timeout:
+                    self._log(f"命令超过 {int(silence_timeout)} 秒无输出，判定为卡住，强制终止...")
                     self._kill_process_tree(process)
                     break
             process.wait(timeout=TIMEOUT_SHORT_CMD)

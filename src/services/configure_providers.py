@@ -3,6 +3,7 @@ from typing import Any
 from PySide6.QtCore import QThread, Signal
 
 from src.contracts.define_manager import IOpenClawManager
+from src.models.config import ConfigResult, ConfigStatus, ServiceStatus
 
 
 class ConfigWorker(QThread):
@@ -27,11 +28,25 @@ class ConfigWorker(QThread):
         self.manager = manager
 
     def run(self) -> None:
-        """线程入口。调用 OpenClawManager.configure_only 执行配置，并发射结果。"""
-        result = self.manager.configure_only(
-            on_progress=self.progress_updated.emit,
-            on_log=self.log_line.emit,
-        )
+        """线程入口。调用 OpenClawManager.configure_only 执行配置，并发射结果。
+
+        manager.configure_only 内部已捕获绝大多数异常并返回 ConfigResult,
+        但若它本身抛出(如 import 错误、类型错误),也要保证 UI 收到 complete
+        信号,否则进度页会卡死等待。
+        """
+        try:
+            result = self.manager.configure_only(
+                on_progress=self.progress_updated.emit,
+                on_log=self.log_line.emit,
+            )
+        except Exception as e:
+            self.log_line.emit(f"配置异常: {type(e).__name__}: {e}")
+            result = ConfigResult(
+                status=ConfigStatus.FAILED,
+                service_status=ServiceStatus.FAILED,
+                message="配置异常",
+                error_message=str(e),
+            )
         self.complete.emit(result)
 
 
@@ -59,11 +74,34 @@ class StartupWorker(QThread):
         self.quick_start = quick_start
 
     def run(self) -> None:
-        """线程入口。调用 OpenClawManager.startup_only 执行启动，并发射结果。"""
-        result = self.manager.startup_only(
-            on_progress=self.progress_updated.emit,
-            on_log=self.log_line.emit,
-        )
+        """线程入口。调用 manager 启动并发射结果。
+
+        quick_start=True 时调用 manager.quick_start()(语义上"已配置过的快速启动"),
+        否则调 startup_only。当前两者实现等价,保留这层接驳是为了:
+        1. 让"快速启动"路径在 UI 日志中可被识别;
+        2. 未来 manager.quick_start 若需特化(如跳过更多检查),改一处即可。
+
+        manager 内部已捕获大部分异常,这里再加一层兜底,保证 complete 信号一定 emit。
+        """
+        try:
+            if self.quick_start:
+                result = self.manager.quick_start(
+                    on_progress=self.progress_updated.emit,
+                    on_log=self.log_line.emit,
+                )
+            else:
+                result = self.manager.startup_only(
+                    on_progress=self.progress_updated.emit,
+                    on_log=self.log_line.emit,
+                )
+        except Exception as e:
+            self.log_line.emit(f"启动异常: {type(e).__name__}: {e}")
+            result = ConfigResult(
+                status=ConfigStatus.FAILED,
+                service_status=ServiceStatus.FAILED,
+                message="启动异常",
+                error_message=str(e),
+            )
         self.complete.emit(result)
 
 
@@ -101,12 +139,20 @@ class ProviderConfigWorker(QThread):
         self.fallback_models = fallback_models
 
     def run(self) -> None:
-        """线程入口。调用 OpenClawManager.configure_providers 写入配置，并发射布尔结果。"""
-        ok = self.manager.configure_providers(
-            self.providers_config,
-            self.global_default_model,
-            self.fallback_models,
-            on_progress=self.progress_updated.emit,
-            on_log=self.log_line.emit,
-        )
+        """线程入口。调用 OpenClawManager.configure_providers 写入配置，并发射布尔结果。
+
+        manager 异常时(如配置文件被外部进程占用、磁盘只读),保证 complete(False)
+        一定 emit,否则 UI 配置页会一直转圈。
+        """
+        try:
+            ok = self.manager.configure_providers(
+                self.providers_config,
+                self.global_default_model,
+                self.fallback_models,
+                on_progress=self.progress_updated.emit,
+                on_log=self.log_line.emit,
+            )
+        except Exception as e:
+            self.log_line.emit(f"Provider 配置异常: {type(e).__name__}: {e}")
+            ok = False
         self.complete.emit(ok)

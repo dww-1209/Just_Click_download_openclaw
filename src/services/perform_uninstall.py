@@ -39,27 +39,42 @@ class UninstallWorker(QThread):
         self._cancel_event = threading.Event()
 
     def run(self) -> None:
-        """线程入口。调用 manager.uninstall() 执行卸载，并转发日志和结果。"""
+        """线程入口。直接调用 manager.uninstall() 同步执行卸载流程。
+
+        重要历史教训:
+        之前这里包了一个 threading.Thread + Event.wait(timeout=120) 试图加超时,
+        但 wait() 是阻塞调用,会让 QThread 无法处理 Qt 事件 120 秒,Windows
+        会判定整个 GUI 进程"无响应"并弹出"是否关闭程序"。daemon 子线程也不能
+        被强杀,即便 wait 超时返回,子线程仍在跑,造成更深的死锁。
+
+        正确做法: 直接同步调 manager.uninstall(),内部所有 subprocess.run 都
+        有自己的 timeout(taskkill 2s, attrib 30s, rmdir 60s),不会真正"无限
+        hang"。force_rmtree 的逐文件删除是 Python 原生 os.unlink,几千个文件
+        也就几秒,不需要外层超时。
+        """
         failed_items: list[str] = []
 
         self.progress.emit(10, "正在停止 Gateway 服务...")
-        # manager.uninstall 内部会处理停止 Gateway、删除目录、清理 npm 包和包装器
-        # 我们通过 on_log 回调收集进度信息
 
         def on_log(message: str) -> None:
-            """日志回调：将 manager 的日志转发为 Signal。"""
+            """日志回调：将 manager 的日志转发为 Signal,并推断进度。"""
             self.log_line.emit(message)
-            # 根据日志内容推断进度
             if "停止" in message or "Gateway" in message:
                 self.progress.emit(20, message)
+            elif "正在删除旧文件" in message:
+                self.progress.emit(35, message)
             elif "删除" in message and "openclaw-cn" in message:
                 self.progress.emit(40, message)
             elif "删除" in message and ".openclaw" in message:
                 self.progress.emit(60, message)
-            elif "npm" in message or "卸载" in message:
+            elif "旧文件已处理" in message:
+                self.progress.emit(65, message)
+            elif "正在清理 npm" in message or "npm 包已清理" in message:
                 self.progress.emit(80, message)
             elif "命令" in message:
                 self.progress.emit(90, message)
+            elif "清理完成" in message:
+                self.progress.emit(95, message)
 
         try:
             ok = self.manager.uninstall(
@@ -67,7 +82,6 @@ class UninstallWorker(QThread):
                 cancel_event=self._cancel_event.is_set,
             )
             if not ok:
-                # 如果 manager 返回 False，标记为部分失败
                 failed_items.append("部分清理步骤")
         except Exception as e:
             self.log_line.emit(f"卸载异常: {e}")

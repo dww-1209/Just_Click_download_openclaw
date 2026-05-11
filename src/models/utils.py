@@ -17,51 +17,156 @@ import tarfile
 from pathlib import Path
 from typing import Callable, Any, Optional
 
-from src.models.constants import is_windows, TIMEOUT_SHORT_CMD
+from src.models.constants import is_windows, is_macos, TIMEOUT_SHORT_CMD
+
+
+def windows_hidden_subprocess_kwargs() -> dict:
+    """返回用于隐藏控制台窗口的 subprocess 关键字参数字典(仅 Windows 有效)。
+
+    Windows GUI 程序(无 console)通过 subprocess 调用 cmd/where/taskkill 等
+    控制台程序时，操作系统会创建一个**新的**控制台窗口短暂闪烁。需要同时:
+    - STARTUPINFO + STARTF_USESHOWWINDOW + SW_HIDE: 即使被显示也立刻隐藏
+    - CREATE_NO_WINDOW: 直接告诉系统不要创建新 console
+
+    其他平台返回空 dict, 调用方可以无脑 ** 展开:
+        subprocess.run(cmd, **windows_hidden_subprocess_kwargs(), capture_output=True, ...)
+
+    Returns:
+        dict: Windows 上含 startupinfo / creationflags 两个键; 其他平台为空 dict。
+    """
+    if not is_windows():
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
+
+
+def kill_port_process(port: int, on_log: Callable[[str], None] | None = None) -> int:
+    """释放被占用的本地端口(用于卸载/重装场景终结 Gateway 进程)。
+
+    与 OpenClawManager._kill_port_process 等价,但作为独立函数提供给
+    cleanup_reinstall 等无 manager 实例的场景使用。隐藏子进程窗口。
+
+    Args:
+        port: 端口号 (1-65535)。
+        on_log: 可选的日志回调。
+
+    Returns:
+        int: 被结束的进程数量(如果检测/解析失败返回 0)。
+    """
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return 0
+    if not (1 <= port <= 65535):
+        return 0
+
+    hidden = windows_hidden_subprocess_kwargs()
+    killed = 0
+
+    if is_windows():
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True, text=True, timeout=15,
+                **hidden,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return 0
+        if result.returncode != 0 or not result.stdout:
+            return 0
+
+        killed_pids: set[str] = set()
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            proto = fields[0].upper()
+            if proto not in ("TCP", "UDP", "TCP6", "UDP6"):
+                continue
+            local_addr = fields[1]
+            if not (local_addr.endswith(f":{port}") or local_addr.endswith(f"]:{port}")):
+                continue
+            pid = fields[-1]
+            if not pid.isdigit() or pid in killed_pids:
+                continue
+            killed_pids.add(pid)
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", pid, "/F", "/T"],
+                    capture_output=True, timeout=10, **hidden,
+                )
+                killed += 1
+                if on_log:
+                    on_log(f"已终止占用端口 {port} 的进程 PID={pid}")
+            except (OSError, subprocess.SubprocessError):
+                pass
+    else:
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return 0
+        if result.returncode != 0 or not result.stdout:
+            return 0
+
+        for pid in result.stdout.strip().splitlines():
+            pid = pid.strip()
+            if not pid.isdigit():
+                continue
+            try:
+                subprocess.run(["kill", "-9", pid], capture_output=True, timeout=10)
+                killed += 1
+                if on_log:
+                    on_log(f"已终止占用端口 {port} 的进程 PID={pid}")
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    return killed
 
 
 def force_rmtree(path: str | Path, on_log: Callable[[str], None] | None = None) -> bool:
-    """强制删除目录树，处理只读文件和复杂目录结构。
+    """强制删除目录树,模仿 Mac rm -rf 的语义:逐文件删,锁住的跳过。
 
-    Python 3.12+ 的 shutil.rmtree 使用 _rmtree_safe_fd，onerror 回调
-    在处理 os.open 时存在重试语义问题，可能导致子树未被删除。本函数
-    绕过 Python shutil：先给整棵树加写权限，再用平台原生命令删除。
+    三步:
+    1. chmod/attrib 去只读属性,确保文件可删。
+    2. _rmtree_skip_locked 自底向上遍历,逐个 os.unlink/os.rmdir。
+       单个文件失败(锁住/权限不够)就跳过,不影响其他文件的删除。
+       不像 Windows rmdir /s /q 那样"一个文件锁了整棵树留下"。
+    3. 还有残留(锁住的文件删不掉)就 os.rename 移出权威路径,
+       残渣后台清理。NTFS rename 不受子文件锁影响,几乎瞬间完成。
 
     Args:
         path: 要删除的目录路径。
         on_log: 可选的日志回调。
 
     Returns:
-        True 表示删除成功或目录不存在；False 表示删除失败。
+        True 表示权威路径已清理(目录不存在或已改名);
+        False 表示连改名都失败(被 Explorer/CWD 锁死)。
     """
     path_str = str(path)
     if not os.path.exists(path_str):
         return True
 
+    # 去掉只读属性,等效 Mac 的 chmod -R +w。
+    # pnpm 依赖目录有时带只读位,不先去掉 os.unlink/os.rmdir 会失败。
     if is_windows():
-        # 先去掉只读属性，再强制删除
         try:
             subprocess.run(
                 ["cmd", "/c", "attrib", "-R", path_str + "\\*", "/S", "/D"],
                 capture_output=True, timeout=30,
+                **windows_hidden_subprocess_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
             pass
-        try:
-            result = subprocess.run(
-                ["cmd", "/c", "rmdir", "/s", "/q", path_str],
-                capture_output=True, timeout=60,
-            )
-            return result.returncode == 0
-        except (OSError, subprocess.SubprocessError) as e:
-            if on_log:
-                on_log(f"删除 {path_str} 失败: {e}")
-            return False
     else:
-        # 先 chmod -R +w 给所有文件/目录加上写权限。
-        # 某些 pnpm 依赖目录权限极端（如 d-w-------，只有写无读/执行），
-        # rm -rf 需要遍历（读+执行）和删除（写）权限，这里统一加写权限即可，
-        # 比 777 更收敛，避免临时暴露敏感文件给其他用户。
         try:
             subprocess.run(
                 ["chmod", "-R", "+w", path_str],
@@ -69,19 +174,80 @@ def force_rmtree(path: str | Path, on_log: Callable[[str], None] | None = None) 
             )
         except (OSError, subprocess.SubprocessError):
             pass
+
+    # 逐文件删除: 遇到锁住/权限不够的跳过,能删多少删多少。
+    # 这等效 Mac 上 rm -rf 的语义 —— 不像 Windows rmdir /s /q 那样
+    # "一个文件锁了整棵树留下",而是逐个文件尝试,失败的跳过,其他照删。
+    _rmtree_skip_locked(path_str)
+
+    # 目录已清空
+    if not os.path.exists(path_str):
+        if on_log:
+            on_log(f"已删除: {path_str}")
+        return True
+
+    # 还有残留(锁住删不掉的文件) → rename 出去,权威路径立刻空出。
+    try:
+        import time as _time
+        residue_path = f"{path_str}._residue.{int(_time.time())}"
+        os.rename(path_str, residue_path)
+        if on_log:
+            on_log(f"已隔离残留: {os.path.basename(residue_path)}")
+        # 残渣后台清理,不阻塞主流程
         try:
-            result = subprocess.run(
-                ["rm", "-rf", path_str],
-                capture_output=True, timeout=60,
-            )
-            if result.returncode != 0 and on_log:
-                err = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-                on_log(f"删除 {path_str} 失败: {err}")
-            return result.returncode == 0
-        except (OSError, subprocess.SubprocessError) as e:
-            if on_log:
-                on_log(f"删除 {path_str} 失败: {e}")
-            return False
+            if is_windows():
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", "/s", "/q", residue_path],
+                    capture_output=True, timeout=60,
+                    **windows_hidden_subprocess_kwargs(),
+                )
+            else:
+                subprocess.run(
+                    ["rm", "-rf", residue_path],
+                    capture_output=True, timeout=60,
+                )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return True
+    except OSError:
+        if on_log:
+            on_log(f"删除 {path_str} 失败: 目录被占用")
+        return False
+
+
+def _rmtree_skip_locked(root_path: str) -> None:
+    """逐文件删除目录树,锁住/权限不够的文件跳过,能删多少删多少。
+
+    自底向上(os.walk topdown=False)遍历:先删子文件再删父目录。
+    单个文件失败只跳过这一个,不影响其他文件的删除。这是 Mac rm -rf 的行为。
+    """
+    # 收集删除列表(从叶子到根)
+    entries: list[tuple[str, bool]] = []  # [(path, is_dir), ...]
+    try:
+        for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
+            for fn in filenames:
+                entries.append((os.path.join(dirpath, fn), False))
+            for dn in dirnames:
+                entries.append((os.path.join(dirpath, dn), True))
+    except OSError:
+        pass
+
+    for entry_path, is_dir in entries:
+        try:
+            if is_dir:
+                os.rmdir(entry_path)
+            else:
+                os.unlink(entry_path)
+        except OSError:
+            # 权限不够:加写权限后重试一次
+            try:
+                os.chmod(entry_path, stat.S_IWRITE | stat.S_IREAD)
+                if is_dir:
+                    os.rmdir(entry_path)
+                else:
+                    os.unlink(entry_path)
+            except OSError:
+                pass  # 真删不掉就算了,最后剩下的会被 rename 出去
 
 
 def remove_readonly(func: Callable[..., None], path: str, _: Any) -> None:
@@ -117,15 +283,20 @@ def resolve_openclaw_cmd(env: Optional[dict] = None) -> str:
         str: 检测到的命令名（如 "openclaw-cn"），若都未找到则返回 "openclaw"。
     """
     if is_windows():
+        hidden = windows_hidden_subprocess_kwargs()
         for cmd in ["openclaw-cn", "openclaw"]:
-            result = subprocess.run(
-                ["where", cmd],
-                shell=False,
-                capture_output=True,
-                timeout=TIMEOUT_SHORT_CMD,
-            )
-            if result.returncode == 0:
-                return cmd
+            try:
+                result = subprocess.run(
+                    ["where", cmd],
+                    shell=False,
+                    capture_output=True,
+                    timeout=TIMEOUT_SHORT_CMD,
+                    **hidden,
+                )
+                if result.returncode == 0:
+                    return cmd
+            except (OSError, subprocess.SubprocessError):
+                pass
     else:
         path_env = env.get("PATH", os.environ.get("PATH", "")) if env else os.environ.get("PATH", "")
         for cmd in ["openclaw-cn", "openclaw"]:
@@ -177,7 +348,7 @@ def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = No
     # 如果没有任何 rc 文件存在（全新系统），主动创建一个
     if not written:
         # macOS 默认 zsh，Linux 默认 bash
-        default_rc = ".zshrc" if sys.platform == "darwin" else ".bashrc"
+        default_rc = ".zshrc" if is_macos() else ".bashrc"
         rc_path = os.path.join(home, default_rc)
         try:
             with open(rc_path, "w", encoding="utf-8") as f:
@@ -218,6 +389,37 @@ def detect_openclaw_installation() -> tuple[bool, list[str]]:
     return bool(details), details
 
 
+def redact_home_path(text: str) -> str:
+    """将文本中的用户主目录路径替换为 ``~``,降低截图/日志分享时的隐私泄露风险。
+
+    诊断日志和命令展示常常带绝对路径(如 ``C:\\Users\\<name>\\openclaw-cn``),
+    一旦截屏发到 issue/客服群,就把用户名暴露出去。这个函数仅做一层简单替换,
+    不影响文本里其他内容。
+
+    分别尝试原始 home、正斜杠版、反斜杠版,以兼容跨平台路径混用的日志输出
+    (Windows 上某些子进程会回吐 / 风格的路径,反之亦然)。
+
+    Args:
+        text: 任意文本,空字符串/None 直接原样返回。
+
+    Returns:
+        替换后的文本。若无法解析 home,返回原始文本。
+    """
+    if not text:
+        return text
+    home = os.path.expanduser("~")
+    if not home or home == "~":
+        return text
+    text = text.replace(home, "~")
+    home_fwd = home.replace("\\", "/")
+    if home_fwd != home:
+        text = text.replace(home_fwd, "~")
+    home_bwd = home.replace("/", "\\")
+    if home_bwd != home:
+        text = text.replace(home_bwd, "~")
+    return text
+
+
 def safe_tar_extract(
     tar: tarfile.TarFile,
     dest: Path | str,
@@ -240,16 +442,28 @@ def safe_tar_extract(
     dest_path = Path(dest).resolve()
 
     for member in tar.getmembers():
-        # 拒绝绝对路径和包含 .. 的原始路径（第一层过滤）
-        # 使用 Path.parts 精确检测路径遍历组件，避免误杀合法文件名如 foo..bar.txt
-        if member.name.startswith("/") or ".." in Path(member.name).parts:
+        # 在校验前先把成员名中的反斜杠归一为正斜杠。
+        # tar 规范要求路径分隔符为 "/"，任何反斜杠都视作可疑：
+        # - Windows 下 Path("foo\\..\\bar") 会被识别为 ".." 组件并被拦截，
+        # - 但 POSIX 下 Path("foo\\..\\bar").parts 只看到一个组件 "foo\\..\\bar"，
+        #   会漏检；统一归一后再走下面的检查就能在所有平台一致拦截。
+        normalized_name = member.name.replace("\\", "/")
+        normalized_parts = Path(normalized_name).parts
+
+        # 拒绝绝对路径（POSIX 的 / 开头、Windows 的盘符、UNC 路径）和包含 .. 的原始路径
+        is_absolute = (
+            normalized_name.startswith("/")
+            or normalized_name.startswith("//")  # UNC 形式
+            or (len(normalized_name) >= 2 and normalized_name[1] == ":")  # Windows 盘符
+        )
+        if is_absolute or ".." in normalized_parts:
             msg = f"拒绝不安全的 tar 成员: {member.name}"
             if on_log:
                 on_log(msg)
             raise tarfile.TarError(msg)
 
         # 校验最终解析后的绝对路径是否在目标目录内（第二层过滤）
-        member_path = (dest_path / member.name).resolve()
+        member_path = (dest_path / normalized_name).resolve()
         try:
             member_path.relative_to(dest_path)
         except ValueError:

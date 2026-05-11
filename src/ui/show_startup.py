@@ -375,6 +375,8 @@ class US06StartupPage(QWidget):
     def start_startup(self) -> None:
         """重置并进入启动中状态：恢复步骤显示、进度条、防火墙提示（Windows），
         隐藏成功/错误区域，重置日志。"""
+        # 清除上次失败留下的守卫标记,允许本次启动重新触发失败 UI
+        self._failed_step_set = False
         self.status_label.setText("正在启动网关服务...")
         self.status_label.setStyleSheet("")
 
@@ -418,8 +420,11 @@ class US06StartupPage(QWidget):
             self.step_gateway.set_completed()
             self.step_health.set_completed()
         elif progress.stage == ConfigStatus.FAILED:
-            if not hasattr(self, '_failed_step_set'):
+            # 守卫:同一次启动期间多次收到 FAILED 进度时,只触发一次失败 UI,
+            # 否则 set_failed 会被反复调用,且按钮状态可能被中间进度覆盖。
+            if not getattr(self, '_failed_step_set', False):
                 self.step_gateway.set_failed()
+                self._failed_step_set = True
 
     def startup_success(self, result: ConfigResult) -> None:
         """启动成功回调：更新状态文本、隐藏进行中区域、展示成功卡片，
@@ -508,6 +513,8 @@ class US06StartupPage(QWidget):
 
     def reset(self) -> None:
         """重置页面到初始状态，停止可能运行中的倒计时。"""
+        # 同 start_startup,reset 也要清失败守卫,避免下一次启动被旧标记吞掉
+        self._failed_step_set = False
         self.step_gateway.set_pending()
         self.step_health.set_pending()
 

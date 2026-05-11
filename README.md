@@ -97,7 +97,7 @@ uv run python launch_uninstaller.py
 | `node-v*-darwin-*.tar.gz` / `node-v*-win-*.zip` | `resources/{platform}/` | Node.js 官方预编译二进制包。安装器按 glob 匹配，支持任意版本。 |
 | `openclaw-prebuilt-*.tar.gz` | `resources/{platform}/` | ⚠️ **离线版必需**。OpenClaw 预构建产物（含 `node_modules` + `dist`）。 |
 | `git-macos-*.tar.gz` | `resources/macos/` | ⚠️ **macOS 在线/离线版都必需**。内部 git，非官网安装包。 |
-| `git-*.zip` / `MinGit-*.zip` | `resources/windows/` | Windows 离线版才需准备。在线版安装器可直接网络下载 git。 |
+| `git-*.zip` | `resources/windows/` | Windows 离线版才需准备。完整版 Git for Windows 便携包，需手动从已装 Git 的机器打包。在线版可直接网络下载。 |
 
 **获取方式**：Node.js 由 `prepare_offline_resources.py` 自动从 nodejs.org 下载，预构建产物和 git 由脚本自动打包。只需一键运行：
 
@@ -145,7 +145,16 @@ uv run python launch_installer.py
 
 Windows 在线版安装器可直接从网络下载 git，无需准备资源。
 
-**获取方式**：在**已安装 Git for Windows** 的 Windows 机器上，运行 `prepare_offline_resources.py` 自动从系统 git 安装目录（通常为 `C:\Program Files\Git`）复制 `cmd/`、`mingw64/`、`usr/` 等必要目录并打包为 `resources/windows/git-windows-x64.zip`。无需手动操作。
+**获取方式（自动）**：在**已安装 Git for Windows** 的 Windows 机器上，运行 `prepare_offline_resources.py` 自动从系统 git 安装目录（通常为 `C:\Program Files\Git`）复制 `cmd/`、`mingw64/`、`usr/` 等必要目录并打包为 `resources/windows/git-windows-x64.zip`。无需手动操作。
+
+**关键约束**：必须使用**完整版 Git for Windows**（含 `cmd/`、`bin/`、`mingw64/`、`usr/`），不要用 MinGit 精简版；zip 文件名必须以 `git-` 开头（匹配 `git-*.zip`），zip 根直接是 `cmd/git.exe`。
+
+**手动备选**：若自动化失败，可在 Git 安装目录内部（如 `D:\Git\`）执行：
+```bash
+cd /d/Git
+zip -r -q -6 git-2.53.0-windows-x64.zip . -x "unins000.*" "tmp/*" "tmp"
+```
+然后把 zip 放进 `resources/windows/`。安装器会解压到 `~/.openclaw-git/` 并加入 PATH。
 
 ---
 
