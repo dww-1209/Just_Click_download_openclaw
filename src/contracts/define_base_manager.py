@@ -1,4 +1,4 @@
-"""OpenClawManager 抽象基类
+"""OpenClawManager 共享基类
 
 职责：为所有生命周期管理器实现类提供共享工具和横切关注钩子，
 消除 _log()、is_cancelled、stop() 等逻辑在多个类中的重复实现。
@@ -6,18 +6,18 @@
 设计原则：
 - 本基类是可选的：实现类可以选择继承本基类（获得默认实现），
   或仅实现 IOpenClawManager Protocol（保持灵活）。
-- 基类提供的是"能力"而非"契约"，真正的契约仍由 Protocol 定义。
+- 因为继承本基类不是契约约束,这里没有用 ABC/@abstractmethod;
+  真正的契约由 src/contracts/define_manager.py 的 IOpenClawManager Protocol 定义。
 """
 
 from __future__ import annotations
 
 import time
-from abc import ABC
 from typing import Callable, Optional
 
 
-class BaseOpenClawManager(ABC):
-    """OpenClaw 生命周期管理器抽象基类。
+class BaseOpenClawManager:
+    """OpenClaw 生命周期管理器共享基类。
 
     提供以下默认实现：
     - 统一日志记录（_log）：自动追加时间戳并回调 UI。

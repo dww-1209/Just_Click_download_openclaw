@@ -3,16 +3,22 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- 
+        <!--
           等级说明：
           - asInvoker: 以当前用户权限运行（默认）
           - highestAvailable: 请求当前用户可用的最高权限
           - requireAdministrator: 总是要求管理员权限
-          
-          我们使用：requireAdministrator
-          原因：安装 Node.js/npm 需要管理员权限，确保安装过程顺畅
+
+          我们使用：asInvoker
+          原因：
+          1. Node.js/Git/OpenClaw 全部安装在用户目录（~/.openclaw-node、~/openclaw-cn、~/.openclaw），无需管理员权限。
+          2. 极少数需要管理员的步骤（如某些 MSI 安装器）由 Windows 自身在调用时弹出 UAC，单独获取权限即可。
+          3. 全程使用管理员权限会导致：
+             - 用户级代理/网络配置在管理员上下文中失效，造成下载失败；
+             - 安装产物归属 Administrators 组，普通用户读写时遇权限错误；
+             - 每次启动都弹 UAC，影响体验。
         -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

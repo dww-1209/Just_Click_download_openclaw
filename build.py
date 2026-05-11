@@ -68,17 +68,22 @@ def clean_build():
 
     删除 build/、dist/、所有 __pycache__ 目录以及 .spec 文件，
     确保下次构建从干净状态开始。
+    使用 force_rmtree 而非 shutil.rmtree: dist/ 里可能有 openclaw-cn/.git
+    的 packfile 被锁住,原生 shutil.rmtree 遇到锁文件就跪(PermissionError)。
     """
+    # 延迟导入,避免 build.py 顶层 import 时触发 src 模块加载
+    from src.models.utils import force_rmtree
+
     dirs_to_remove = ['build', 'dist']
     for dir_name in dirs_to_remove:
         if os.path.exists(dir_name):
             print(f"清理 {dir_name}/...")
-            shutil.rmtree(dir_name)
+            force_rmtree(dir_name)
 
     # 清理 __pycache__
     for pycache in Path('.').rglob('__pycache__'):
         if pycache.exists():
-            shutil.rmtree(pycache)
+            force_rmtree(str(pycache))
 
     # 清理 .spec 文件
     for spec_file in Path('.').glob('*.spec'):

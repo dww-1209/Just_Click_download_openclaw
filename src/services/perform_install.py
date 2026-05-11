@@ -12,60 +12,36 @@ from src.models.install import (
     ErrorCategory,
 )
 from src.contracts.define_installer import IInstaller
-from src.models.utils import force_rmtree
 
 
 class ReinstallWorker(QThread):
     """重装前清理后台工作线程。
 
-    职责：在独立线程中执行旧安装清理（停止 Gateway、删除目录、卸载 npm 包），
+    职责：在独立线程中触发旧安装清理（停止 Gateway、删除目录、卸载 npm 包），
     完成后通过 Signal 通知 UI 进入安装阶段。
-    所有阻塞操作（子进程调用、文件删除）均在后台线程执行，避免 UI 冻结。
+    所有阻塞操作（子进程调用、文件删除）由 adapters 层 cleanup_for_reinstall 完成,
+    services 层只做线程编排,不直接调用 subprocess。
     """
 
     complete = Signal(bool)  # 清理完成信号（True 表示已执行，继续后续流程）
     log_line = Signal(str)   # 清理日志输出
 
     def run(self) -> None:
-        """线程入口：执行清理操作，完成后发射信号。"""
+        """线程入口：调用 adapter 执行清理,完成后发射信号。
+
+        重要历史教训(同 UninstallWorker):
+        不要在 QThread.run 内再开一个 threading.Thread + Event.wait(timeout)
+        来加超时,wait 是阻塞调用,会卡住 QThread 事件循环,Windows 会把整个
+        GUI 进程判为"无响应"。adapter 内部 subprocess 都有自己的 timeout,
+        force_rmtree 是 Python 原生 os.unlink 不会真正 hang,直接同步调即可。
+        """
         try:
-            import subprocess
-            import shutil
-            import os
-            import stat
-
-            # 停止 Gateway
-            cmd_name = "openclaw-cn" if shutil.which("openclaw-cn") else "openclaw"
-            try:
-                subprocess.run(
-                    [cmd_name, "gateway", "stop"],
-                    shell=False, capture_output=True, timeout=30,
-                )
-                self.log_line.emit("已停止 OpenClaw Gateway")
-            except (OSError, subprocess.SubprocessError):
-                pass
-
-            # 删除本地构建目录
-            for d in [os.path.expanduser("~/openclaw-cn"), os.path.expanduser("~/.openclaw")]:
-                if os.path.exists(d):
-                    if force_rmtree(d, lambda msg: self.log_line.emit(msg)):
-                        self.log_line.emit(f"已删除: {d}")
-
-            # 卸载全局 npm 包（兼容旧版直接 npm install -g 的情况）
-            for pkg in ["openclaw-cn", "openclaw"]:
-                try:
-                    subprocess.run(
-                        ["npm", "uninstall", "-g", pkg],
-                        shell=False, capture_output=True, timeout=30,
-                    )
-                except (OSError, subprocess.SubprocessError):
-                    pass
-
-            self.complete.emit(True)
+            from src.adapters.cleanup_reinstall import cleanup_for_reinstall
+            cleanup_for_reinstall(on_log=self.log_line.emit)
         except Exception as e:
-            # 记录异常信息后继续，让用户进入安装阶段
             self.log_line.emit(f"清理过程出错: {e}")
-            self.complete.emit(True)
+        # 不管成功失败都发 True,继续安装流程(adapter 是尽力而为语义)
+        self.complete.emit(True)
 
 
 class InstallWorker(QThread):

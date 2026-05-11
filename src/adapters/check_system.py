@@ -10,7 +10,6 @@
 注意：US-02 不检测网络，网络问题在 US-04 安装阶段处理。
 """
 
-import platform
 import os
 import shutil
 import subprocess
@@ -57,40 +56,11 @@ COMMON_INSTALL_PATHS: List[str] = [
 ]
 
 
-def _get_windows_install_paths() -> List[str]:
-    """收集 Windows 上可能存在的 OpenClaw 安装路径列表
-
-    按优先级：用户目录 → Program Files → Program Files (x86) → LOCALAPPDATA → 当前工作目录。
-    用于命令行检测失败后的 fallback 目录扫描。
-    """
-    paths = []
-    # 用户目录下的路径（默认安装路径）
-    user_home = os.path.expanduser("~")
-    paths.append(os.path.join(user_home, "OpenClaw"))
-    paths.append(os.path.join(user_home, "openclaw"))
-
-    # 系统级路径
-    program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-    program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-    paths.append(os.path.join(program_files, "OpenClaw"))
-    paths.append(os.path.join(program_files_x86, "OpenClaw"))
-
-    local_appdata = os.environ.get("LOCALAPPDATA", "")
-    if local_appdata:
-        paths.append(os.path.join(local_appdata, "OpenClaw"))
-
-    # 当前工作目录（开发场景）
-    paths.append(os.path.join(os.getcwd(), "OpenClaw"))
-
-    return paths
-
-
 def _get_os_type() -> str:
     """获取统一的操作系统类型标识字符串"""
-    system = platform.system().lower()
-    if system == "windows":
+    if is_windows():
         return "windows"
-    elif system == "darwin":
+    elif is_macos():
         return "macos"
     else:
         return "linux"
@@ -196,8 +166,6 @@ def _check_permission() -> PermissionResult:
 
 def _ensure_local_bin_in_rc() -> None:
     """将 ~/.local/bin 添加到用户 shell 配置文件中（如果不存在）"""
-    import sys
-
     home = os.path.expanduser("~")
     local_bin = os.path.join(home, ".local", "bin")
     path_export = f'export PATH="{local_bin}:$PATH"'
@@ -219,7 +187,7 @@ def _ensure_local_bin_in_rc() -> None:
 
     # 如果没有任何 rc 文件存在（全新系统），主动创建一个
     if not written:
-        default_rc = ".zshrc" if sys.platform == "darwin" else ".bashrc"
+        default_rc = ".zshrc" if is_macos() else ".bashrc"
         rc_path = os.path.join(home, default_rc)
         try:
             with open(rc_path, "w", encoding="utf-8") as f:
@@ -231,57 +199,99 @@ def _ensure_local_bin_in_rc() -> None:
 
 def _check_openclaw_installed() -> OpenClawInstallResult:
     """检测 OpenClaw 是否已安装
-    
-    检测逻辑：
-    1. 检查系统 PATH 中是否有 openclaw/openclaw-cn 命令（Linux/macOS 额外包含 ~/.local/bin）
-    2. Windows 下若命令找不到，允许 fallback 检查安装目录；Linux/macOS 要求命令必须可用
+
+    判定逻辑(Windows / macOS / Linux 三平台一视同仁,核心是权威标志文件):
+
+    1. **权威标志文件** —— `~/.openclaw/openclaw.json` 或 `~/openclaw-cn/dist/`
+       且 dist 目录非空。这两者是安装器流程"成功完成"的真实痕迹:
+       - openclaw.json 在用户首次 onboard / 配置 API Key 时生成
+       - dist/ 是 pnpm build 后的输出
+       任意一个存在就是已安装。注意 dist 必须**非空**:Windows 上 rmdir 偶尔
+       会把 dist 里的文件删干净,但因为 scanner 持有 dist 自身的目录句柄而留下
+       一个空壳文件夹 —— 那不是真的"已安装"。
+
+    2. **macOS / Linux** 额外走 `which` + `{cmd} --version`,兼容历史
+       `npm install -g` 装法,并用 `--version` 校验排除卸载残留的孤儿包装器。
+       Windows **不走 PATH 兜底** —— `where` 找到 .cmd 不代表程序还在
+       (cmd 包装器只是 `cd <project_dir> && pnpm openclaw`,目录被删了 cd 就
+       静默失败,壳子还在但程序已经废了);Mac 上的 `--version` 校验在 Windows
+       要冷启 Node 10-20s,会卡 UI,所以 Windows 完全依赖 Step 1。
+
+    3. **macOS / Linux** 命令不可用但有残留时,自动写 `.bashrc/.zshrc`
+       后重新检测一次 —— 应对"程序在但 PATH 没生效"的边缘情况。
+
+    历史曾在 Windows 上扫 `~/OpenClaw / Program Files/OpenClaw / %LOCALAPPDATA%/OpenClaw`
+    等"兜底"路径,只要有 `openclaw-cn`/`openclaw.json` 就算已安装 —— 这是误报根源
+    之一,Mac 没有这一步,所以已经移除。
     """
     os_type = _get_os_type()
     errors = []  # 收集错误信息
+    home = os.path.expanduser("~")
 
-    # 1. 检查系统 PATH（Linux/macOS 额外包含 ~/.local/bin）
+    # === Step 1: 权威标志文件 ===
+    # 我们的安装器正常完成后,这两个文件至少有一个会存在。卸载只要把它们删了,
+    # 即使 force_rmtree 失败留下空壳目录或锁定的 node_modules,这一步也会判 NOT_INSTALLED。
+    config_file = os.path.join(home, ".openclaw", "openclaw.json")
+    dist_dir = os.path.join(home, "openclaw-cn", "dist")
+    if os.path.isfile(config_file):
+        install_path = os.path.dirname(config_file)
+        return OpenClawInstallResult(
+            status=OpenClawStatus.INSTALLED,
+            install_path=install_path,
+            message=f"已安装: {install_path}",
+        )
+    # dist 必须存在**且非空**。Windows 卸载 rmdir 偶尔会把 dist 里的文件全清掉
+    # 但留个空壳 —— 那是残留,不是安装。
+    if os.path.isdir(dist_dir):
+        try:
+            if os.listdir(dist_dir):
+                install_path = os.path.dirname(dist_dir)
+                return OpenClawInstallResult(
+                    status=OpenClawStatus.INSTALLED,
+                    install_path=install_path,
+                    message=f"已安装: {install_path}",
+                )
+        except OSError:
+            pass
+
+    # === Windows: Step 1 没命中就直接判 NOT_INSTALLED ===
+    # 不走 PATH 兜底,理由见 docstring。
+    if is_windows():
+        return OpenClawInstallResult(
+            status=OpenClawStatus.NOT_INSTALLED,
+            message="未检测到 OpenClaw",
+        )
+
+    # === Step 2 (macOS / Linux 专用): which + --version 校验 ===
     env = os.environ.copy()
-    if os_type != "windows":
-        home = os.path.expanduser("~")
-        local_bin = os.path.join(home, ".local", "bin")
-        env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
+    local_bin = os.path.join(home, ".local", "bin")
+    env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
 
     cmd = resolve_openclaw_cmd(env)
 
-    # Windows: 直接用 where 检测；Linux/macOS: 用 which
     cmd_found = False
+    install_path = ""
     try:
-        if is_windows():
-            result = subprocess.run(
-                ["where", cmd], shell=False, capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD
-            )
-            if result.returncode == 0:
-                exe_path = result.stdout.strip().split('\n')[0].strip()
-                install_path = os.path.dirname(exe_path)
-                cmd_found = True
-        else:
-            result = subprocess.run(
-                ["which", cmd], capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD, env=env
-            )
-            if result.returncode == 0:
-                exe_path = result.stdout.strip()
-                install_path = os.path.dirname(exe_path)
-                cmd_found = True
+        result = subprocess.run(
+            ["which", cmd], capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD, env=env
+        )
+        if result.returncode == 0:
+            exe_path = result.stdout.strip()
+            install_path = os.path.dirname(exe_path)
+            cmd_found = True
     except (OSError, subprocess.SubprocessError) as e:
         errors.append(f"检测命令异常: {type(e).__name__}: {str(e)}")
 
     if cmd_found:
-        # 进一步验证是否能正常运行（避免 build 产物缺失的误报）
         try:
-            if os_type != "windows":
-                shell = os.environ.get("SHELL", "/bin/bash")
-                ver_result = subprocess.run(
-                    [shell, "-ilc", f"{cmd} --version"],
-                    capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD,
-                )
-                if ver_result.returncode != 0:
-                    errors.append(f"{cmd} 命令存在但无法正常运行（可能缺少构建产物）")
-            if not errors:
+            shell = os.environ.get("SHELL", "/bin/bash")
+            ver_result = subprocess.run(
+                [shell, "-ilc", f"{cmd} --version"],
+                capture_output=True, text=True, timeout=TIMEOUT_SHORT_CMD,
+            )
+            if ver_result.returncode != 0:
+                errors.append(f"{cmd} 命令存在但无法正常运行(可能缺少构建产物)")
+            elif not errors:
                 return OpenClawInstallResult(
                     status=OpenClawStatus.INSTALLED,
                     install_path=install_path,
@@ -290,81 +300,48 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         except (OSError, subprocess.SubprocessError) as e:
             errors.append(f"验证命令异常: {type(e).__name__}: {str(e)}")
 
-        if not errors:
-            return OpenClawInstallResult(
-                status=OpenClawStatus.INSTALLED,
-                message="已安装（命令行检测到）",
-            )
-
-    # 2. Windows 允许 fallback 检查安装目录；Linux/macOS 若命令不可用但目录存在，尝试自动修复 PATH
-    if is_windows():
-        paths_to_check = _get_windows_install_paths()
-        openclaw_indicators = [
-            "openclaw.exe", "OpenClaw.exe", "openclaw", "openclaw-cn.exe", "openclaw-cn",
-            "package.json", "server.js", "app.js",
-            "launch_installer.py", "config.json", ".openclaw",
-        ]
-        for path in paths_to_check:
-            if os.path.exists(path) and os.path.isdir(path):
-                try:
-                    items = os.listdir(path)
-                    has_indicator = any(
-                        indicator.lower() in [item.lower() for item in items]
-                        for indicator in openclaw_indicators
-                    )
-                    if has_indicator:
-                        return OpenClawInstallResult(
-                            status=OpenClawStatus.INSTALLED,
-                            install_path=path,
-                            message=f"已安装: {path}",
-                        )
-                except PermissionError as e:
-                    errors.append(f"无法访问路径 {path}: 权限不足")
-                except OSError as e:
-                    errors.append(f"无法访问路径 {path}: {str(e)}")
-    else:
-        # Linux/macOS: 若命令不可用但检测到残留目录，自动补写 .bashrc / .zshrc 后重新检测
-        residual_paths = [
-            os.path.expanduser("~/.openclaw"),
-            os.path.expanduser("~/openclaw-cn"),
-        ]
-        has_residual = any(os.path.exists(p) and os.path.isdir(p) for p in residual_paths)
-        if has_residual:
-            _ensure_local_bin_in_rc()
-            # 重新检测一次（同时验证 --version 确保没有 build 产物缺失）
-            cmd2 = resolve_openclaw_cmd(env)
-            result = subprocess.run(
-                ["which", cmd2],
+    # === Step 3 (macOS / Linux 专用): 命令不可用但有残留目录,自动补 PATH 后重试 ===
+    # 对应"残留目录 + 命令包装器还在 PATH 但 PATH 没生效"的边缘情况。
+    residual_paths = [
+        os.path.expanduser("~/.openclaw"),
+        os.path.expanduser("~/openclaw-cn"),
+    ]
+    has_residual = any(os.path.exists(p) and os.path.isdir(p) for p in residual_paths)
+    if has_residual:
+        _ensure_local_bin_in_rc()
+        cmd2 = resolve_openclaw_cmd(env)
+        result = subprocess.run(
+            ["which", cmd2],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SHORT_CMD,
+            env=env,
+        )
+        if result.returncode == 0:
+            exe_path = result.stdout.strip()
+            install_path = os.path.dirname(exe_path)
+            shell = os.environ.get("SHELL", "/bin/bash")
+            ver_result = subprocess.run(
+                [shell, "-ilc", f"{cmd2} --version"],
                 capture_output=True,
                 text=True,
                 timeout=TIMEOUT_SHORT_CMD,
-                env=env,
             )
-            if result.returncode == 0:
-                exe_path = result.stdout.strip()
-                install_path = os.path.dirname(exe_path)
-                shell = os.environ.get("SHELL", "/bin/bash")
-                ver_result = subprocess.run(
-                    [shell, "-ilc", f"{cmd2} --version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=TIMEOUT_SHORT_CMD,
+            if ver_result.returncode == 0:
+                return OpenClawInstallResult(
+                    status=OpenClawStatus.INSTALLED,
+                    install_path=install_path,
+                    message=f"已安装: {install_path}(已自动修复环境变量)",
                 )
-                if ver_result.returncode == 0:
-                    return OpenClawInstallResult(
-                        status=OpenClawStatus.INSTALLED,
-                        install_path=install_path,
-                        message=f"已安装: {install_path}（已自动修复环境变量）",
-                    )
-                else:
-                    errors.append(f"{cmd2} 命令存在但构建产物缺失，建议重新安装以完成编译")
+            else:
+                errors.append(f"{cmd2} 命令存在但构建产物缺失,建议重新安装以完成编译")
 
     # 未检测到可用安装
     error_detail = "; ".join(errors) if errors else ""
     return OpenClawInstallResult(
-        status=OpenClawStatus.NOT_INSTALLED, 
+        status=OpenClawStatus.NOT_INSTALLED,
         message="未检测到 OpenClaw",
-        error_detail=error_detail
+        error_detail=error_detail,
     )
 
 
@@ -374,7 +351,6 @@ def _check_browser() -> BrowserResult:
     浏览器自动化功能（Playwright + CDP）需要 Chromium 系浏览器，Safari 不支持。
     这是一个提示项，不影响安装流程（is_ready 不受影响）。
     """
-    os_type = platform.system().lower()
     found = []
     candidates = []
 
@@ -390,7 +366,7 @@ def _check_browser() -> BrowserResult:
             ("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary", "Chrome Canary"),
             ("/Applications/Chromium.app/Contents/MacOS/Chromium", "Chromium"),
         ]
-    elif os_type == "win32":
+    elif is_windows():
         # Windows
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         program_files = os.environ.get("ProgramFiles", "C:\\Program Files")

@@ -5,7 +5,6 @@ Provider 配置以及卸载等核心操作。所有耗时操作均通过回调�
 """
 
 import subprocess
-import platform
 import time
 import os
 import shutil
@@ -20,7 +19,12 @@ from src.models.config import (
     ConfigProgress,
     ConfigResult,
 )
-from src.models.utils import force_rmtree, resolve_openclaw_cmd
+from src.models.utils import (
+    force_rmtree,
+    kill_port_process,
+    resolve_openclaw_cmd,
+    windows_hidden_subprocess_kwargs,
+)
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD, TIMEOUT_NODE_MSI_INSTALL
 from src.contracts.define_base_manager import BaseOpenClawManager
 from src.contracts.define_decorators import log_method
@@ -290,15 +294,16 @@ class OpenClawManager(BaseOpenClawManager):
         """
         try:
             cmd = resolve_openclaw_cmd()
-            os_type = platform.system().lower()
             if is_windows():
                 # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
+                # 隐藏控制台窗口,避免 GUI 上闪烁黑色 cmd 窗口。
                 result = subprocess.run(
                     ["where", cmd],
                     shell=False,
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    **windows_hidden_subprocess_kwargs(),
                 )
                 return result.returncode == 0
             else:
@@ -425,9 +430,27 @@ class OpenClawManager(BaseOpenClawManager):
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            self._secure_chmod_config(config_path)
             self._log("Browser config injected: enabled=true, defaultProfile=openclaw")
         except OSError as e:
             self._log(f"Browser config: failed to write: {e}")
+
+    def _secure_chmod_config(self, path: str) -> None:
+        """对包含敏感信息（API Key 等）的配置文件应用收敛权限。
+
+        - POSIX：chmod 0600，仅当前用户可读写。openclaw.json 中包含 apiKey，
+          默认 umask 可能使其他本地账户可读，必须显式收敛。
+        - Windows：用户主目录默认 ACL 已限制为该用户与 Administrators，无需额外操作。
+          且 os.chmod 在 Windows 上仅能设置只读位，不影响 ACL，调用反而可能造成误导。
+
+        失败仅记录日志，不抛异常（避免在 Windows 上因 os.chmod 行为差异中断主流程）。
+        """
+        if is_windows():
+            return
+        try:
+            os.chmod(path, 0o600)
+        except OSError as e:
+            self._log(f"  设置配置文件权限失败（非致命）: {e}")
 
     def _build_clean_env(self) -> dict:
         """构建干净的子进程环境变量
@@ -485,6 +508,7 @@ class OpenClawManager(BaseOpenClawManager):
                     shell=False,
                     capture_output=True,
                     timeout=TIMEOUT_NODE_MSI_INSTALL,
+                    **windows_hidden_subprocess_kwargs(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
@@ -523,8 +547,8 @@ class OpenClawManager(BaseOpenClawManager):
                 time.sleep(1)
 
             # 所有平台统一使用前台模式（不需要管理员权限）
-            os_type = platform.system().lower()
-            self._log(f"Detected OS: {os_type}")
+            os_label = "windows" if is_windows() else ("macos" if is_macos() else "linux")
+            self._log(f"Detected OS: {os_label}")
             self._log("Starting gateway in foreground mode...")
 
             # 使用 'openclaw gateway'（不带 'start'）前台启动，任何平台都不需要管理员权限
@@ -555,6 +579,14 @@ class OpenClawManager(BaseOpenClawManager):
                     popen_kwargs["cwd"] = str(local_project)
                 else:
                     full_cmd = [cmd, "gateway"]
+                # Popen(shell=False) 不查 PATHEXT,把裸命令解析成完整 .cmd 路径。
+                for i in range(len(full_cmd)):
+                    head = full_cmd[i]
+                    if (os.path.sep in head or "/" in head) or os.path.splitext(head)[1]:
+                        continue  # 已是完整路径或已有扩展名
+                    resolved = shutil.which(head, path=env.get("PATH"))
+                    if resolved:
+                        full_cmd[i] = resolved
                 # Windows 隐藏窗口
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -680,7 +712,6 @@ class OpenClawManager(BaseOpenClawManager):
                 args=[], returncode=1, stdout="", stderr="参数类型错误",
             )
 
-        os_type = platform.system().lower()
         cmd = resolve_openclaw_cmd()
         env = self._build_clean_env()
 
@@ -702,6 +733,16 @@ class OpenClawManager(BaseOpenClawManager):
             else:
                 full_cmd = [cmd] + args
                 cwd = None
+
+            # Windows + shell=False + Popen/run 不查 PATHEXT —— openclaw-cn / pnpm
+            # 在 Windows 上实际是 %APPDATA%\Roaming\npm\xxx.cmd 这种批处理包装器,
+            # 直接传 ["openclaw-cn", ...] 会报 [WinError 2]。shutil.which 会查
+            # PATHEXT,解析出完整 .cmd 路径后 Popen 才能正常执行。
+            head = full_cmd[0]
+            if not (os.path.sep in head or "/" in head) and not os.path.splitext(head)[1]:
+                resolved = shutil.which(head, path=env.get("PATH"))
+                if resolved:
+                    full_cmd = [resolved] + full_cmd[1:]
 
             self._log(f"Execute: {' '.join(full_cmd[:5])}...")
 
@@ -760,29 +801,46 @@ class OpenClawManager(BaseOpenClawManager):
                 self._log(f"Invalid port: {port}")
                 return
 
-            os_type = platform.system().lower()
             if is_windows():
+                hidden = windows_hidden_subprocess_kwargs()
                 result = subprocess.run(
                     ["netstat", "-ano"],
                     capture_output=True,
                     text=True,
+                    timeout=15,
+                    **hidden,
                 )
                 if result.returncode == 0 and result.stdout:
-                    # 使用正则精确匹配端口，避免误匹配（如 18789 匹配到 118789）
-                    port_pattern = re.compile(rf':{port}\s+.*?(\d+)\s*$')
-                    for line in result.stdout.strip().splitlines():
-                        match = port_pattern.search(line)
-                        if match:
-                            pid = match.group(1)
-                            if pid.isdigit():
-                                try:
-                                    subprocess.run(
-                                        ["taskkill", "/PID", pid, "/F"],
-                                        capture_output=True,
-                                    )
-                                    self._log(f"Killed process PID: {pid}")
-                                except (OSError, subprocess.SubprocessError) as e:
-                                    self._log(f"Kill process error: {e}")
+                    # netstat -ano 列格式：Proto  LocalAddr  ForeignAddr  State?  PID
+                    # （TCP 行有 State，UDP 行没有）。按空白拆分字段后，
+                    # 仅匹配 LocalAddr 以 :port 结尾、PID 为最后一列的行，
+                    # 避免误匹配 ForeignAddr 中也含相同端口或字符串包含的情况。
+                    killed_pids: set[str] = set()
+                    for line in result.stdout.splitlines():
+                        fields = line.split()
+                        if len(fields) < 4:
+                            continue
+                        proto = fields[0].upper()
+                        if proto not in ("TCP", "UDP", "TCP6", "UDP6"):
+                            continue
+                        local_addr = fields[1]
+                        # 匹配 IPv4 :port 或 IPv6 ]:port 结尾
+                        if not (local_addr.endswith(f":{port}") or local_addr.endswith(f"]:{port}")):
+                            continue
+                        pid = fields[-1]
+                        if not pid.isdigit() or pid in killed_pids:
+                            continue
+                        killed_pids.add(pid)
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/PID", pid, "/F", "/T"],
+                                capture_output=True,
+                                timeout=10,
+                                **hidden,
+                            )
+                            self._log(f"Killed process PID: {pid}")
+                        except (OSError, subprocess.SubprocessError) as e:
+                            self._log(f"Kill process error: {e}")
             else:
                 result = subprocess.run(
                     ["lsof", "-ti", f":{port}"],
@@ -1201,6 +1259,7 @@ class OpenClawManager(BaseOpenClawManager):
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            self._secure_chmod_config(config_path)
             self._log(f"  Set model config: primary={primary}, fallbacks={fallbacks or 'none'}")
         except OSError as e:
             self._log(f"  Failed to write model config: {e}")
@@ -1281,6 +1340,7 @@ class OpenClawManager(BaseOpenClawManager):
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            self._secure_chmod_config(config_path)
             self._log(f"  Updated provider {provider_id} models OK")
         except OSError as e:
             self._log(f"  Failed to write provider models: {e}")
@@ -1351,6 +1411,7 @@ class OpenClawManager(BaseOpenClawManager):
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
+            self._secure_chmod_config(config_path)
             self._log(f"  Set custom provider {provider_id} OK")
         except OSError as e:
             self._log(f"  Failed to write custom provider {provider_id}: {e}")
@@ -1413,24 +1474,37 @@ class OpenClawManager(BaseOpenClawManager):
             bool: 是否全部成功（个别步骤失败不影响整体返回，但会记录日志）。
         """
         import shutil
-        import platform
 
         all_ok = True
-        os_type = platform.system().lower()
         home = os.path.expanduser("~")
 
         # 1. 停止 Gateway
+        # 关键: 不调用 self._stop_gateway()。该方法会触发 _run_openclaw_command(["gateway","stop"]),
+        # 也就是去启动 openclaw 这个 Node.js wrapper —— 冷启动 ~10-20s 让 UI 看似卡死,
+        # 而且 Node 启动时会重新生成 ~/.openclaw 目录,导致随后 force_rmtree 还得再删一遍。
+        # 卸载场景下 Gateway 唯一占用的资源就是 18789 端口,杀掉占用进程即可。
         if cancel_event and cancel_event():
             if on_log:
                 on_log("卸载已取消")
             return False
         try:
-            self._stop_gateway()
+            # 先 kill 我们自己 Popen 的前台 Gateway 进程(如果存在)
+            if self.process and self.process.poll() is None:
+                try:
+                    self._kill_process_tree(self.process)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                self.process = None
+            # 兜底: 直接 kill 占用 18789 端口的进程
+            killed = kill_port_process(18789, on_log)
             if on_log:
-                on_log("已停止 OpenClaw Gateway")
+                if killed:
+                    on_log(f"已停止 OpenClaw Gateway({killed} 个进程)")
+                else:
+                    on_log("Gateway 未运行,无需停止")
         except (OSError, subprocess.SubprocessError) as e:
             if on_log:
-                on_log(f"停止 Gateway 失败（可能未运行）: {e}")
+                on_log(f"停止 Gateway 失败(继续卸载): {e}")
 
         # 2. 删除本地构建目录
         if cancel_event and cancel_event():
@@ -1458,11 +1532,15 @@ class OpenClawManager(BaseOpenClawManager):
             if on_log:
                 on_log("卸载已取消")
             return False
+        # Windows 上 npm 实际是 npm.cmd, shell=False 不查 PATHEXT 会报 WinError 2。
+        npm_cmd = "npm.cmd" if is_windows() else "npm"
         for pkg in ["openclaw-cn", "openclaw"]:
             try:
                 result = subprocess.run(
-                    ["npm", "uninstall", "-g", pkg],
-                    shell=False, capture_output=True, text=True
+                    [npm_cmd, "uninstall", "-g", pkg],
+                    shell=False, capture_output=True, text=True,
+                    timeout=60,
+                    **windows_hidden_subprocess_kwargs(),
                 )
                 if result.returncode == 0:
                     if on_log:
@@ -1478,7 +1556,7 @@ class OpenClawManager(BaseOpenClawManager):
             if on_log:
                 on_log("卸载已取消")
             return False
-        if os_type == "win32":
+        if is_windows():
             wrapper_dir = os.path.join(home, r"AppData\Roaming\npm")
             wrappers = ["openclaw.cmd", "openclaw-cn.cmd"]
         else:
@@ -1499,7 +1577,7 @@ class OpenClawManager(BaseOpenClawManager):
                     all_ok = False
 
         # 5. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目
-        if os_type != "win32":
+        if not is_windows():
             for rc_file in [".bashrc", ".zshrc", ".profile"]:
                 rc_path = os.path.join(home, rc_file)
                 if os.path.exists(rc_path):
@@ -1536,7 +1614,17 @@ class OpenClawManager(BaseOpenClawManager):
                         if on_log:
                             on_log(f"清理 {rc_file} 失败: {e}")
 
+        # 卸载结束时如实回报: all_ok=False 说明有目录/包装器没删干净(常见于
+        # Windows 反病毒短暂占用、node.exe 句柄未释放),如果还打"卸载完成",
+        # 用户重开安装器看到"已安装"会以为是 bug。明确提示残留并建议重启重试。
         if on_log:
-            on_log("OpenClaw 卸载完成")
+            if all_ok:
+                on_log("OpenClaw 卸载完成")
+            else:
+                on_log(
+                    "OpenClaw 卸载部分完成,但有文件未能删除。"
+                    "可能原因: 反病毒/进程短暂占用文件。"
+                    "建议: 关闭浏览器/编辑器后重启系统,再次运行卸载器。"
+                )
         return all_ok
 

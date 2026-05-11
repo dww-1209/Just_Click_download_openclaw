@@ -198,17 +198,12 @@ class US05ConfigPage(QWidget):
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #856404;")
 
-        # 原始错误输出：等宽字体小字，默认折叠，供技术人员定位根因
-        self.error_detail_label = QLabel("")
-        self.error_detail_label.setWordWrap(True)
-        self.error_detail_label.setStyleSheet(
-            "color: #856404; font-family: monospace; font-size: 10px; background-color: #fff8e1; padding: 5px;"
-        )
-        self.error_detail_label.hide()
+        # 失败时只在黄底卡片里展示一句友好错误,完整日志走下面那个可折叠的黑底
+        # "详细日志"面板。之前还有个 error_detail_label 把最后 20 行日志直接糊
+        # 在黄底卡片里,跟黑底日志重复,而且小字等宽 + 不可复制,对小白用户没用。
 
         error_layout.addWidget(self.error_title)
         error_layout.addWidget(self.error_label)
-        error_layout.addWidget(self.error_detail_label)
 
         # 按钮区域
         # 按钮状态机：
@@ -301,7 +296,6 @@ class US05ConfigPage(QWidget):
 
         self.success_frame.hide()
         self.error_frame.hide()
-        self.error_detail_label.hide()
 
         self.back_button.show()
         self.manual_config_button.hide()
@@ -355,11 +349,7 @@ class US05ConfigPage(QWidget):
         error_text = result.error_message or "配置过程中发生错误"
         self.error_label.setText(error_text)
 
-        # 显示详细日志
-        if result.log_lines:
-            detail = "\n".join(result.log_lines[-20:])  # 显示最后20行
-            self.error_detail_label.setText(detail)
-            self.error_detail_label.show()
+        # 完整日志走下面那个可折叠"详细日志"面板,这里黄底只放一句友好提示。
 
         self.error_frame.show()
         self.success_frame.hide()
@@ -384,7 +374,6 @@ class US05ConfigPage(QWidget):
 
         self.success_frame.hide()
         self.error_frame.hide()
-        self.error_detail_label.hide()
 
         self.back_button.show()
         self.manual_config_button.hide()

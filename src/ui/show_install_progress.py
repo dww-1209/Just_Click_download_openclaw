@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont
 
 from src.models.install import InstallStatus, InstallStage, InstallProgress, InstallResult
 from src.models.constants import is_windows
+from src.models.utils import redact_home_path
 
 
 class InstallingPage(QWidget):
@@ -258,27 +259,32 @@ class InstallingPage(QWidget):
 
         friendly_msg = ""
 
+        # error_message 也常被拼到 details/日志中,先过一遍脱敏再用
+        safe_error_message = redact_home_path(result.error_message or "")
+
         # 优先使用结构化的 error_detail
         if result.error_detail is not None:
             friendly_msg = UserMessageHelper.get_friendly_message_by_category(
                 category=result.error_detail.category,
                 user_message=result.error_detail.user_message,
                 suggestion=result.error_detail.suggestion,
-                details=result.error_message,
+                details=safe_error_message,
             )
             # 在日志中追加完整的诊断信息
+            # 命令、上下文、原始错误都可能携带绝对路径(C:\Users\<name>...),
+            # 截屏分享到 issue/客服时会暴露用户名,统一过 redact_home_path 把 home 替换为 ~。
             self._append_log("=" * 40)
             self._append_log("[诊断信息]")
             self._append_log(f"错误分类: {result.error_detail.category.value}")
             self._append_log(f"发生阶段: {result.error_detail.stage or '未知'}")
-            self._append_log(f"上下文: {result.error_detail.context or '无'}")
+            self._append_log(f"上下文: {redact_home_path(result.error_detail.context) or '无'}")
             if result.error_detail.command:
-                self._append_log(f"触发命令: {result.error_detail.command[:200]}")
+                self._append_log(f"触发命令: {redact_home_path(result.error_detail.command)[:200]}")
             if result.error_detail.returncode is not None:
                 self._append_log(f"返回码: {result.error_detail.returncode}")
             self._append_log("-" * 40)
             self._append_log("[原始错误输出]")
-            raw = result.error_detail.raw_error
+            raw = redact_home_path(result.error_detail.raw_error)
             if len(raw) > 3000:
                 self._append_log(raw[:3000])
                 self._append_log(f"... (后续截断，共 {len(raw)} 字符，请查看完整日志文件)")
@@ -289,13 +295,13 @@ class InstallingPage(QWidget):
             # 回退：根据错误内容关键词判断错误类型
             error_lower = result.error_message.lower()
             if "网络" in error_lower or "download" in error_lower or "curl" in error_lower:
-                friendly_msg = UserMessageHelper.get_friendly_error_message("download", result.error_message)
+                friendly_msg = UserMessageHelper.get_friendly_error_message("download", safe_error_message)
             elif "权限" in error_lower or "permission" in error_lower or "access" in error_lower:
-                friendly_msg = UserMessageHelper.get_friendly_error_message("permission", result.error_message)
+                friendly_msg = UserMessageHelper.get_friendly_error_message("permission", safe_error_message)
             elif "磁盘" in error_lower or "space" in error_lower:
-                friendly_msg = UserMessageHelper.get_friendly_error_message("disk_space", result.error_message)
+                friendly_msg = UserMessageHelper.get_friendly_error_message("disk_space", safe_error_message)
             else:
-                friendly_msg = UserMessageHelper.get_friendly_error_message("install", result.error_message)
+                friendly_msg = UserMessageHelper.get_friendly_error_message("install", safe_error_message)
 
         if friendly_msg:
             self.hint_label.setText(friendly_msg)
@@ -304,7 +310,7 @@ class InstallingPage(QWidget):
             )
             self.hint_label.show()
 
-        self._append_log(f"安装失败: {result.error_message}")
+        self._append_log(f"安装失败: {safe_error_message}")
 
         # 按钮状态
         self.back_button.setEnabled(True)
