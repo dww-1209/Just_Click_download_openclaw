@@ -214,7 +214,12 @@ echo "正在启动 {launcher_display_name}..."
     return True
 
 
-def build(output_dir: str = None, offline: bool = False, resources_dir: str = None):
+def build(
+    output_dir: str = None,
+    offline: bool = False,
+    resources_dir: str = None,
+    no_offline: bool = False,
+):
     """使用 PyInstaller 打包安装器 + 卸载器
 
     依次调用 _build_single 打包两个程序，构建完成后输出文件大小和平台提示。
@@ -224,6 +229,9 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
         output_dir: 输出目录
         offline: 是否构建离线版安装器
         resources_dir: 离线资源目录路径，离线构建时通过 --add-data 打包
+        no_offline: 强制跳过离线版构建。即使资源目录非空也不打。
+            适用场景: CI 上某些平台没有完整离线资源(如 Mac x86_64 暂缺
+            openclaw-prebuilt 产物),只发在线版 + 卸载器。
     """
     if output_dir is None:
         output_dir = "dist"
@@ -236,8 +244,12 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     if os.path.isdir(candidate) and any(os.scandir(candidate)):
         auto_resources_dir = candidate
 
-    # 显式参数优先，未指定时回退到自动检测
-    if not offline and auto_resources_dir:
+    # 显式参数优先,未指定时回退到自动检测。
+    # no_offline 强制跳过离线版,无论资源是否齐全(CI 场景使用)。
+    if no_offline:
+        offline = False
+        resources_dir = None
+    elif not offline and auto_resources_dir:
         offline = True
         resources_dir = auto_resources_dir
     elif offline and not resources_dir and auto_resources_dir:
@@ -261,6 +273,20 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     print(f"架构: {platform.machine()}")
     print()
 
+    # macOS 双架构发布: 产物文件名加 -arm64 / -x64 后缀,让用户能区分下载哪个。
+    # Windows / Linux 不加后缀: Windows 我们只发 x64(ARM64 走 Prism 模拟),
+    # Linux 单一架构,加后缀只会让用户困惑。
+    if is_macos():
+        machine = platform.machine().lower()
+        if machine in ("arm64", "aarch64"):
+            arch_suffix = "-arm64"
+        elif machine in ("x86_64", "amd64"):
+            arch_suffix = "-x64"
+        else:
+            arch_suffix = ""
+    else:
+        arch_suffix = ""
+
     # 1. 打包在线版安装器（始终构建）
     sep = ";" if is_windows() else ":"
     add_data_online = []
@@ -277,9 +303,9 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     ok_online = _build_single(
         output_dir=output_dir,
         entry_file="launch_installer.py",
-        app_name="OpenClaw安装器",
+        app_name=f"OpenClaw安装器{arch_suffix}",
         bundle_id="com.openclaw.installer",
-        launcher_script_name="双击运行-OpenClaw安装器",
+        launcher_script_name=f"双击运行-OpenClaw安装器{arch_suffix}",
         launcher_display_name="OpenClaw 安装器",
         add_data=add_data_online,
     )
@@ -304,9 +330,9 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
         ok_offline = _build_single(
             output_dir=output_dir,
             entry_file="launch_installer_offline.py",
-            app_name="OpenClaw离线安装器",
+            app_name=f"OpenClaw离线安装器{arch_suffix}",
             bundle_id="com.openclaw.installer.offline",
-            launcher_script_name="双击运行-OpenClaw离线安装器",
+            launcher_script_name=f"双击运行-OpenClaw离线安装器{arch_suffix}",
             launcher_display_name="OpenClaw 离线安装器",
             add_data=add_data_offline,
         )
@@ -315,9 +341,9 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     ok_uninstall = _build_single(
         output_dir=output_dir,
         entry_file="launch_uninstaller.py",
-        app_name="OpenClaw卸载工具",
+        app_name=f"OpenClaw卸载工具{arch_suffix}",
         bundle_id="com.openclaw.uninstaller",
-        launcher_script_name="双击运行-OpenClaw卸载工具",
+        launcher_script_name=f"双击运行-OpenClaw卸载工具{arch_suffix}",
         launcher_display_name="OpenClaw 卸载工具",
     )
 
@@ -341,11 +367,11 @@ def build(output_dir: str = None, offline: bool = False, resources_dir: str = No
     print("=" * 50)
     print()
 
-    # 输出文件列表和大小
-    app_names = ["OpenClaw安装器"]
+    # 输出文件列表和大小(文件名带架构后缀,与 _build_single 调用一致)
+    app_names = [f"OpenClaw安装器{arch_suffix}"]
     if offline and resources_dir and os.path.isdir(resources_dir):
-        app_names.append("OpenClaw离线安装器")
-    app_names.append("OpenClaw卸载工具")
+        app_names.append(f"OpenClaw离线安装器{arch_suffix}")
+    app_names.append(f"OpenClaw卸载工具{arch_suffix}")
     for app_name in app_names:
         if is_macos():
             exe_path = os.path.join(output_dir, f"{app_name}.app")
@@ -407,6 +433,12 @@ def main():
         default=None,
         help="离线资源目录路径，离线构建时通过 --add-data 打包到安装器中",
     )
+    parser.add_argument(
+        "--no-offline",
+        action="store_true",
+        help="强制跳过离线版构建,即使 resources/{platform}/ 目录非空。"
+             "用于 CI 上某些平台暂缺完整离线资源(如 Mac x86_64)的场景。",
+    )
 
     args = parser.parse_args()
 
@@ -417,7 +449,12 @@ def main():
     if not args.no_clean:
         clean_build()
 
-    build(output_dir=args.output, offline=args.offline, resources_dir=args.resources_dir)
+    build(
+        output_dir=args.output,
+        offline=args.offline,
+        resources_dir=args.resources_dir,
+        no_offline=args.no_offline,
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,93 @@
+name: Build macOS Installer (Intel x86_64)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 仅为 Intel Mac (x86_64) 构建在线版 + 卸载工具:
+# - Apple Silicon (arm64) 产物用户已在本地测过,不需要 CI
+# - Intel Mac 用户暂缺 openclaw-prebuilt-macos x86_64 预构建产物,
+#   暂只发在线版(用户自己 git clone + pnpm build)+ 卸载工具
+#
+# 跨架构限制: PyInstaller 必须在目标架构真机构建,Apple Silicon 跑不出
+# 原生 x86_64 产物。GitHub Actions 的 macos-13 是真实 Intel mac mini。
+jobs:
+  build:
+    runs-on: macos-13   # Intel mac mini,产 x86_64 native 产物
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify runner is Intel
+        # 防止 GitHub 未来悄悄换底层硬件导致产物架构错位
+        run: |
+          echo "Actual arch: $(uname -m)"
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "::error::macos-13 should be x86_64 but got $(uname -m)"
+            exit 1
+          fi
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        # PySide6 / psutil 等 wheel 会自动按 runner 架构选 x86_64 版
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx psutil "pyinstaller>=6.11.0,<6.12.0" "pyside6>=6.8.0,<6.9.0"
+
+      - name: Build executables (online + uninstaller, no offline)
+        env:
+          PYTHONIOENCODING: utf-8
+        # --no-offline 强制跳过离线版:Intel Mac 暂缺 openclaw-prebuilt x86_64 资源,
+        # 真要打离线版会因找不到预构建产物失败。在线版自带 git tarball 是 universal,
+        # Intel Mac 直接用即可(已实测)。
+        run: python build.py --no-offline
+
+      - name: Verify built binary architecture
+        # 二次校验防止 PyInstaller 在某种 venv 配置下产出错架构
+        run: |
+          APP=$(find dist -maxdepth 1 -name "OpenClaw安装器*.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::No installer .app produced"
+            ls -la dist/
+            exit 1
+          fi
+          EXE="$APP/Contents/MacOS/$(basename "$APP" .app)"
+          echo "Binary: $EXE"
+          file "$EXE"
+          if ! file "$EXE" | grep -q "x86_64"; then
+            echo "::error::Binary arch mismatch: expected x86_64"
+            exit 1
+          fi
+
+      - name: List produced artifacts
+        run: |
+          echo "=== dist/ contents ==="
+          ls -la dist/
+          echo ""
+          echo "=== App bundle sizes ==="
+          du -sh dist/*.app 2>/dev/null || true
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw-Installer-macOS-x64-${{ github.run_id }}
+          # .app + .command 启动器(后者用于绕过 Gatekeeper)
+          path: |
+            dist/*.app
+            dist/*.command
+          retention-days: 90
+
+      - name: Upload full dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw-Dist-macOS-x64-${{ github.run_id }}
+          path: dist/**
+          retention-days: 90
