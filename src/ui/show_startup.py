@@ -7,7 +7,7 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QProgressBar, QFrame, QLineEdit, QApplication, QTextEdit,
+    QProgressBar, QFrame, QLineEdit, QApplication, QPlainTextEdit,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
@@ -158,8 +158,12 @@ class US06StartupPage(QWidget):
         log_header.setStyleSheet("color: #ccc; font-size: 11px;")
         log_layout.addWidget(log_header)
 
-        self.log_text = QTextEdit()
+        # 用 QPlainTextEdit + setMaximumBlockCount 而不是 QTextEdit:
+        # QTextEdit 是富文本路径,Gateway 启动慢/健康检查重试时日志可能突发,
+        # 主线程槽函数被堆满会触发 Windows"程序无响应"弹窗。
+        self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setMaximumBlockCount(200)
         self.log_text.setObjectName("logArea")
         self.log_text.setMaximumHeight(150)
         log_layout.addWidget(self.log_text)
@@ -368,7 +372,8 @@ class US06StartupPage(QWidget):
             self.copy_button.setText("已复制!")
 
     def add_log_line(self, line: str) -> None:
-        self.log_text.append(line)
+        # appendPlainText 是 QPlainTextEdit 的纯文本快路径,比 QTextEdit.append 快一个数量级
+        self.log_text.appendPlainText(line)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 

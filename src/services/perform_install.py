@@ -36,6 +36,9 @@ class ReinstallWorker(QThread):
         force_rmtree 是 Python 原生 os.unlink 不会真正 hang,直接同步调即可。
         """
         try:
+            # TODO(架构): services 层直接 import adapters 违反六层依赖方向。
+            # 规范做法是定义 ICleanupTask Protocol,由 launch_installer.py 注入实例。
+            # 当前 lazy import 是规避循环依赖的权宜之计,后续架构整理时改 Protocol 注入。
             from src.adapters.cleanup_reinstall import cleanup_for_reinstall
             cleanup_for_reinstall(on_log=self.log_line.emit)
         except Exception as e:

@@ -114,7 +114,12 @@ class EnvCheckService(QObject):
         return False
 
     def stop(self) -> None:
-        """停止环境检测线程。请求退出并等待线程结束。"""
+        """请求停止环境检测线程,但不在主线程同步等待。
+
+        Windows 关键: worker.wait() 是阻塞调用,环境检测涉及网络/磁盘 IO,
+        5 秒以上未响应 DWM 探测就触发"程序无响应"弹窗。改为只 quit() 让
+        Worker 在下一个事件循环检查点退出,主线程不阻塞。
+        与 InstallService.stop() / UninstallService.stop() 对齐。
+        """
         if self.worker and self.worker.isRunning():
             self.worker.quit()
-            self.worker.wait()

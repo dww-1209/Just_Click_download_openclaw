@@ -15,17 +15,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.adapters.run_shell import run_shell, ShellResult
-from src.models.constants import TIMEOUT_DOWNLOAD, GIT_FOR_WINDOWS_URLS
-
-
-def _get_hidden_startupinfo() -> None:
-    """获取用于隐藏窗口的 startupinfo（Windows 专用）"""
-    startupinfo = None
-    if os.name == "nt":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0  # SW_HIDE
-    return startupinfo
+from src.models.constants import TIMEOUT_DOWNLOAD, GIT_FOR_WINDOWS_URLS, is_windows
+from src.models.utils import windows_hidden_subprocess_kwargs
 
 
 def is_git_installed() -> bool:
@@ -44,13 +35,13 @@ def is_git_installed() -> bool:
 
         for git_cmd in git_paths:
             try:
+                # windows_hidden_subprocess_kwargs() 在非 Windows 返回空 dict,跨平台安全
                 result = subprocess.run(
                     [git_cmd, "--version"],
                     capture_output=True,
                     shell=False,
                     timeout=5,
-                    startupinfo=_get_hidden_startupinfo(),
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    **windows_hidden_subprocess_kwargs(),
                 )
                 if result.returncode == 0:
                     return True

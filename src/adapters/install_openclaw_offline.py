@@ -42,7 +42,13 @@ from src.models.install import (
     InstallErrorDetail,
     ErrorCategory,
 )
-from src.models.utils import ensure_dir_in_path, ensure_local_bin_in_path, safe_tar_extract
+from src.models.utils import (
+    ensure_dir_in_path,
+    ensure_local_bin_in_path,
+    force_rmtree,
+    safe_tar_extract,
+    windows_hidden_subprocess_kwargs,
+)
 from src.contracts.define_base_installer import BaseInstaller
 
 
@@ -134,7 +140,11 @@ class OfflineOpenClawInstaller(BaseInstaller):
                 target = dest_dir / item.name
                 if target.exists():
                     if item.is_dir():
-                        shutil.rmtree(target)
+                        # 用 force_rmtree 而非 shutil.rmtree:Python 3.12 的 shutil.rmtree
+                        # 在 onerror 回调中调 os.open 缺 flags 参数会失败,Windows + 只读
+                        # 文件场景会留下子树。force_rmtree 走 chmod -R +w + 逐文件 unlink,
+                        # 单个文件失败不影响整体。
+                        force_rmtree(target, self._log)
                     else:
                         target.unlink()
                 shutil.move(str(item), str(target))
@@ -229,11 +239,14 @@ class OfflineOpenClawInstaller(BaseInstaller):
     def _check_pnpm(self) -> bool:
         """检查 pnpm 是否可用。"""
         try:
+            # Windows GUI 程序调子进程必须双保险隐藏窗口(STARTUPINFO + CREATE_NO_WINDOW),
+            # 否则会闪一个黑色 cmd 窗口
             result = subprocess.run(
                 ["pnpm", "-v"],
                 capture_output=True,
                 text=True,
                 timeout=TIMEOUT_SHORT_CMD,
+                **windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
                 self._log(f"pnpm {result.stdout.strip()} 已可用")
@@ -355,6 +368,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
             capture_output=True,
             text=True,
             timeout=120,
+            **windows_hidden_subprocess_kwargs(),  # 隐藏 Windows 黑窗
         )
 
         if result.returncode != 0:
@@ -487,6 +501,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
                 text=True,
                 timeout=TIMEOUT_INSTALL_CMD,
                 env=os.environ.copy(),
+                **windows_hidden_subprocess_kwargs(),  # 隐藏 Windows 黑窗(onboard 期间)
             )
             self._log(f"onboard return code: {result.returncode}")
             if result.stdout:
@@ -529,6 +544,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
                             capture_output=True,
                             text=True,
                             timeout=TIMEOUT_SHORT_CMD,
+                            **windows_hidden_subprocess_kwargs(),  # 隐藏 Windows 黑窗
                         )
                         if result.returncode == 0:
                             self._log(f"验证通过: {cmd_name} {result.stdout.strip()}")

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from typing import Callable, Optional
 
@@ -112,8 +113,13 @@ def cleanup_for_reinstall(on_log: Optional[Callable[[str], None]] = None) -> boo
                     log(f"删除命令失败(将继续): {wpath}")
 
     # 4) 卸全局 npm 包(兼容旧版 npm install -g 的安装方式)
+    # 用 shutil.which 主动解析,即使 PATH 中缺 %APPDATA%\Roaming\npm 也能找到 npm,
+    # 避免 Popen 报 WinError 2(PATHEXT 不被 shell=False+Popen 自动解析)。
     log("正在清理 npm 包...")
-    npm_cmd = "npm.cmd" if is_windows() else "npm"
+    if is_windows():
+        npm_cmd = shutil.which("npm.cmd") or shutil.which("npm") or "npm.cmd"
+    else:
+        npm_cmd = "npm"
     for pkg in ("openclaw-cn", "openclaw"):
         _quiet_run([npm_cmd, "uninstall", "-g", pkg])
     log("npm 包已清理")

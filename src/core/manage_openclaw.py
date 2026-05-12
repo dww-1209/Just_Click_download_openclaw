@@ -1533,7 +1533,12 @@ class OpenClawManager(BaseOpenClawManager):
                 on_log("卸载已取消")
             return False
         # Windows 上 npm 实际是 npm.cmd, shell=False 不查 PATHEXT 会报 WinError 2。
-        npm_cmd = "npm.cmd" if is_windows() else "npm"
+        # 用 shutil.which 主动解析为完整路径,即使用户 PATH 中缺少 %APPDATA%\Roaming\npm
+        # (初次安装失败回滚等场景),只要系统有 node 都能找到。
+        if is_windows():
+            npm_cmd = shutil.which("npm.cmd") or shutil.which("npm") or "npm.cmd"
+        else:
+            npm_cmd = "npm"
         for pkg in ["openclaw-cn", "openclaw"]:
             try:
                 result = subprocess.run(

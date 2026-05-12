@@ -37,7 +37,13 @@ from src.models.install import (
 )
 from src.adapters.install_git import ensure_git_installed
 from src.adapters.run_shell import run_shell, ShellResult
-from src.models.utils import ensure_dir_in_path, ensure_local_bin_in_path, force_rmtree, safe_tar_extract
+from src.models.utils import (
+    ensure_dir_in_path,
+    ensure_local_bin_in_path,
+    force_rmtree,
+    safe_tar_extract,
+    windows_hidden_subprocess_kwargs,
+)
 from src.contracts.define_base_installer import BaseInstaller
 from src.contracts.define_decorators import log_method
 
@@ -467,7 +473,8 @@ class OpenClawInstaller(BaseInstaller):
                 target = self._node_dir / item.name
                 if target.exists():
                     if item.is_dir():
-                        shutil.rmtree(target)
+                        # Python 3.12 shutil.rmtree 在只读文件场景会留下子树,统一走 force_rmtree
+                        force_rmtree(target, self._log)
                     else:
                         target.unlink()
                 shutil.move(str(item), str(target))
@@ -1323,6 +1330,7 @@ class OpenClawInstaller(BaseInstaller):
                     shell=False,
                     capture_output=True,
                     timeout=TIMEOUT_NODE_MSI_INSTALL,
+                    **windows_hidden_subprocess_kwargs(),  # 隐藏 taskkill 黑窗
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
