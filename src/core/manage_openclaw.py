@@ -293,7 +293,8 @@ class OpenClawManager(BaseOpenClawManager):
             bool: 命令是否可用。
         """
         try:
-            cmd = resolve_openclaw_cmd()
+            cmd = resolve_open
+            claw_cmd()
             if is_windows():
                 # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
                 # 隐藏控制台窗口,避免 GUI 上闪烁黑色 cmd 窗口。
@@ -1393,8 +1394,11 @@ class OpenClawManager(BaseOpenClawManager):
         # onboard 路径不会进这里,所以默认值 openai-completions 仅作为兜底。
         api_protocol = cfg.get("api_protocol", "openai-completions")
 
-        # model_metadata: { model_ref -> { name, reasoning, contextWindow, maxTokens } }
-        # 自定义 Provider 表单可填这些字段;缺省走默认值,与 OpenClaw 上游默认对齐。
+        # model_metadata 现在只透传 name(可选);reasoning / contextWindow / maxTokens
+        # **故意不写**——这些是模型本身的能力参数(每个模型差异很大,如 Claude Opus 4.7
+        # 是 1M ctx 而不是 200K),OpenClaw 内部对每个字段都有兜底默认值,我们硬填一个
+        # "看似合理"的默认值反而会把模型真实能力上限锁死(用户配 1M ctx 的模型却被
+        # 我们写死成 200K)。让 OpenClaw 自己处理这些字段更准确。
         model_metadata = cfg.get("model_metadata", {})
 
         models = []
@@ -1404,11 +1408,12 @@ class OpenClawManager(BaseOpenClawManager):
             models.append({
                 "id": model_id,
                 "name": meta.get("name") or model_id,
-                "reasoning": bool(meta.get("reasoning", False)),
+                # input/cost 是 schema 完整性需要,用户不感知,保留默认值
                 "input": ["text"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": int(meta.get("contextWindow", 200000)),
-                "maxTokens": int(meta.get("maxTokens", 8192)),
+                # reasoning / contextWindow / maxTokens **故意不写**:
+                # OpenClaw 启动时读不到这些字段会自动用内置默认值,
+                # 对用户实际模型的能力上限不会形成误导性硬限制。
             })
 
         config["models"]["providers"][provider_id] = {

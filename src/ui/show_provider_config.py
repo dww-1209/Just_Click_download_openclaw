@@ -529,13 +529,11 @@ class CustomVendorRow(QFrame):
         models_label.setStyleSheet("font-weight: bold; color: #555;")
         content_layout.addWidget(models_label)
 
-        # 默认值说明: 让用户知道有自动兜底,无需操心 contextWindow / maxTokens / reasoning。
-        # 上游 OpenClaw 对自定义 provider 的兜底为: contextWindow=200000、maxTokens=8192、
-        # reasoning=False(参见 manage_openclaw._configure_custom_provider)。99% 场景够用,
-        # 如需调整可通过导入完整 JSON 配置覆盖。
+        # 文案说明: 用户只填模型名称,模型能力参数(上下文/输出/推理等)由
+        # OpenClaw 后端自行处理,我们故意不传——因为不同模型差异巨大
+        # (如 Claude Opus 1M vs GPT 200K),硬填会误导。
         models_hint = QLabel(
-            "使用上游默认参数: 上下文 200K tokens / 单次输出 8K tokens。"
-            "如有特殊需求请通过「导入配置」加载自定义 JSON。"
+            "只需填写模型名称。模型能力参数(上下文长度、输出 tokens 等)由 OpenClaw 自动识别。"
         )
         models_hint.setStyleSheet("color: #888; font-size: 11px;")
         models_hint.setWordWrap(True)
@@ -601,16 +599,13 @@ class CustomVendorRow(QFrame):
             self.add_model_id.clear()
             return
         display_name = self.add_model_name.text().strip() or model_id
-        # reasoning / contextWindow / maxTokens 写死默认值。
-        # 这些字段在 model_metadata 中仍然透传给 manage_openclaw,以保持
-        # _configure_custom_provider 的数据契约稳定;但 UI 层不再让用户填写。
-        # 默认值与上游兜底一致(参见 manage_openclaw 的 meta.get(..., default))。
+        # 只收集 id + name 两个用户实际感知的字段。
+        # reasoning / contextWindow / maxTokens 不再收集也不再传递——这些是
+        # 模型本身的能力参数,每个模型差异很大(如 Claude Opus 1M ctx vs GPT 200K),
+        # 应由 OpenClaw 用其内置默认值处理,我们不应硬编码任何"猜测值"。
         self._models.append({
             "id": model_id,
             "name": display_name,
-            "reasoning": False,
-            "contextWindow": 200000,
-            "maxTokens": 8192,
         })
         self.add_model_id.clear()
         self.add_model_name.clear()
@@ -642,10 +637,7 @@ class CustomVendorRow(QFrame):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(4)
 
-            # 注: reasoning 字段不再由 UI 暴露,但导入旧配置时可能仍为 True,
-            # 兼容显示 [推理] 标签;新添加的模型 reasoning 恒为 False。
-            tag = "  [推理]" if m.get("reasoning") else ""
-            cb = QCheckBox(f"{m['name']}  ({m['id']}){tag}")
+            cb = QCheckBox(f"{m['name']}  ({m['id']})")
             cb.setChecked(True)
             cb.stateChanged.connect(self._on_model_changed)
             self._model_checkboxes[m["id"]] = cb
@@ -732,6 +724,8 @@ class CustomVendorRow(QFrame):
 
         provider_id = self.provider_id_input.text().strip()
         # 收集勾选的模型(被取消勾选的不参与配置)
+        # model_metadata 只保留 name(用户填的显示名);
+        # reasoning / contextWindow / maxTokens 不再收集——参考 _add_model 的注释。
         selected_refs: list[str] = []
         model_metadata: dict[str, dict[str, Any]] = {}
         for m in self._models:
@@ -742,9 +736,6 @@ class CustomVendorRow(QFrame):
             selected_refs.append(ref)
             model_metadata[ref] = {
                 "name": m["name"],
-                "reasoning": m["reasoning"],
-                "contextWindow": m["contextWindow"],
-                "maxTokens": m["maxTokens"],
             }
 
         return {
@@ -1219,12 +1210,11 @@ class ProviderConfigPage(QWidget):
                 for ref in cfg.get("selected_models", []) or []:
                     model_id = ref.split("/")[-1] if "/" in ref else ref
                     meta = model_metadata.get(ref, {}) if isinstance(model_metadata, dict) else {}
+                    # 只回填 id + name;模型能力参数(reasoning/ctx/max)
+                    # 老配置中可能有,但不再传给 OpenClaw,故也不进 _models 字典。
                     self.custom_row._models.append({
                         "id": model_id,
                         "name": meta.get("name") or model_id,
-                        "reasoning": bool(meta.get("reasoning", False)),
-                        "contextWindow": int(meta.get("contextWindow", 200000)),
-                        "maxTokens": int(meta.get("maxTokens", 8192)),
                     })
                 self.custom_row._refresh_model_rows()
                 custom_loaded = True
@@ -1408,16 +1398,15 @@ class ProviderConfigPage(QWidget):
                     if proto_value == api_value:
                         self.custom_row.protocol_combo.setCurrentIndex(idx)
                         break
-                # 模型列表回填,默认全部勾选(用户保存时未勾选的不写入)
+                # 模型列表回填,默认全部勾选(用户保存时未勾选的不写入)。
+                # 配置文件里若残留有 reasoning/ctx/maxTokens,UI 不再读取,
+                # 下次保存时也不会再写入这些字段(让 OpenClaw 自己用兜底默认)。
                 for m in pcfg.get("models", []) or []:
                     if not isinstance(m, dict) or not m.get("id"):
                         continue
                     self.custom_row._models.append({
                         "id": m["id"],
                         "name": m.get("name") or m["id"],
-                        "reasoning": bool(m.get("reasoning", False)),
-                        "contextWindow": int(m.get("contextWindow", 200000)),
-                        "maxTokens": int(m.get("maxTokens", 8192)),
                     })
                 self.custom_row._refresh_model_rows()
                 # 单实例: 取第一个有效条目即返回
