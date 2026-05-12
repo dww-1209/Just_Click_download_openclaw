@@ -9,17 +9,29 @@
 """
 
 import json
+import re
 from typing import Any
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame,
     QLineEdit, QComboBox, QScrollArea, QFileDialog, QMessageBox,
-    QGraphicsDropShadowEffect, QCheckBox,
+    QGraphicsDropShadowEffect, QCheckBox, QSpinBox,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 
-from src.models.provider_config import VENDOR_REGISTRY
+from src.models.provider_config import (
+    VENDOR_REGISTRY,
+    API_PROTOCOL_LABELS,
+    API_PROTOCOL_BASE_URL_HINTS,
+    API_PROTOCOL_OPENAI_COMPLETIONS,
+    RESERVED_PROVIDER_IDS,
+    CUSTOM_VENDOR_ID,
+)
+
+
+# 自定义 Provider ID 校验正则:小写字母开头,允许字母数字短横线,长度 2-32
+_CUSTOM_PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -388,6 +400,381 @@ class VendorRow(QFrame):
             self._refresh_models()
 
 
+class CustomVendorRow(QFrame):
+    """自定义 Provider 配置行 —— 让用户填写任意 OpenAI/Anthropic 兼容端点。
+
+    与 VendorRow 不同,本组件没有预设模型/Key Type/auth_choice;用户需要自填:
+    - Provider ID(写入 openclaw.json 的 models.providers.<id> key)
+    - 协议类型(openai-completions / anthropic-messages / openai-responses)
+    - baseUrl + apiKey
+    - 模型 ID(至少 1 个,允许多选)+ 每个模型可选元数据(reasoning / contextWindow / maxTokens)
+
+    架构定位:走 manage_openclaw._configure_custom_provider 直写 JSON,
+    不走 openclaw onboard CLI(后者只支持 openai/anthropic 二选一,且每次启动 Node ~10s)。
+    """
+
+    toggled = Signal(str)
+    model_selection_changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.is_expanded = False
+        # 用户添加的模型列表: [(model_id, display_name, reasoning, context_window, max_tokens), ...]
+        self._models: list[dict[str, Any]] = []
+        self._model_checkboxes: dict[str, QCheckBox] = {}
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 标题行(可点击展开/折叠),配色与 VendorRow 一致
+        self.header = QFrame()
+        self.header.setStyleSheet(
+            "QFrame { background-color: #f8f9fa; border-radius: 6px; "
+            "border: 1px solid #e9ecef; }"
+        )
+        self.header.setCursor(Qt.PointingHandCursor)
+        self.header.mousePressEvent = lambda e: self._toggle()
+
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(12, 10, 12, 10)
+
+        self.title_label = QLabel("⚙ 自定义 Provider")
+        title_font = QFont()
+        title_font.setPointSize(13)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+        self.title_label.setStyleSheet("color: #333;")
+
+        self.arrow_label = QLabel("▶")
+        self.arrow_label.setStyleSheet("color: #888; font-size: 14px;")
+
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.arrow_label)
+
+        # 内容区
+        self.content = QFrame()
+        self.content.setStyleSheet(
+            "QFrame { background-color: #ffffff; border-radius: 6px; "
+            "border: 1px solid #e0e0e0; margin-top: 4px; }"
+        )
+        content_layout = QVBoxLayout(self.content)
+        content_layout.setContentsMargins(14, 14, 14, 14)
+        content_layout.setSpacing(10)
+
+        # 1. Provider ID
+        pid_layout = QHBoxLayout()
+        pid_label = QLabel("Provider ID:")
+        pid_label.setStyleSheet("font-weight: bold; color: #555;")
+        pid_label.setMinimumWidth(90)
+        self.provider_id_input = QLineEdit()
+        self.provider_id_input.setPlaceholderText("如 my-openai、custom-claude (小写字母数字短横线)")
+        pid_layout.addWidget(pid_label)
+        pid_layout.addWidget(self.provider_id_input, 1)
+        content_layout.addLayout(pid_layout)
+
+        # 2. 协议类型
+        proto_layout = QHBoxLayout()
+        proto_label = QLabel("协议类型:")
+        proto_label.setStyleSheet("font-weight: bold; color: #555;")
+        proto_label.setMinimumWidth(90)
+        self.protocol_combo = QComboBox()
+        for proto_value, proto_label_text in API_PROTOCOL_LABELS:
+            self.protocol_combo.addItem(proto_label_text, proto_value)
+        # 默认选 OpenAI 兼容(覆盖 99% 场景)
+        self.protocol_combo.setCurrentIndex(0)
+        # 协议切换时自动更新 baseUrl 占位符,降低用户填写负担
+        self.protocol_combo.currentIndexChanged.connect(self._on_protocol_changed)
+        proto_layout.addWidget(proto_label)
+        proto_layout.addWidget(self.protocol_combo, 1)
+        content_layout.addLayout(proto_layout)
+
+        proto_hint = QLabel(
+            "OpenAI 兼容: GPT/DeepSeek/绝大多数 OpenAI 兼容代理  ·  "
+            "Anthropic 兼容: Claude 官方/MiniMax  ·  "
+            "Responses API: LM Studio/OpenAI 新版"
+        )
+        proto_hint.setStyleSheet("color: #888; font-size: 11px;")
+        proto_hint.setWordWrap(True)
+        content_layout.addWidget(proto_hint)
+
+        # 3. Base URL
+        url_layout = QHBoxLayout()
+        url_label = QLabel("API 端点:")
+        url_label.setStyleSheet("font-weight: bold; color: #555;")
+        url_label.setMinimumWidth(90)
+        self.base_url_input = QLineEdit()
+        self.base_url_input.setPlaceholderText(API_PROTOCOL_BASE_URL_HINTS[API_PROTOCOL_OPENAI_COMPLETIONS])
+        url_layout.addWidget(url_label)
+        url_layout.addWidget(self.base_url_input, 1)
+        content_layout.addLayout(url_layout)
+
+        # 4. API Key
+        key_layout = QHBoxLayout()
+        key_label = QLabel("API Key:")
+        key_label.setStyleSheet("font-weight: bold; color: #555;")
+        key_label.setMinimumWidth(90)
+        self.key_input = QLineEdit()
+        self.key_input.setEchoMode(QLineEdit.Password)
+        self.key_input.setPlaceholderText("sk-...")
+        key_layout.addWidget(key_label)
+        key_layout.addWidget(self.key_input, 1)
+        content_layout.addLayout(key_layout)
+
+        # 5. 模型列表区
+        models_label = QLabel("模型(至少添加 1 个):")
+        models_label.setStyleSheet("font-weight: bold; color: #555;")
+        content_layout.addWidget(models_label)
+
+        self.models_container = QWidget()
+        self.models_layout = QVBoxLayout(self.models_container)
+        self.models_layout.setContentsMargins(0, 0, 0, 0)
+        self.models_layout.setSpacing(4)
+        content_layout.addWidget(self.models_container)
+
+        # 添加模型行: 模型 ID + 显示名 + 推理勾选 + ctx + max + 添加按钮
+        add_layout = QHBoxLayout()
+        self.add_model_id = QLineEdit()
+        self.add_model_id.setPlaceholderText("模型 ID(如 gpt-5.2)")
+        self.add_model_name = QLineEdit()
+        self.add_model_name.setPlaceholderText("显示名(可选)")
+        self.add_reasoning = QCheckBox("推理")
+        self.add_reasoning.setToolTip("勾选后,该模型用于推理流(thinking 分流)")
+        self.add_context = QSpinBox()
+        self.add_context.setRange(1024, 2_000_000)
+        self.add_context.setSingleStep(1024)
+        self.add_context.setValue(200000)
+        self.add_context.setSuffix(" ctx")
+        self.add_context.setToolTip("上下文长度(tokens)")
+        self.add_max_tokens = QSpinBox()
+        self.add_max_tokens.setRange(256, 200_000)
+        self.add_max_tokens.setSingleStep(256)
+        self.add_max_tokens.setValue(8192)
+        self.add_max_tokens.setSuffix(" max")
+        self.add_max_tokens.setToolTip("单次最大输出(tokens)")
+
+        add_btn = QPushButton("添加")
+        add_btn.setFixedSize(70, 28)
+        add_btn.clicked.connect(self._add_model)
+
+        add_layout.addWidget(self.add_model_id, 2)
+        add_layout.addWidget(self.add_model_name, 2)
+        add_layout.addWidget(self.add_reasoning)
+        add_layout.addWidget(self.add_context)
+        add_layout.addWidget(self.add_max_tokens)
+        add_layout.addWidget(add_btn)
+        content_layout.addLayout(add_layout)
+
+        main_layout.addWidget(self.header)
+        main_layout.addWidget(self.content)
+        self.content.hide()
+
+    def _toggle(self) -> None:
+        self.is_expanded = not self.is_expanded
+        self.content.setVisible(self.is_expanded)
+        self.arrow_label.setText("▼" if self.is_expanded else "▶")
+        self.toggled.emit(CUSTOM_VENDOR_ID)
+
+    def collapse(self) -> None:
+        self.is_expanded = False
+        self.content.hide()
+        self.arrow_label.setText("▶")
+
+    def _on_protocol_changed(self, index: int) -> None:
+        """切换协议时刷新 baseUrl 占位符。
+
+        只改占位符不改实际内容: 用户已经填了的 URL 不能被自动覆盖,否则容易丢数据。
+        """
+        proto = self.protocol_combo.itemData(index)
+        hint = API_PROTOCOL_BASE_URL_HINTS.get(proto, "")
+        self.base_url_input.setPlaceholderText(hint)
+
+    def _add_model(self) -> None:
+        model_id = self.add_model_id.text().strip()
+        if not model_id:
+            return
+        # 简单去重:同 model_id 已存在则忽略
+        if any(m["id"] == model_id for m in self._models):
+            self.add_model_id.clear()
+            return
+        display_name = self.add_model_name.text().strip() or model_id
+        self._models.append({
+            "id": model_id,
+            "name": display_name,
+            "reasoning": self.add_reasoning.isChecked(),
+            "contextWindow": self.add_context.value(),
+            "maxTokens": self.add_max_tokens.value(),
+        })
+        # 重置输入(保留 reasoning/context/max,降低批量添加成本)
+        self.add_model_id.clear()
+        self.add_model_name.clear()
+        self._refresh_model_rows()
+        self.model_selection_changed.emit()
+
+    def _remove_model(self, model_id: str) -> None:
+        self._models = [m for m in self._models if m["id"] != model_id]
+        self._refresh_model_rows()
+        self.model_selection_changed.emit()
+
+    def _refresh_model_rows(self) -> None:
+        # 清空旧 widgets
+        while self.models_layout.count():
+            item = self.models_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._model_checkboxes.clear()
+
+        if not self._models:
+            empty = QLabel("(暂无模型,使用下方表单添加)")
+            empty.setStyleSheet("color: #aaa; font-size: 11px; padding: 4px 0;")
+            self.models_layout.addWidget(empty)
+            return
+
+        for m in self._models:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            tag = "  [推理]" if m["reasoning"] else ""
+            cb = QCheckBox(f"{m['name']}  ({m['id']}){tag}")
+            cb.setChecked(True)
+            cb.stateChanged.connect(self._on_model_changed)
+            self._model_checkboxes[m["id"]] = cb
+
+            del_btn = QPushButton("✕")
+            del_btn.setFixedSize(24, 24)
+            del_btn.setStyleSheet(
+                "QPushButton { border: none; color: #999; font-size: 14px; background: transparent; }"
+                "QPushButton:hover { color: #e74c3c; }"
+            )
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.clicked.connect(lambda _checked, mid=m["id"]: self._remove_model(mid))
+
+            row_layout.addWidget(cb)
+            row_layout.addWidget(del_btn)
+            row_layout.addStretch(1)
+            self.models_layout.addWidget(row_widget)
+
+    def _on_model_changed(self) -> None:
+        self.model_selection_changed.emit()
+
+    # ─────────────────────────────── 对外 API（与 VendorRow 接口对齐）
+
+    def has_any_config(self) -> bool:
+        return bool(
+            self.provider_id_input.text().strip()
+            or self.base_url_input.text().strip()
+            or self.key_input.text().strip()
+            or self._models
+        )
+
+    def get_all_selected_models(self) -> list[str]:
+        provider_id = self.provider_id_input.text().strip()
+        if not provider_id:
+            return []
+        # 自定义 Provider 的 model ref 形式: <provider_id>/<model_id>
+        return [
+            f"{provider_id}/{m['id']}"
+            for m in self._models
+            if self._model_checkboxes.get(m["id"]) and self._model_checkboxes[m["id"]].isChecked()
+        ]
+
+    def validate(self) -> tuple[bool, str]:
+        """保存前的字段校验。返回 (是否合法, 错误消息)。
+
+        规则:
+        - provider_id: 必填,正则 ^[a-z][a-z0-9-]{1,31}$,不能与上游内置 ID 冲突
+        - base_url: 必填,本地地址允许 http,其他必须 https
+        - api_key: 必填,长度 ≥ 10
+        - 至少 1 个模型
+        """
+        provider_id = self.provider_id_input.text().strip()
+        if not provider_id:
+            return False, "Provider ID 不能为空"
+        if not _CUSTOM_PROVIDER_ID_RE.match(provider_id):
+            return False, "Provider ID 格式不合法(只允许小写字母/数字/短横线,2-32 字符,字母开头)"
+        if provider_id in RESERVED_PROVIDER_IDS:
+            return False, f"Provider ID '{provider_id}' 与 OpenClaw 内置 Provider 冲突,请换一个"
+
+        base_url = self.base_url_input.text().strip()
+        if not base_url:
+            return False, "API 端点 URL 不能为空"
+        if not (base_url.startswith("https://") or base_url.startswith("http://localhost") or base_url.startswith("http://127.0.0.1")):
+            return False, "API 端点必须以 https:// 开头(本地端点 localhost/127.0.0.1 可用 http://)"
+
+        api_key = self.key_input.text().strip()
+        if not api_key:
+            return False, "API Key 不能为空"
+        if len(api_key) < 10:
+            return False, "API Key 看起来太短(< 10 字符),请确认填写正确"
+
+        if not self._models:
+            return False, "请至少添加 1 个模型"
+
+        return True, ""
+
+    def get_config(self) -> dict[str, Any] | None:
+        """返回单个自定义 Provider 的配置字典(与 VendorRow.get_all_configs 输出格式对齐)。
+
+        返回 None 表示用户没填写任何内容(整张卡片为空,跳过)。
+        """
+        if not self.has_any_config():
+            return None
+
+        provider_id = self.provider_id_input.text().strip()
+        # 收集勾选的模型(被取消勾选的不参与配置)
+        selected_refs: list[str] = []
+        model_metadata: dict[str, dict[str, Any]] = {}
+        for m in self._models:
+            cb = self._model_checkboxes.get(m["id"])
+            if not cb or not cb.isChecked():
+                continue
+            ref = f"{provider_id}/{m['id']}"
+            selected_refs.append(ref)
+            model_metadata[ref] = {
+                "name": m["name"],
+                "reasoning": m["reasoning"],
+                "contextWindow": m["contextWindow"],
+                "maxTokens": m["maxTokens"],
+            }
+
+        return {
+            "vendor_id": CUSTOM_VENDOR_ID,
+            # 复用 key_type 字段作为用户填的 provider_id(_resolve_provider_id 据此返回)
+            "key_type": provider_id,
+            "api_key": self.key_input.text().strip(),
+            "selected_models": selected_refs,
+            "base_url": self.base_url_input.text().strip(),
+            # 自定义 Provider 不写环境变量,直接 inline apiKey 到 models.providers
+            "env_var": "",
+            # 不走 onboard CLI,configure_providers 据此进入 _configure_custom_provider 分支
+            "auth_choice": "",
+            # 关键: 协议透传,manage_openclaw._configure_custom_provider 据此写 api 字段
+            "api_protocol": self.protocol_combo.currentData() or API_PROTOCOL_OPENAI_COMPLETIONS,
+            "model_metadata": model_metadata,
+        }
+
+    def reset(self) -> None:
+        """清空所有字段(被 ProviderConfigPage.reset 调用)。"""
+        self.provider_id_input.clear()
+        self.base_url_input.clear()
+        self.key_input.clear()
+        self.protocol_combo.setCurrentIndex(0)
+        self._models = []
+        self.add_model_id.clear()
+        self.add_model_name.clear()
+        self.add_reasoning.setChecked(False)
+        self.add_context.setValue(200000)
+        self.add_max_tokens.setValue(8192)
+        self._refresh_model_rows()
+        if self.is_expanded:
+            self.collapse()
+
+
 class ProviderConfigPage(QWidget):
     """Provider 配置页面（US-03）—— 多选模型 + 汇总选默认 + 配置导入导出。
 
@@ -404,6 +791,7 @@ class ProviderConfigPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.vendor_rows: dict[str, VendorRow] = {}
+        self.custom_row: CustomVendorRow | None = None  # 单实例自定义 Provider 卡片
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -480,6 +868,13 @@ class ProviderConfigPage(QWidget):
             row.model_selection_changed.connect(self._refresh_summary)
             self.vendor_rows[vendor.id] = row
             list_layout.addWidget(row)
+
+        # 自定义 Provider 卡片放在预设列表末尾,与其他 vendor 共用手风琴互斥逻辑。
+        # 适用场景: GPT 官方/Claude 官方/海外用户自建代理/任意 OpenAI 或 Anthropic 兼容端点。
+        self.custom_row = CustomVendorRow()
+        self.custom_row.toggled.connect(self._on_vendor_toggled)
+        self.custom_row.model_selection_changed.connect(self._refresh_summary)
+        list_layout.addWidget(self.custom_row)
 
         # 汇总区域：蓝色卡片，展示所有供应商已选模型的汇总列表，
         # 并提供全局默认模型下拉框。fallback 模型自动从非默认已选模型中推导。
@@ -577,10 +972,14 @@ class ProviderConfigPage(QWidget):
 
         设计原因：避免多个供应商同时展开导致页面过长、信息过载，
         同时减少用户在不同供应商间来回滚动查找的成本。
+        自定义 Provider 卡片(vendor_id == CUSTOM_VENDOR_ID)和预设卡片共用同一组互斥逻辑。
         """
         for vid, row in self.vendor_rows.items():
             if vid != vendor_id and row.is_expanded:
                 row.collapse()
+        # 自定义 Provider 与预设互斥:展开预设时折叠自定义,反之亦然
+        if self.custom_row and vendor_id != CUSTOM_VENDOR_ID and self.custom_row.is_expanded:
+            self.custom_row.collapse()
 
     # ─────────────────────────────── 汇总刷新
 
@@ -607,6 +1006,13 @@ class ProviderConfigPage(QWidget):
                     name = model_ref.split("/")[-1] if "/" in model_ref else model_ref
                 all_models.append((vendor.name, model_ref, name))
 
+        # 把自定义 Provider 的模型也加进汇总
+        custom_vendor_label = "自定义"
+        if self.custom_row and self.custom_row.has_any_config():
+            for ref in self.custom_row.get_all_selected_models():
+                name = ref.split("/")[-1] if "/" in ref else ref
+                all_models.append((custom_vendor_label, ref, name))
+
         # 更新汇总内容
         if not all_models:
             self.summary_content.setText("请先配置 Provider 并选择模型")
@@ -621,6 +1027,11 @@ class ProviderConfigPage(QWidget):
             if vm:
                 parts = [f"{name}" for ref, name in vm]
                 lines.append(f"{vendor.name}: {', '.join(parts)}")
+        # 自定义 Provider 摘要单独成行
+        custom_vm = [(ref, name) for vn, ref, name in all_models if vn == custom_vendor_label]
+        if custom_vm:
+            parts = [f"{name}" for ref, name in custom_vm]
+            lines.append(f"{custom_vendor_label}: {', '.join(parts)}")
         self.summary_content.setText("\n".join(lines))
 
         # 更新全局默认模型下拉框
@@ -663,12 +1074,27 @@ class ProviderConfigPage(QWidget):
                 config_key = f"{vendor_id}:{key_type}"
                 configured[config_key] = cfg
 
+        # 自定义 Provider: 仅当用户填了任何字段才校验,否则视为未使用,跳过
+        if self.custom_row and self.custom_row.has_any_config():
+            ok, err = self.custom_row.validate()
+            if not ok:
+                QMessageBox.warning(self, "自定义 Provider 配置无效", err)
+                return
+            custom_cfg = self.custom_row.get_config()
+            if custom_cfg:
+                # config_key = "custom:<provider_id>",天然唯一(provider_id 已过冲突校验)
+                config_key = f"{CUSTOM_VENDOR_ID}:{custom_cfg['key_type']}"
+                configured[config_key] = custom_cfg
+
         global_model = self.default_model_combo.currentData()
 
         # 收集所有已选模型作为 fallback 候选
         all_selected: set[str] = set()
         for row in self.vendor_rows.values():
             for ref in row.get_all_selected_models():
+                all_selected.add(ref)
+        if self.custom_row:
+            for ref in self.custom_row.get_all_selected_models():
                 all_selected.add(ref)
 
         # fallback = 所有已选模型中排除默认模型
@@ -696,6 +1122,20 @@ class ProviderConfigPage(QWidget):
                 configured[config_key] = {
                     "api_key": cfg["api_key"],
                     "selected_models": cfg["selected_models"],
+                }
+
+        # 自定义 Provider 导出比预设多几个字段:base_url / api_protocol / model_metadata,
+        # 用 schema_version=2 标记,导入端据此判断是否走自定义路径
+        if self.custom_row and self.custom_row.has_any_config():
+            custom_cfg = self.custom_row.get_config()
+            if custom_cfg:
+                config_key = f"{CUSTOM_VENDOR_ID}:{custom_cfg['key_type']}"
+                configured[config_key] = {
+                    "api_key": custom_cfg["api_key"],
+                    "selected_models": custom_cfg["selected_models"],
+                    "base_url": custom_cfg["base_url"],
+                    "api_protocol": custom_cfg["api_protocol"],
+                    "model_metadata": custom_cfg["model_metadata"],
                 }
 
         data: dict[str, Any] = {
@@ -751,11 +1191,44 @@ class ProviderConfigPage(QWidget):
 
         providers = data.get("providers", {})
         imported_count = 0
+        # 单实例自定义 Provider:导入时取第一个 custom:* 条目
+        custom_loaded = False
         for config_key, cfg in providers.items():
             parts = config_key.split(":", 1)
             if len(parts) != 2:
                 continue
             vendor_id, key_type = parts
+
+            # 自定义 Provider:走专门的回填路径
+            if vendor_id == CUSTOM_VENDOR_ID:
+                if custom_loaded or not self.custom_row:
+                    continue
+                # key_type 即用户填的 provider_id
+                self.custom_row.reset()
+                self.custom_row.provider_id_input.setText(key_type)
+                self.custom_row.key_input.setText(cfg.get("api_key", ""))
+                self.custom_row.base_url_input.setText(cfg.get("base_url", ""))
+                api_value = cfg.get("api_protocol", API_PROTOCOL_OPENAI_COMPLETIONS)
+                for idx, (proto_value, _label) in enumerate(API_PROTOCOL_LABELS):
+                    if proto_value == api_value:
+                        self.custom_row.protocol_combo.setCurrentIndex(idx)
+                        break
+                model_metadata = cfg.get("model_metadata", {}) or {}
+                for ref in cfg.get("selected_models", []) or []:
+                    model_id = ref.split("/")[-1] if "/" in ref else ref
+                    meta = model_metadata.get(ref, {}) if isinstance(model_metadata, dict) else {}
+                    self.custom_row._models.append({
+                        "id": model_id,
+                        "name": meta.get("name") or model_id,
+                        "reasoning": bool(meta.get("reasoning", False)),
+                        "contextWindow": int(meta.get("contextWindow", 200000)),
+                        "maxTokens": int(meta.get("maxTokens", 8192)),
+                    })
+                self.custom_row._refresh_model_rows()
+                custom_loaded = True
+                imported_count += 1
+                continue
+
             row = self.vendor_rows.get(vendor_id)
             if not row:
                 continue
@@ -797,6 +1270,8 @@ class ProviderConfigPage(QWidget):
             row._refresh_for_key_type(0)
             if row.is_expanded:
                 row.collapse()
+        if self.custom_row:
+            self.custom_row.reset()
         self._refresh_summary()
 
     def load_config(self, existing: dict[str, Any]) -> None:
@@ -813,7 +1288,6 @@ class ProviderConfigPage(QWidget):
             "deepseek": ("deepseek", "standard"),
             "minimax": ("minimax", "standard"),
             "volcengine": ("volcengine", "standard"),
-            "openrouter": ("openrouter", "standard"),
             "zai": ("zai", "standard"),
             "xiaomi": ("xiaomi", "standard"),
             "dashscope": ("aliyun", "standard"),
@@ -834,7 +1308,6 @@ class ProviderConfigPage(QWidget):
                 "deepseek/": ("deepseek", "standard"),
                 "minimax/": ("minimax", "standard"),
                 "volcengine/": ("volcengine", "standard"),
-                "openrouter/": ("openrouter", "standard"),
                 "zai/": ("zai", "standard"),
                 "xiaomi/": ("xiaomi", "standard"),
                 "dashscope/": ("aliyun", "standard"),
@@ -911,6 +1384,42 @@ class ProviderConfigPage(QWidget):
             selected = vendor_models.get(vendor.id, [])
 
             row.load_config(api_key, selected, matched_key_type)
+
+        # 自定义 Provider 回填: providers_cfg 中所有非保留 ID 视为用户的自定义条目。
+        # 当前设计单实例 UI,如果配置文件里有多个非保留 provider,只回填第一个有 selected_models 的那个。
+        if self.custom_row:
+            self.custom_row.reset()
+            for prov_id, pcfg in providers_cfg.items():
+                if not isinstance(pcfg, dict):
+                    continue
+                if prov_id in RESERVED_PROVIDER_IDS:
+                    continue
+                # 自定义 Provider 必有 baseUrl + apiKey,缺其一就不算用户配置
+                if not pcfg.get("baseUrl") or not pcfg.get("apiKey"):
+                    continue
+                self.custom_row.provider_id_input.setText(prov_id)
+                self.custom_row.base_url_input.setText(pcfg["baseUrl"])
+                self.custom_row.key_input.setText(pcfg["apiKey"])
+                # 协议回填: 配置中的 api 字段映射回下拉框 index
+                api_value = pcfg.get("api", API_PROTOCOL_OPENAI_COMPLETIONS)
+                for idx, (proto_value, _label) in enumerate(API_PROTOCOL_LABELS):
+                    if proto_value == api_value:
+                        self.custom_row.protocol_combo.setCurrentIndex(idx)
+                        break
+                # 模型列表回填,默认全部勾选(用户保存时未勾选的不写入)
+                for m in pcfg.get("models", []) or []:
+                    if not isinstance(m, dict) or not m.get("id"):
+                        continue
+                    self.custom_row._models.append({
+                        "id": m["id"],
+                        "name": m.get("name") or m["id"],
+                        "reasoning": bool(m.get("reasoning", False)),
+                        "contextWindow": int(m.get("contextWindow", 200000)),
+                        "maxTokens": int(m.get("maxTokens", 8192)),
+                    })
+                self.custom_row._refresh_model_rows()
+                # 单实例: 取第一个有效条目即返回
+                break
 
         self._refresh_summary()
 

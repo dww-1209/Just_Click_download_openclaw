@@ -184,21 +184,6 @@ VENDOR_REGISTRY: list[VendorInfo] = [
         ],
     ),
     VendorInfo(
-        id="openrouter",
-        name="OpenRouter",
-        key_types=[
-            KeyTypeInfo(
-                key="standard",
-                label="API Key",
-                env_var="OPENROUTER_API_KEY",
-                base_url="https://openrouter.ai/api/v1",
-                auth_choice="openrouter-api-key",
-                model_prefix="openrouter/",
-                models=[],  # OpenRouter 模型太多且不固定，不提供硬编码列表
-            ),
-        ],
-    ),
-    VendorInfo(
         id="zai",
         name="Z.AI (智谱 GLM)",
         key_types=[
@@ -305,6 +290,51 @@ VENDOR_REGISTRY: list[VendorInfo] = [
     ),
 
 ]
+
+
+# ============================================================
+# 自定义 Provider 支持
+# ============================================================
+# 上游 OpenClaw 的 models.providers.<id>.api 字段合法值。
+# 我们 UI 暴露其中三个,覆盖 99% 用户场景:
+#   - openai-completions: GPT/DeepSeek/Moonshot/自建代理等绝大多数 OpenAI 兼容服务
+#   - anthropic-messages: Claude 官方/MiniMax/Synthetic 等 Anthropic 协议
+#   - openai-responses:   OpenAI 新版 Responses API(LM Studio/MiniMax M2.1)
+API_PROTOCOL_OPENAI_COMPLETIONS = "openai-completions"
+API_PROTOCOL_ANTHROPIC_MESSAGES = "anthropic-messages"
+API_PROTOCOL_OPENAI_RESPONSES = "openai-responses"
+
+# UI 下拉框的协议显示名(从内部值映射到中文标签)。
+# 顺序固定: OpenAI 兼容(默认) → Anthropic 兼容 → OpenAI Responses
+API_PROTOCOL_LABELS: list[tuple[str, str]] = [
+    (API_PROTOCOL_OPENAI_COMPLETIONS, "OpenAI 兼容 (Chat Completions)"),
+    (API_PROTOCOL_ANTHROPIC_MESSAGES, "Anthropic 兼容 (Messages API)"),
+    (API_PROTOCOL_OPENAI_RESPONSES, "OpenAI Responses API (新版)"),
+]
+
+# 协议对应的端点占位符,UI 切换协议时自动填充
+API_PROTOCOL_BASE_URL_HINTS = {
+    API_PROTOCOL_OPENAI_COMPLETIONS: "https://api.openai.com/v1",
+    API_PROTOCOL_ANTHROPIC_MESSAGES: "https://api.anthropic.com",
+    API_PROTOCOL_OPENAI_RESPONSES: "https://api.openai.com/v1",
+}
+
+# Reserved provider IDs:用户在自定义 Provider 时不能使用这些 ID,
+# 否则会与 OpenClaw 内置 provider 目录冲突,运行时不会报错但行为难以预测。
+# 来自上游 docs/zh-CN/concepts/model-providers.md 的 provider 列表 + 我们已注册的 vendor。
+RESERVED_PROVIDER_IDS = frozenset({
+    # 上游内置目录(pi-ai)
+    "openai", "openai-codex", "anthropic", "google", "google-vertex",
+    "google-antigravity", "google-gemini-cli", "openrouter", "xai", "groq",
+    "cerebras", "mistral", "github-copilot", "vercel-ai-gateway", "opencode",
+    "zai", "moonshot", "kimi-coding", "minimax", "synthetic", "xiaomi",
+    "venice", "ollama", "lmstudio", "vllm", "litellm", "amazon-bedrock",
+    "deepseek", "dashscope", "aliyun-coding", "volcengine", "volcengine-plan",
+})
+
+# UI 用的特殊 vendor_id,标记"用户自定义 Provider"卡片(与 VENDOR_REGISTRY 平级)。
+# 由 ProviderConfigPage 单独渲染 CustomVendorRow,不混入预设遍历。
+CUSTOM_VENDOR_ID = "custom"
 
 
 def get_vendor_by_id(vendor_id: str) -> Optional[VendorInfo]:

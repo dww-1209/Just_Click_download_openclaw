@@ -1387,22 +1387,33 @@ class OpenClawManager(BaseOpenClawManager):
         provider_id = self._resolve_provider_id(vendor_id, key_type)
 
         # 构建模型列表
+        # api_protocol 由调用方提供(自定义 Provider UI 会显式传入 openai-completions /
+        # anthropic-messages / openai-responses),不再硬编码——否则用户配 Anthropic 兼容
+        # 端点(如 Claude 官方 API)会被错误地按 OpenAI 协议调用。预设 vendor 走的是
+        # onboard 路径不会进这里,所以默认值 openai-completions 仅作为兜底。
+        api_protocol = cfg.get("api_protocol", "openai-completions")
+
+        # model_metadata: { model_ref -> { name, reasoning, contextWindow, maxTokens } }
+        # 自定义 Provider 表单可填这些字段;缺省走默认值,与 OpenClaw 上游默认对齐。
+        model_metadata = cfg.get("model_metadata", {})
+
         models = []
         for model_ref in cfg.get("selected_models", []):
             model_id = model_ref.split("/")[-1] if "/" in model_ref else model_ref
+            meta = model_metadata.get(model_ref, {}) if isinstance(model_metadata, dict) else {}
             models.append({
                 "id": model_id,
-                "name": model_id,
-                "reasoning": False,
+                "name": meta.get("name") or model_id,
+                "reasoning": bool(meta.get("reasoning", False)),
                 "input": ["text"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 128000,
-                "maxTokens": 8192,
+                "contextWindow": int(meta.get("contextWindow", 200000)),
+                "maxTokens": int(meta.get("maxTokens", 8192)),
             })
 
         config["models"]["providers"][provider_id] = {
             "baseUrl": cfg["base_url"],
-            "api": "openai-completions",
+            "api": api_protocol,
             "apiKey": cfg["api_key"],
             "models": models,
         }
@@ -1423,13 +1434,19 @@ class OpenClawManager(BaseOpenClawManager):
         部分厂商在 openclaw 中有多个 provider 身份（如 kimi 对应 moonshot/kimi-coding），
         通过 key_type 区分场景。
 
+        自定义 Provider(vendor_id == "custom"):用户在 UI 里自己填写 provider_id,
+        我们把它放在 key_type 字段里复用(每个自定义 Provider 实例的 provider_id 全局唯一,
+        天然作为 config_key 后缀)。这里直接返回 key_type 即用户填的 provider_id。
+
         Args:
-            vendor_id: 内部厂商标识（如 "kimi"、"aliyun"）。
-            key_type: 密钥类型（如 "coding"、空字符串）。
+            vendor_id: 内部厂商标识（如 "kimi"、"aliyun"、"custom"）。
+            key_type: 密钥类型(如 "coding"、空字符串);自定义 Provider 时为用户填的 provider_id。
 
         Returns:
             str: openclaw 使用的 provider ID。
         """
+        if vendor_id == "custom":
+            return key_type
         if vendor_id == "kimi":
             return "kimi-coding" if key_type == "coding" else "moonshot"
         if vendor_id == "aliyun":
