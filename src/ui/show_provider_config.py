@@ -15,7 +15,7 @@ from typing import Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame,
     QLineEdit, QComboBox, QScrollArea, QFileDialog, QMessageBox,
-    QGraphicsDropShadowEffect, QCheckBox, QSpinBox,
+    QGraphicsDropShadowEffect, QCheckBox,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
@@ -529,32 +529,35 @@ class CustomVendorRow(QFrame):
         models_label.setStyleSheet("font-weight: bold; color: #555;")
         content_layout.addWidget(models_label)
 
+        # 默认值说明: 让用户知道有自动兜底,无需操心 contextWindow / maxTokens / reasoning。
+        # 上游 OpenClaw 对自定义 provider 的兜底为: contextWindow=200000、maxTokens=8192、
+        # reasoning=False(参见 manage_openclaw._configure_custom_provider)。99% 场景够用,
+        # 如需调整可通过导入完整 JSON 配置覆盖。
+        models_hint = QLabel(
+            "使用上游默认参数: 上下文 200K tokens / 单次输出 8K tokens。"
+            "如有特殊需求请通过「导入配置」加载自定义 JSON。"
+        )
+        models_hint.setStyleSheet("color: #888; font-size: 11px;")
+        models_hint.setWordWrap(True)
+        content_layout.addWidget(models_hint)
+
         self.models_container = QWidget()
         self.models_layout = QVBoxLayout(self.models_container)
         self.models_layout.setContentsMargins(0, 0, 0, 0)
         self.models_layout.setSpacing(4)
         content_layout.addWidget(self.models_container)
 
-        # 添加模型行: 模型 ID + 显示名 + 推理勾选 + ctx + max + 添加按钮
+        # 添加模型行: 仅保留「模型 ID + 显示名 + 添加按钮」三个字段。
+        # 删除原有的 reasoning / contextWindow / maxTokens 输入框——这三个字段对非技术
+        # 用户极易造成困惑(reasoning 难判断;ctx/max tokens 大多数人不知道自己模型的
+        # 真实值,容易乱填),且后端 manage_openclaw 已对缺省值做了完整兜底(参见
+        # _configure_custom_provider 的 meta.get(...) 默认值)。需要精细控制的高级用户
+        # 可通过「导入配置」加载完整 JSON。
         add_layout = QHBoxLayout()
         self.add_model_id = QLineEdit()
-        self.add_model_id.setPlaceholderText("模型 ID(如 gpt-5.2)")
+        self.add_model_id.setPlaceholderText("模型 ID(如 gpt-5.2 / deepseek-chat)")
         self.add_model_name = QLineEdit()
-        self.add_model_name.setPlaceholderText("显示名(可选)")
-        self.add_reasoning = QCheckBox("推理")
-        self.add_reasoning.setToolTip("勾选后,该模型用于推理流(thinking 分流)")
-        self.add_context = QSpinBox()
-        self.add_context.setRange(1024, 2_000_000)
-        self.add_context.setSingleStep(1024)
-        self.add_context.setValue(200000)
-        self.add_context.setSuffix(" ctx")
-        self.add_context.setToolTip("上下文长度(tokens)")
-        self.add_max_tokens = QSpinBox()
-        self.add_max_tokens.setRange(256, 200_000)
-        self.add_max_tokens.setSingleStep(256)
-        self.add_max_tokens.setValue(8192)
-        self.add_max_tokens.setSuffix(" max")
-        self.add_max_tokens.setToolTip("单次最大输出(tokens)")
+        self.add_model_name.setPlaceholderText("显示名(可选,默认与模型 ID 相同)")
 
         add_btn = QPushButton("添加")
         add_btn.setFixedSize(70, 28)
@@ -562,9 +565,6 @@ class CustomVendorRow(QFrame):
 
         add_layout.addWidget(self.add_model_id, 2)
         add_layout.addWidget(self.add_model_name, 2)
-        add_layout.addWidget(self.add_reasoning)
-        add_layout.addWidget(self.add_context)
-        add_layout.addWidget(self.add_max_tokens)
         add_layout.addWidget(add_btn)
         content_layout.addLayout(add_layout)
 
@@ -601,14 +601,17 @@ class CustomVendorRow(QFrame):
             self.add_model_id.clear()
             return
         display_name = self.add_model_name.text().strip() or model_id
+        # reasoning / contextWindow / maxTokens 写死默认值。
+        # 这些字段在 model_metadata 中仍然透传给 manage_openclaw,以保持
+        # _configure_custom_provider 的数据契约稳定;但 UI 层不再让用户填写。
+        # 默认值与上游兜底一致(参见 manage_openclaw 的 meta.get(..., default))。
         self._models.append({
             "id": model_id,
             "name": display_name,
-            "reasoning": self.add_reasoning.isChecked(),
-            "contextWindow": self.add_context.value(),
-            "maxTokens": self.add_max_tokens.value(),
+            "reasoning": False,
+            "contextWindow": 200000,
+            "maxTokens": 8192,
         })
-        # 重置输入(保留 reasoning/context/max,降低批量添加成本)
         self.add_model_id.clear()
         self.add_model_name.clear()
         self._refresh_model_rows()
@@ -639,7 +642,9 @@ class CustomVendorRow(QFrame):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(4)
 
-            tag = "  [推理]" if m["reasoning"] else ""
+            # 注: reasoning 字段不再由 UI 暴露,但导入旧配置时可能仍为 True,
+            # 兼容显示 [推理] 标签;新添加的模型 reasoning 恒为 False。
+            tag = "  [推理]" if m.get("reasoning") else ""
             cb = QCheckBox(f"{m['name']}  ({m['id']}){tag}")
             cb.setChecked(True)
             cb.stateChanged.connect(self._on_model_changed)
@@ -767,9 +772,6 @@ class CustomVendorRow(QFrame):
         self._models = []
         self.add_model_id.clear()
         self.add_model_name.clear()
-        self.add_reasoning.setChecked(False)
-        self.add_context.setValue(200000)
-        self.add_max_tokens.setValue(8192)
         self._refresh_model_rows()
         if self.is_expanded:
             self.collapse()

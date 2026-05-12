@@ -12,11 +12,14 @@ on:
 # - Intel Mac 用户暂缺 openclaw-prebuilt-macos x86_64 预构建产物,
 #   暂只发在线版(用户自己 git clone + pnpm build)+ 卸载工具
 #
-# 跨架构限制: PyInstaller 必须在目标架构真机构建,Apple Silicon 跑不出
-# 原生 x86_64 产物。GitHub Actions 的 macos-13 是真实 Intel mac mini。
+# Runner 选择: macos-13 (Intel mac mini) 已被 GitHub 于 2025-12 标记为 EOL
+# 并停止调度,使用它会导致 workflow 不被排队执行。当前剩下的 Intel runner
+# 只有 macos-15-large(M2 mac 上的 x86 ROSA 仿真容器或 Intel mac pro,具体由
+# GitHub 内部决定),公共仓库免费可用。Apple Silicon (macos-14/15) 是 arm64,
+# 不能用于 x86_64 native 构建。
 jobs:
   build:
-    runs-on: macos-13   # Intel mac mini,产 x86_64 native 产物
+    runs-on: macos-13-large   # Intel x86_64 native runner(macos-13 已 EOL)
 
     steps:
       - name: Checkout code
@@ -27,7 +30,7 @@ jobs:
         run: |
           echo "Actual arch: $(uname -m)"
           if [ "$(uname -m)" != "x86_64" ]; then
-            echo "::error::macos-13 should be x86_64 but got $(uname -m)"
+            echo "::error::Expected x86_64 runner, got $(uname -m)"
             exit 1
           fi
 

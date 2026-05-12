@@ -64,17 +64,14 @@ jobs:
         run: python build.py
 
       - name: Upload installer artifact
+        # Windows 上 build.py 只产 .exe(无 .app/.command 等附属物),
+        # dist/ 下没有子目录,所以一个工件就够了。
+        # 之前还有一个 OpenClaw-Dist-Full-* (path: dist/**/**),
+        # 内容与本工件完全相同(纯冗余,浪费存储 + 用户困惑),已删除。
         uses: actions/upload-artifact@v4
         with:
           name: OpenClaw-Installer-Windows-${{ github.run_id }}
           path: dist/*.exe
-          retention-days: 90
-
-      - name: Upload full dist artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenClaw-Dist-Full-${{ github.run_id }}
-          path: dist/**/**
           retention-days: 90
 
       # 验证：用 Python tarfile 解压产物，模拟离线安装器的解压过程，
