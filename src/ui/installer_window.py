@@ -22,7 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget, QLabel
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from src.ui.show_welcome import WelcomePage
 from src.ui.show_envcheck import EnvCheckPage
@@ -708,6 +708,13 @@ class InstallerWindow:
         """启动页点击'打开 WebChat':通过 system_launcher 唤起浏览器
 
         URL 校验与系统调用都委托给 adapter,UI 只负责输入校验和提示文案。
+
+        剪贴板兜底防护(黑盒): 安装器自身代码只在"复制"按钮里写剪贴板,
+        但用户实测发现"打开 WebChat"也会把 URL 写到剪贴板。原因不在我们代码里——
+        可能是 webbrowser/cmd start/AppleScript 调用链中的某个环节、或第三方
+        剪贴板管理器/输入法的副作用。我们不在乎根因是谁,直接做端到端兜底:
+        点击前快照 → 唤起浏览器 → 100ms/500ms 后两次检查,若剪贴板被改成 url
+        就还原用户原值。两次检查覆盖即时副作用和延迟副作用。
         """
         url = self.startup_page.url_input.text()
         if not url:
@@ -717,10 +724,27 @@ class InstallerWindow:
             self.startup_page.browser_hint.setText("地址格式不正确,无法打开浏览器")
             return
 
+        # 清除 url_input 选中态,先排掉最常见的 selection→clipboard 副作用
+        self.startup_page.url_input.deselect()
+
+        # 快照用户原本的剪贴板内容;mimeData 用 .text() 取纯文本即可
+        # (我们只在剪贴板被改成完全等于 url 时才回滚,不动其他 mime 内容)
+        clipboard = QApplication.clipboard()
+        original = clipboard.text()
+
         if self.system_launcher.open_url(url):
             self.startup_page.browser_hint.setText("浏览器已打开,如果未显示请检查是否被拦截")
         else:
             self.startup_page.browser_hint.setText("未能自动打开浏览器,请复制上方地址手动访问")
+
+        def _restore_if_polluted() -> None:
+            # 只在剪贴板被改成 url 时回滚——用户主动复制别的内容则保留用户操作
+            if clipboard.text() == url and original != url:
+                clipboard.setText(original)
+
+        # 100ms / 500ms 两次延迟检查:覆盖即时副作用 + 浏览器异步唤起后的延迟副作用
+        QTimer.singleShot(100, _restore_if_polluted)
+        QTimer.singleShot(500, _restore_if_polluted)
 
     def _on_startup_finish(self) -> None:
         """启动页点击'完成':退出程序"""

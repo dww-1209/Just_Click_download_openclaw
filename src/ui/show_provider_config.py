@@ -15,10 +15,11 @@ from typing import Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QFrame,
     QLineEdit, QComboBox, QScrollArea, QFileDialog, QMessageBox,
-    QGraphicsDropShadowEffect, QCheckBox,
+    QGraphicsDropShadowEffect, QCheckBox, QInputDialog,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt, Signal, QByteArray
+from PySide6.QtGui import QFont, QColor, QIcon, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 
 from src.models.provider_config import (
     VENDOR_REGISTRY,
@@ -28,10 +29,35 @@ from src.models.provider_config import (
     RESERVED_PROVIDER_IDS,
     CUSTOM_VENDOR_ID,
 )
+from src.models.constants import (
+    PROVIDER_DEFAULT_CONTEXT_WINDOW,
+    PROVIDER_DEFAULT_MAX_TOKENS,
+    PROVIDER_CONTEXT_WINDOW_OPTIONS,
+    PROVIDER_MAX_TOKENS_OPTIONS,
+    PROVIDER_CONTEXT_WINDOW_MIN,
+    PROVIDER_CONTEXT_WINDOW_MAX,
+    PROVIDER_MAX_TOKENS_MIN,
+    PROVIDER_MAX_TOKENS_MAX,
+)
 
 
 # 自定义 Provider ID 校验正则:小写字母开头,允许字母数字短横线,长度 2-32
 _CUSTOM_PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
+
+
+def _humanize_tokens(n: int) -> str:
+    """把 token 数美化为人类可读字符串(用于已添加模型行的标签展示)。
+
+    1000000 -> "1M", 200000 -> "200K", 8192 -> "8K", 4096 -> "4K"。
+    非 1024 倍数走最近 K 估算,4097 → "4K"(粗略可读优先)。
+    """
+    if n >= 1_000_000 and n % 1_000_000 == 0:
+        return f"{n // 1_000_000}M"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n // 1024}K" if n % 1024 == 0 else f"{round(n / 1000)}K"
+    return str(n)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -45,6 +71,83 @@ class PrimaryButton(QPushButton):
         super().__init__(text, parent)
         self.setCursor(Qt.PointingHandCursor)
         self.setObjectName("primaryButton")
+
+
+# Inline SVG 图标:线条风格的睁眼/闭眼,与 Material/Heroicons 视觉对齐,
+# 灰色描边、无填充,与现代密码输入框样式一致。直接 inline 避免打包资源文件。
+_EYE_OPEN_SVG = b"""<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='#666666' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z'/><circle cx='12' cy='12' r='3'/></svg>"""
+_EYE_CLOSED_SVG = b"""<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='#666666' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M3 3l18 18'/><path d='M10.58 10.58a2 2 0 0 0 2.83 2.83'/><path d='M9.88 5.09A10.94 10.94 0 0 1 12 5c6.5 0 10 7 10 7a18.5 18.5 0 0 1-3.16 4.19'/><path d='M6.61 6.61A18.5 18.5 0 0 0 2 12s3.5 7 10 7a10.9 10.9 0 0 0 5.39-1.41'/></svg>"""
+
+
+def _svg_to_icon(svg_bytes: bytes, size: int = 18) -> QIcon:
+    """把 inline SVG 字符串渲染成指定尺寸的 QIcon。
+
+    走 QSvgRenderer + QPixmap 路径,跨平台清晰度更稳定;
+    比 Unicode emoji 优势:不依赖系统字体,所有平台视觉一致。
+    """
+    renderer = QSvgRenderer(QByteArray(svg_bytes))
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    from PySide6.QtGui import QPainter
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+class ApiKeyLineEdit(QLineEdit):
+    """带"小眼睛"显隐切换的 API Key 输入框。
+
+    默认 Password 模式(掩码),用户点击右侧眼睛图标可临时显示明文用于核对,
+    再次点击恢复掩码。这是密码/Key 类输入的事实标准交互(GitHub/Stripe/AWS 控制台都这么做)。
+
+    图标用 inline SVG 而非 emoji,跨平台视觉一致(emoji 在 Windows 下渲染偏卡通,
+    与 Material/Heroicons 等线条图标风格不匹配)。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setEchoMode(QLineEdit.Password)
+
+        # 缓存两个图标避免每次切换都重渲染 SVG
+        self._icon_hidden = _svg_to_icon(_EYE_CLOSED_SVG)
+        self._icon_visible = _svg_to_icon(_EYE_OPEN_SVG)
+
+        # 内嵌按钮(QPushButton),通过 resizeEvent 固定在右内侧
+        self._toggle_btn = QPushButton(self)
+        self._toggle_btn.setIcon(self._icon_hidden)
+        self._toggle_btn.setIconSize(self._toggle_btn.iconSize().scaled(
+            18, 18, Qt.KeepAspectRatio
+        ))
+        self._toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._toggle_btn.setFixedSize(28, 24)
+        self._toggle_btn.setFlat(True)
+        self._toggle_btn.setFocusPolicy(Qt.NoFocus)  # Tab 跳过,避免破坏键盘导航
+        self._toggle_btn.setToolTip("显示/隐藏 API Key")
+        self._toggle_btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 0; }"
+            "QPushButton:hover { background: rgba(21, 101, 192, 0.08); border-radius: 4px; }"
+        )
+        self._toggle_btn.clicked.connect(self._toggle_visibility)
+
+        # 给输入文本预留右侧空间,避免与按钮重叠
+        self.setTextMargins(0, 0, self._toggle_btn.width() + 4, 0)
+
+    def _toggle_visibility(self) -> None:
+        if self.echoMode() == QLineEdit.Password:
+            self.setEchoMode(QLineEdit.Normal)
+            self._toggle_btn.setIcon(self._icon_visible)
+        else:
+            self.setEchoMode(QLineEdit.Password)
+            self._toggle_btn.setIcon(self._icon_hidden)
+
+    def resizeEvent(self, event):  # noqa: N802  (Qt 命名风格)
+        """重写 resize 事件,把眼睛按钮固定在输入框右内侧。"""
+        super().resizeEvent(event)
+        # 垂直居中,右侧留 4px 边距
+        x = self.rect().right() - self._toggle_btn.width() - 4
+        y = (self.rect().height() - self._toggle_btn.height()) // 2
+        self._toggle_btn.move(x, y)
 
 
 class SecondaryButton(QPushButton):
@@ -141,12 +244,11 @@ class VendorRow(QFrame):
         else:
             self.key_type_combo = None
 
-        # API Key 输入：使用 Password 模式隐藏明文，防止屏幕共享或旁窥时泄露
+        # API Key 输入:默认 Password 掩码防旁窥,右侧"小眼睛"按钮可临时显示明文核对
         key_layout = QHBoxLayout()
         key_label = QLabel("API Key:")
         key_label.setStyleSheet("font-weight: bold; color: #555;")
-        self.key_input = QLineEdit()
-        self.key_input.setEchoMode(QLineEdit.Password)
+        self.key_input = ApiKeyLineEdit()
         self.key_input.setPlaceholderText("请输入 API Key")
         key_layout.addWidget(key_label)
         key_layout.addWidget(self.key_input, 1)
@@ -517,8 +619,8 @@ class CustomVendorRow(QFrame):
         key_label = QLabel("API Key:")
         key_label.setStyleSheet("font-weight: bold; color: #555;")
         key_label.setMinimumWidth(90)
-        self.key_input = QLineEdit()
-        self.key_input.setEchoMode(QLineEdit.Password)
+        # 与预设 Provider 卡片共用 ApiKeyLineEdit:默认掩码 + 右侧眼睛切换显隐
+        self.key_input = ApiKeyLineEdit()
         self.key_input.setPlaceholderText("sk-...")
         key_layout.addWidget(key_label)
         key_layout.addWidget(self.key_input, 1)
@@ -529,11 +631,9 @@ class CustomVendorRow(QFrame):
         models_label.setStyleSheet("font-weight: bold; color: #555;")
         content_layout.addWidget(models_label)
 
-        # 文案说明: 用户只填模型名称,模型能力参数(上下文/输出/推理等)由
-        # OpenClaw 后端自行处理,我们故意不传——因为不同模型差异巨大
-        # (如 Claude Opus 1M vs GPT 200K),硬填会误导。
         models_hint = QLabel(
-            "只需填写模型名称。模型能力参数(上下文长度、输出 tokens 等)由 OpenClaw 自动识别。"
+            "添加要使用的模型。能力参数采用 2026 年主流模型最低安全基线(128K 上下文 / 8K 输出),"
+            "保证大多数自建/本地/中转端点都能跑通;长上下文模型请手动调高对应档位。"
         )
         models_hint.setStyleSheet("color: #888; font-size: 11px;")
         models_hint.setWordWrap(True)
@@ -545,26 +645,87 @@ class CustomVendorRow(QFrame):
         self.models_layout.setSpacing(4)
         content_layout.addWidget(self.models_container)
 
-        # 添加模型行: 仅保留「模型 ID + 显示名 + 添加按钮」三个字段。
-        # 删除原有的 reasoning / contextWindow / maxTokens 输入框——这三个字段对非技术
-        # 用户极易造成困惑(reasoning 难判断;ctx/max tokens 大多数人不知道自己模型的
-        # 真实值,容易乱填),且后端 manage_openclaw 已对缺省值做了完整兜底(参见
-        # _configure_custom_provider 的 meta.get(...) 默认值)。需要精细控制的高级用户
-        # 可通过「导入配置」加载完整 JSON。
-        add_layout = QHBoxLayout()
+        # === 添加模型表单 ===
+        # 设计原则:默认值采用 2026 年主流模型"最低安全基线"——上下文 128K、输出 8K——
+        # 保证用户填写的任何 OpenAI/Anthropic 兼容端点(自建代理、本地部署、中转、
+        # 小众/老模型)至少能跑起来;长上下文模型让用户手动调高档位。
+        # 不暴露 reasoning 开关:OpenClaw 看到 reasoning=true 会自动开启 thinking,
+        # 中转端点普遍不识别这个字段,直接 400。让普通用户无感避坑,
+        # 懂技术的用户在 WebChat 用 /reasoning on 临时切换可见性。
+        # 上下文/输出仍保留"不指定"选项,选中时不写入对应字段,由 OpenClaw 后端识别。
+        # 选"自定义..."弹数字输入框给专业用户填精确值。
+        # 第 1 行: 模型 ID + 显示名(主信息)
+        id_row = QHBoxLayout()
         self.add_model_id = QLineEdit()
-        self.add_model_id.setPlaceholderText("模型 ID(如 gpt-5.2 / deepseek-chat)")
+        self.add_model_id.setPlaceholderText("模型 ID(必填,如 gpt-5.2 / deepseek-chat)")
         self.add_model_name = QLineEdit()
         self.add_model_name.setPlaceholderText("显示名(可选,默认与模型 ID 相同)")
+        id_row.addWidget(self.add_model_id, 1)
+        id_row.addWidget(self.add_model_name, 1)
+        content_layout.addLayout(id_row)
 
-        add_btn = QPushButton("添加")
-        add_btn.setFixedSize(70, 28)
+        # 第 2 行: 能力参数(上下文 / 最大输出)
+        cap_row = QHBoxLayout()
+        cap_row.setSpacing(8)
+
+        # 注:不在 UI 暴露 reasoning 勾选 —— 自定义 Provider 的 reasoning 永远写 false。
+        # 原因:OpenClaw 看到 model.reasoning=true 会把 thinkingDefault 抬到 "low",
+        # 进而在请求体里塞 thinking:{type:"enabled"},而中转/代理端点(TokenHub、火山
+        # endpoint、Bedrock 转发等)普遍不识别这个字段,直接 400 报错。让普通用户
+        # 默认无感避开此坑;懂技术的用户在 WebChat 里 /reasoning on 临时切换可见性。
+
+        # 上下文下拉。档位和默认值统一从 constants.py 读取,默认 128K 是 2026 年主流模型
+        # 最低安全基线(国产开源/自托管多数仍是 128K),填高了反而触发 422。
+        ctx_label = QLabel("上下文:")
+        ctx_label.setStyleSheet("color: #555; font-size: 12px;")
+        self.add_context = QComboBox()
+        self.add_context.setToolTip(
+            "模型一次能记住的最大对话量(tokens)。默认 128K 覆盖绝大多数模型,"
+            "长上下文模型(GPT-5/Claude 4.x/Gemini 2.5 等)可手动调高。"
+        )
+        for label, value in PROVIDER_CONTEXT_WINDOW_OPTIONS:
+            self.add_context.addItem(label, value)
+        self.add_context.addItem("自定义...", "__custom__")  # 触发输入弹窗
+        self.add_context.currentIndexChanged.connect(
+            lambda _idx: self._on_capacity_combo_changed(
+                self.add_context, "上下文长度",
+                PROVIDER_CONTEXT_WINDOW_MIN, PROVIDER_CONTEXT_WINDOW_MAX,
+            )
+        )
+
+        # 最大输出下拉。默认 8K 是几乎所有 OpenAI 兼容端点都不会拒绝的兼容值。
+        max_label = QLabel("最大输出:")
+        max_label.setStyleSheet("color: #555; font-size: 12px;")
+        self.add_max_tokens = QComboBox()
+        self.add_max_tokens.setToolTip(
+            "模型每次回答的最大长度(tokens)。默认 8K 兼容性最强;"
+            "长文/代码可调到 16K-32K,推理模型输出可达 64K-128K。"
+        )
+        for label, value in PROVIDER_MAX_TOKENS_OPTIONS:
+            self.add_max_tokens.addItem(label, value)
+        self.add_max_tokens.addItem("自定义...", "__custom__")
+        self.add_max_tokens.currentIndexChanged.connect(
+            lambda _idx: self._on_capacity_combo_changed(
+                self.add_max_tokens, "最大输出 tokens",
+                PROVIDER_MAX_TOKENS_MIN, PROVIDER_MAX_TOKENS_MAX,
+            )
+        )
+
+        cap_row.addWidget(ctx_label)
+        cap_row.addWidget(self.add_context)
+        cap_row.addWidget(max_label)
+        cap_row.addWidget(self.add_max_tokens)
+        cap_row.addStretch(1)
+        content_layout.addLayout(cap_row)
+
+        # 第 3 行: 添加按钮
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        add_btn = QPushButton("添加模型")
+        add_btn.setFixedSize(100, 28)
         add_btn.clicked.connect(self._add_model)
-
-        add_layout.addWidget(self.add_model_id, 2)
-        add_layout.addWidget(self.add_model_name, 2)
-        add_layout.addWidget(add_btn)
-        content_layout.addLayout(add_layout)
+        btn_row.addWidget(add_btn)
+        content_layout.addLayout(btn_row)
 
         main_layout.addWidget(self.header)
         main_layout.addWidget(self.content)
@@ -590,6 +751,41 @@ class CustomVendorRow(QFrame):
         hint = API_PROTOCOL_BASE_URL_HINTS.get(proto, "")
         self.base_url_input.setPlaceholderText(hint)
 
+    def _on_capacity_combo_changed(
+        self,
+        combo: QComboBox,
+        title: str,
+        min_value: int,
+        max_value: int,
+    ) -> None:
+        """上下文/最大输出下拉框选到\"自定义...\"时弹出数字输入框。
+
+        用户取消或输入无效值则回退到\"不指定\"(index=0)。
+        合法输入会**插入**为新条目并选中,下次点开下拉能看到刚才填的值。
+        """
+        if combo.currentData() != "__custom__":
+            return
+        value, ok = QInputDialog.getInt(
+            self,
+            f"自定义{title}",
+            f"请输入 {title}(tokens),范围 {min_value:,} - {max_value:,}:",
+            min_value,
+            min_value,
+            max_value,
+        )
+        if not ok:
+            combo.setCurrentIndex(0)  # 取消 → 回到"不指定"
+            return
+        # 检查是否已有相同值,避免重复插入
+        for i in range(combo.count()):
+            if combo.itemData(i) == value:
+                combo.setCurrentIndex(i)
+                return
+        # 插入到"自定义..."之前(倒数第二位),保持下拉清晰
+        custom_idx = combo.count() - 1  # "自定义..."的位置
+        combo.insertItem(custom_idx, f"{value:,} (自定义)", value)
+        combo.setCurrentIndex(custom_idx)
+
     def _add_model(self) -> None:
         model_id = self.add_model_id.text().strip()
         if not model_id:
@@ -599,14 +795,28 @@ class CustomVendorRow(QFrame):
             self.add_model_id.clear()
             return
         display_name = self.add_model_name.text().strip() or model_id
-        # 只收集 id + name 两个用户实际感知的字段。
-        # reasoning / contextWindow / maxTokens 不再收集也不再传递——这些是
-        # 模型本身的能力参数,每个模型差异很大(如 Claude Opus 1M ctx vs GPT 200K),
-        # 应由 OpenClaw 用其内置默认值处理,我们不应硬编码任何"猜测值"。
-        self._models.append({
+
+        # 读取能力参数。下拉框 currentData() 为 None 时表示用户选了"不指定",
+        # 这种情况下不把字段塞进 dict——get_config 据此决定是否写入 JSON。
+        # 选了"自定义..."但用户取消的话会被 _on_capacity_combo_changed 回退到
+        # index 0(不指定),所以这里不会读到字符串 "__custom__"。
+        model_entry: dict[str, Any] = {
             "id": model_id,
             "name": display_name,
-        })
+        }
+        # reasoning 字段不再由 UI 控制(已移除勾选框):自定义 Provider 永远不主动写
+        # reasoning=true,避免 OpenClaw 抬高 thinkingDefault 触发中转端点 400。
+        ctx_value = self.add_context.currentData()
+        if isinstance(ctx_value, int):
+            model_entry["contextWindow"] = ctx_value
+        max_value = self.add_max_tokens.currentData()
+        if isinstance(max_value, int):
+            model_entry["maxTokens"] = max_value
+
+        self._models.append(model_entry)
+
+        # 重置表单。reasoning/上下文/最大输出保持上次选择,方便批量添加同类模型;
+        # 仅清空模型 ID 和显示名(每个模型必填唯一字段)。
         self.add_model_id.clear()
         self.add_model_name.clear()
         self._refresh_model_rows()
@@ -637,7 +847,16 @@ class CustomVendorRow(QFrame):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(4)
 
-            cb = QCheckBox(f"{m['name']}  ({m['id']})")
+            # 已选参数标签:reasoning / ctx / max,任一指定就追加,便于用户复核
+            tags = []
+            if m.get("reasoning"):
+                tags.append("推理")
+            if m.get("contextWindow"):
+                tags.append(_humanize_tokens(m["contextWindow"]) + " ctx")
+            if m.get("maxTokens"):
+                tags.append(_humanize_tokens(m["maxTokens"]) + " out")
+            tag_str = f"  [{', '.join(tags)}]" if tags else ""
+            cb = QCheckBox(f"{m['name']}  ({m['id']}){tag_str}")
             cb.setChecked(True)
             cb.stateChanged.connect(self._on_model_changed)
             self._model_checkboxes[m["id"]] = cb
@@ -723,9 +942,11 @@ class CustomVendorRow(QFrame):
             return None
 
         provider_id = self.provider_id_input.text().strip()
-        # 收集勾选的模型(被取消勾选的不参与配置)
-        # model_metadata 只保留 name(用户填的显示名);
-        # reasoning / contextWindow / maxTokens 不再收集——参考 _add_model 的注释。
+        # 收集勾选的模型(被取消勾选的不参与配置)。
+        # model_metadata 只透传用户**显式**填写的字段:
+        #   - name 永远存在(下拉框显示名,缺省=model_id)
+        #   - reasoning / contextWindow / maxTokens 仅当 _models 中存在该 key 时才传
+        # 这样 core 层据 dict 是否含 key 决定要不要写 JSON,实现"用户不选→不写"语义。
         selected_refs: list[str] = []
         model_metadata: dict[str, dict[str, Any]] = {}
         for m in self._models:
@@ -734,9 +955,11 @@ class CustomVendorRow(QFrame):
                 continue
             ref = f"{provider_id}/{m['id']}"
             selected_refs.append(ref)
-            model_metadata[ref] = {
-                "name": m["name"],
-            }
+            meta: dict[str, Any] = {"name": m["name"]}
+            for opt_field in ("reasoning", "contextWindow", "maxTokens"):
+                if opt_field in m:
+                    meta[opt_field] = m[opt_field]
+            model_metadata[ref] = meta
 
         return {
             "vendor_id": CUSTOM_VENDOR_ID,
@@ -763,6 +986,10 @@ class CustomVendorRow(QFrame):
         self._models = []
         self.add_model_id.clear()
         self.add_model_name.clear()
+        # 能力参数复位到默认基线(上下文/输出回到 index 0,即 PROVIDER_*_OPTIONS
+        # 列表首项——已配置为 128K/8K 默认值)
+        self.add_context.setCurrentIndex(0)
+        self.add_max_tokens.setCurrentIndex(0)
         self._refresh_model_rows()
         if self.is_expanded:
             self.collapse()
@@ -1210,12 +1437,19 @@ class ProviderConfigPage(QWidget):
                 for ref in cfg.get("selected_models", []) or []:
                     model_id = ref.split("/")[-1] if "/" in ref else ref
                     meta = model_metadata.get(ref, {}) if isinstance(model_metadata, dict) else {}
-                    # 只回填 id + name;模型能力参数(reasoning/ctx/max)
-                    # 老配置中可能有,但不再传给 OpenClaw,故也不进 _models 字典。
-                    self.custom_row._models.append({
+                    # 回填模型能力参数(reasoning/ctx/max),让用户重新打开程序后仍能看到
+                    # 之前配置的 [128K ctx, 8K out, 推理] 标签;按存在性写入,缺失字段保留"未指定"。
+                    entry: dict[str, Any] = {
                         "id": model_id,
                         "name": meta.get("name") or model_id,
-                    })
+                    }
+                    if "reasoning" in meta:
+                        entry["reasoning"] = bool(meta["reasoning"])
+                    if "contextWindow" in meta:
+                        entry["contextWindow"] = int(meta["contextWindow"])
+                    if "maxTokens" in meta:
+                        entry["maxTokens"] = int(meta["maxTokens"])
+                    self.custom_row._models.append(entry)
                 self.custom_row._refresh_model_rows()
                 custom_loaded = True
                 imported_count += 1
@@ -1399,15 +1633,23 @@ class ProviderConfigPage(QWidget):
                         self.custom_row.protocol_combo.setCurrentIndex(idx)
                         break
                 # 模型列表回填,默认全部勾选(用户保存时未勾选的不写入)。
-                # 配置文件里若残留有 reasoning/ctx/maxTokens,UI 不再读取,
-                # 下次保存时也不会再写入这些字段(让 OpenClaw 自己用兜底默认)。
+                # 同时回填 reasoning/contextWindow/maxTokens 三项能力参数,这样用户
+                # 重新打开程序时,模型行后面的 [128K ctx, 8K out, 推理] 标签仍会显示,
+                # 而不是只剩模型名(否则用户会以为之前的配置丢了)。
                 for m in pcfg.get("models", []) or []:
                     if not isinstance(m, dict) or not m.get("id"):
                         continue
-                    self.custom_row._models.append({
+                    entry: dict[str, Any] = {
                         "id": m["id"],
                         "name": m.get("name") or m["id"],
-                    })
+                    }
+                    if "reasoning" in m:
+                        entry["reasoning"] = bool(m["reasoning"])
+                    if "contextWindow" in m:
+                        entry["contextWindow"] = int(m["contextWindow"])
+                    if "maxTokens" in m:
+                        entry["maxTokens"] = int(m["maxTokens"])
+                    self.custom_row._models.append(entry)
                 self.custom_row._refresh_model_rows()
                 # 单实例: 取第一个有效条目即返回
                 break

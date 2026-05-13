@@ -1305,27 +1305,52 @@ class OpenClawManager(BaseOpenClawManager):
         provider_id = self._resolve_provider_id(vendor_id, key_type)
         model_prefix = cfg.get("model_prefix", "")
 
+        # 关键修正:onboard CLI 已经为官方 provider 识别好了 reasoning/contextWindow/maxTokens
+        # 这些能力字段(因为 OpenClaw 内置 catalog 知道每个官方模型的特性)。这里我们的目标
+        # 仅是把"用户实际勾选的模型集合"覆盖进去——那些用户没选的过时别名(如 k2p5)要剔除,
+        # 用户选了但 onboard catalog 里没有的新模型要补进去。
+        # **不要**硬编码 reasoning/contextWindow/maxTokens 覆盖 onboard 给的真值——
+        # 之前硬编码 reasoning=False 导致官方推理模型(Kimi K2 Thinking、GLM-4.7 等)被错误
+        # 标记成"非推理",触发 OpenClaw 默认 thinkingDefault=off,WebChat 看不到思考内容。
+        existing_models = []
+        if provider_id in config["models"]["providers"]:
+            existing_models = config["models"]["providers"][provider_id].get("models", []) or []
+        else:
+            self._log(f"  WARNING: Provider {provider_id} not found in config, skipping model update (onboard may have failed)")
+            return
+
+        # 用 model id 索引 onboard 写好的 catalog,后续按用户选择重组列表
+        existing_by_id = {m.get("id"): m for m in existing_models if isinstance(m, dict) and m.get("id")}
+
         models = []
         aliases = {}
         for model_ref in cfg.get("selected_models", []):
             model_id = model_ref.split("/")[-1] if "/" in model_ref else model_ref
             display_name = model_id
-            models.append({
-                "id": model_id,
-                "name": display_name,
-                "reasoning": False,
-                "input": ["text"],
-                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 262144,
-                "maxTokens": 32768,
-            })
+            existing = existing_by_id.get(model_id)
+            if existing:
+                # onboard catalog 里有此模型 — 完全保留 OpenClaw 识别好的元数据(reasoning、
+                # contextWindow、maxTokens、cost、input、compat 等),只刷新一下 name。
+                entry = dict(existing)
+                entry["id"] = model_id
+                entry.setdefault("name", display_name)
+            else:
+                # onboard catalog 里没有(用户选了官方还未收录的最新模型)——用保守兜底:
+                # reasoning=False(避免乱开 thinking 触发上游 400)、context/maxTokens 用
+                # 主流模型常见基线(2025-2026 国内模型多在 256K/32K 量级)。
+                entry = {
+                    "id": model_id,
+                    "name": display_name,
+                    "reasoning": False,
+                    "input": ["text"],
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                    "contextWindow": 262144,
+                    "maxTokens": 32768,
+                }
+            models.append(entry)
             aliases[f"{provider_id}/{model_id}"] = {"alias": display_name}
 
-        if provider_id in config["models"]["providers"]:
-            config["models"]["providers"][provider_id]["models"] = models
-        else:
-            self._log(f"  WARNING: Provider {provider_id} not found in config, skipping model update (onboard may have failed)")
-            return
+        config["models"]["providers"][provider_id]["models"] = models
 
         # 同时更新 agents.defaults.models alias（注意：是 defaults.models，不是 defaults.model.models）
         if "agents" not in config:
@@ -1394,27 +1419,33 @@ class OpenClawManager(BaseOpenClawManager):
         # onboard 路径不会进这里,所以默认值 openai-completions 仅作为兜底。
         api_protocol = cfg.get("api_protocol", "openai-completions")
 
-        # model_metadata 现在只透传 name(可选);reasoning / contextWindow / maxTokens
-        # **故意不写**——这些是模型本身的能力参数(每个模型差异很大,如 Claude Opus 4.7
-        # 是 1M ctx 而不是 200K),OpenClaw 内部对每个字段都有兜底默认值,我们硬填一个
-        # "看似合理"的默认值反而会把模型真实能力上限锁死(用户配 1M ctx 的模型却被
-        # 我们写死成 200K)。让 OpenClaw 自己处理这些字段更准确。
+        # model_metadata 透传规则:
+        # - name 必传(显示名,UI 默认与 model_id 相同)
+        # - reasoning / contextWindow / maxTokens **仅当 metadata 中存在该 key** 才写入,
+        #   否则不写(让 OpenClaw 用其内置默认/模型注册表查询)。
+        # 设计意图: UI 下拉框默认"不指定",用户选了具体值才会传 key 进来;
+        # 不写就比写一个错误的硬编码值好(避免 1M ctx 的 Claude Opus 被锁死成 200K)。
         model_metadata = cfg.get("model_metadata", {})
 
         models = []
         for model_ref in cfg.get("selected_models", []):
             model_id = model_ref.split("/")[-1] if "/" in model_ref else model_ref
             meta = model_metadata.get(model_ref, {}) if isinstance(model_metadata, dict) else {}
-            models.append({
+            entry: dict[str, Any] = {
                 "id": model_id,
                 "name": meta.get("name") or model_id,
                 # input/cost 是 schema 完整性需要,用户不感知,保留默认值
                 "input": ["text"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                # reasoning / contextWindow / maxTokens **故意不写**:
-                # OpenClaw 启动时读不到这些字段会自动用内置默认值,
-                # 对用户实际模型的能力上限不会形成误导性硬限制。
-            })
+            }
+            # 能力字段按存在性写入(meta 中没有就不写)
+            if "reasoning" in meta:
+                entry["reasoning"] = bool(meta["reasoning"])
+            if "contextWindow" in meta:
+                entry["contextWindow"] = int(meta["contextWindow"])
+            if "maxTokens" in meta:
+                entry["maxTokens"] = int(meta["maxTokens"])
+            models.append(entry)
 
         config["models"]["providers"][provider_id] = {
             "baseUrl": cfg["base_url"],
