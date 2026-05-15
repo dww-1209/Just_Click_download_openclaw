@@ -149,15 +149,33 @@ git <command>
 - 设置 `GIT_EXEC_PATH` 环境变量让内部 git 找到辅助程序
 - 创建 wrapper 前会先**测试执行**内部 git（`git --version`），只有测试通过才创建 wrapper
 
-### 6. `force_rmtree` — 平台统一的三步删除
+### 6. `force_rmtree` — 平台分流删除（Win 与 Mac 走不同路径）
 
-Python 3.12 的 `shutil.rmtree` 使用 `_rmtree_safe_fd`，`onerror` 回调中调用 `os.open(path)` 会因缺少 `flags` 参数而失败。`src/models/utils.py` 中的 `force_rmtree()` 自己实现，三平台统一逻辑：
+Python 3.12 的 `shutil.rmtree` 使用 `_rmtree_safe_fd`，`onerror` 回调中调用 `os.open(path)` 会因缺少 `flags` 参数而失败。`src/models/utils.py` 中的 `force_rmtree()` 自己实现，**按平台分流**——这是 2026-05 修了一次"统一路径"回归 bug 后的最终设计：
 
-1. **去只读属性**：`attrib -R /S /D`（Win）或 `chmod -R +w`（Mac/Linux）
-2. **逐文件删除**：`_rmtree_skip_locked()` — `os.walk` 自底向上遍历，逐个 `os.unlink` / `os.rmdir`。单个文件失败（锁住/权限不够）只跳过这一个，不影响其他文件。**不用 `rmdir /s /q`（Windows 全或无）或 `rm -rf`（单个失败即停）**。
-3. **残留 rename 兜底**：还有删不掉的文件就用 `os.rename` 把目录移出权威路径（`xxx._residue.<ts>`），残渣后台清理。NTFS rename 不受子文件锁影响，几乎瞬间完成。
+#### Mac/Linux 快路径（APFS/ext4 友好，秒删）
 
-**注意**：永远不要用 `cmd /c rmdir /s /q` 清大目录 — 一个子文件被锁整棵树保留。**永远不要在 force_rmtree 里加 retry 循环或 taskkill** — 那是把 Windows 文件锁问题复杂化的死胡同，逐文件跳过 + rename 兜底就够了。
+1. `chmod -R u+rwx`（**必须含 x 位**，见下方 §7.7 关键陷阱）
+2. `_rmtree_skip_locked()` — `os.walk` 自底向上逐个 `os.unlink` / `os.rmdir`。删完直接返回 True
+3. 极少数文件锁场景才走 rename + `rm -rf` 兜底
+
+不走 rename 隔离 + 后台清理那一套——APFS 上 100k 文件几秒搞定，rename 是纯拖累。`wait` 参数在 Mac 路径上几乎无意义。
+
+#### Windows 路径（rename 隔离 + 后台/同步清理）
+
+1. **优先 rename**：`os.rename(path, "<path>._residue.<ms>")` — NTFS rename 不受子文件锁影响，O(1)
+2. **wait=False**（安装/重装用）：起 daemon 线程后台清残渣，立即返回。daemon 用 `robocopy /MIR /MT:16` 多线程删（绕开 Defender + NTFS 单线程墙）
+3. **wait=True**（卸载用）：前台同步调用 `_background_purge_sync` 真删完才返回，期间每 5 秒输出心跳。**卸载场景必须 wait=True**——否则用户秒关窗 → daemon 中断 → 残渣留磁盘 → 下次打开卸载器又检测到残渣 → 死循环
+
+#### 历史 bug 备忘（修改前必读）
+
+- **2026-05**：把 Mac 也跑 Windows 那套 rename + 同步等待路径，触发"卸载部分完成"假阳性 → 已分流
+- **2026-05**：fallback chmod 用 `S_IWRITE | S_IREAD` (0o600) 对目录会去掉 x 位，Mac 上死锁 → 目录改用 `S_IRWXU` (0o700)，详见 §7.7
+
+**铁律**：
+- 永远不要用 `cmd /c rmdir /s /q` 清大目录——一个子文件被锁整棵树保留
+- **永远不要在 force_rmtree 里加 retry 循环或 taskkill**——逐文件跳过 + rename 兜底就够了
+- 永远不要"为了对称"把 Mac 改成 Windows 的 rename 路径或反之——两边踩的坑不一样，分流是必需的
 
 ### 7. Windows 与 Mac 关键差异
 
@@ -218,6 +236,18 @@ git -c http.postBuffer=524288000 -c core.compression=0 clone --depth 1 --single-
 4. `npm uninstall -g openclaw-cn openclaw`（兼容旧版）
 
 卸载器 `manager.uninstall()` 额外清理 `~/.openclaw-git`、`~/.openclaw-node`、shell rc 文件中的 PATH 条目。
+
+#### 7.7 chmod 在 Win/Mac 上语义不同（关键陷阱）
+
+`stat.S_IWRITE | stat.S_IREAD` (0o600) 在 Windows 上等价"去只读位"完全没问题；
+但在 Mac/POSIX 上**目录的 0o600 = 失去 x 执行位 → `os.walk` 进不去 → 残渣永远清不掉**。
+
+**铁律**：任何对**目录**的 chmod 必须保留 owner 的 x 位。统一写法：
+- 文件 fallback chmod：`stat.S_IWRITE | stat.S_IREAD` (0o600，文件不需要 x)
+- 目录 fallback chmod：`stat.S_IRWXU` (0o700，含 x)
+- 整树 chmod（Mac/Linux 入口）：`subprocess.run(["chmod", "-R", "u+rwx", path])`，**不要**只写 `+w` 或 `+rw`
+
+这是 `force_rmtree` → `_rmtree_skip_locked` 内层目录 fallback 的关键 invariant。曾出现 `drw-------` 怪权限残渣，导致卸载器自检永远报"卸载部分完成"死循环。改这两处 chmod 之前先想清楚，错了 Mac 直接残废。
 
 ## 修改方向参考
 

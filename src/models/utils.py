@@ -140,25 +140,32 @@ def force_rmtree(
 ) -> bool:
     """强制删除目录树。
 
-    两种语义,由 `wait` 参数选择:
+    平台分流:
 
-    - **wait=False(默认,安装/重装路径用)**:rename 优先 + 后台 daemon 清残渣。
-      rename 完(<100ms)就返回 True,daemon 慢慢删。卸载场景**不要用这个**——
-      用户看到"已卸载"就关窗,daemon 会被中断,残渣留在磁盘。
+    - **Mac/Linux**(快路径,APFS/ext4 友好 + 无 Defender):直接 chmod +w 后
+      逐文件 unlink/rmdir,几秒删完 100k 文件,UI 立刻关窗。`wait` 参数在这条
+      路径上几乎无意义,因为同步删本来就快。极少数文件锁场景才走 rename 兜底。
 
-    - **wait=True(卸载路径用)**:同步等到真删干净才返回。先 rename 把目录挪开
-      (避免被占用句柄影响),然后**前台**调 _background_purge 把 residue 真删完。
-      期间通过 on_log 输出心跳,让用户知道还在跑。耗时可能数分钟,但卸载完
-      就是真完。
+    - **Windows**(rename 隔离 + 后台清理):
+      - **wait=False(默认,安装/重装路径用)**:rename 优先 + 后台 daemon 清残渣。
+        rename 完(<100ms)就返回 True,daemon 慢慢删。卸载场景**不要用这个**——
+        用户看到"已卸载"就关窗,daemon 会被中断,残渣留在磁盘。
+      - **wait=True(卸载路径用)**:同步等到真删干净才返回。先 rename 挪开
+        避免占用句柄,然后前台 robocopy /MIR 真删 + 心跳输出。耗时可能数分钟。
 
-    历史 bug(2026-05 修): wait=False 模式下卸载器调用,导致用户秒关窗 → daemon 中断
-    → 用户重新打开卸载器,cleanup_orphan_residues 又检测到残渣 → 又跑卸载逻辑 →
-    又 rename → 又秒关 → 永远清不完的死循环。卸载场景必须 wait=True 同步等。
+    历史 bug(2026-05 修): Windows wait=False 模式下卸载器调用,导致用户秒关窗
+    → daemon 中断 → 用户重新打开卸载器,cleanup_orphan_residues 又检测到残渣
+    → 又跑卸载逻辑 → 又秒关 → 永远清不完的死循环。Windows 卸载场景必须 wait=True。
+
+    历史 bug(2026-05 修): Mac 上误用 Windows 的 rename + 同步等待路径,导致卸载
+    出现"卸载部分完成,请你手动清理"假阳性(rename 后 _background_purge_sync 在
+    Mac 上走 _rmtree_skip_locked 同步删,边删边检测路径存在,概率性卡住)。
+    Mac 必须走"直接逐文件删"的早期快路径。
 
     Args:
         path: 要删除的目录路径。
         on_log: 可选的日志回调。
-        wait: True 时同步等待清理完成;False 时 rename + 后台 daemon。
+        wait: 仅 Windows 有效。True 时同步等待清理完成;False 时 rename + 后台 daemon。
 
     Returns:
         True 表示已清理完成或已隔离;False 表示彻底失败。
@@ -167,11 +174,62 @@ def force_rmtree(
     if not os.path.exists(path_str):
         return True
 
-    # 第一招: 优先 rename 把整棵目录搬到权威路径之外,O(1) 操作。
-    # 失败的常见原因:Explorer 正在浏览这个目录、cmd 的 cwd 在里面、
-    # 安装器自己 chdir 进去了(后两者本仓库不会发生)。
     import time as _time
     import threading as _threading
+
+    # ── Mac/Linux 快路径 ──────────────────────────────────────────────
+    # APFS / ext4 + 没有 Defender 实时扫描,直接逐文件删 100k 文件几秒搞定,
+    # 不需要 rename 隔离这一圈。早期版本就是这套(commit 4d0a747 之前),
+    # 卸载体验"秒退窗"。Windows 那套 rename + robocopy + daemon 是为了绕开
+    # 文件锁/Defender 扫描墙,Mac 上属于纯拖累。
+    #
+    # rename 隔离机制只有在文件锁住、daemon 中断风险高时才有意义,Mac 都没有。
+    # 同步删完 → 用户看到"已彻底清理"立刻关窗,不会出现"卸载部分完成"假阳性。
+    if not is_windows():
+        # u+rwx 同时加读/写/执行三个位:
+        # - 写位: pnpm 依赖目录有时带只读位,不去掉 unlink/rmdir 会失败
+        # - 执行位: 关键!_rmtree_skip_locked 内部用 os.walk 遍历,目录缺 x 位会
+        #   直接进不去(POSIX 语义),连内容都列不出来,fallback chmod 永远不触发。
+        #   这就是上次"卸载部分完成"的根因——上一版用 0o600 (S_IRWUSR|S_IWUSR)
+        #   清属性,把目录的 x 位也清了,从此残渣永远清不掉。
+        try:
+            subprocess.run(
+                ["chmod", "-R", "u+rwx", path_str],
+                capture_output=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        _rmtree_skip_locked(path_str, on_log)
+        if not os.path.exists(path_str):
+            if on_log:
+                on_log(f"已删除: {path_str}")
+            return True
+
+        # 极少进到这里(Mac 文件锁罕见),兜底 rename + rm -rf 残渣
+        try:
+            residue_path = f"{path_str}._residue.{int(_time.time() * 1000)}"
+            os.rename(path_str, residue_path)
+            if on_log:
+                on_log(f"已隔离剩余残留: {os.path.basename(residue_path)}")
+            if wait:
+                subprocess.run(["rm", "-rf", residue_path],
+                               capture_output=True, timeout=300)
+            else:
+                _threading.Thread(
+                    target=lambda: subprocess.run(
+                        ["rm", "-rf", residue_path], capture_output=True, timeout=300),
+                    daemon=True, name="force_rmtree_bg_unix",
+                ).start()
+            return True
+        except OSError:
+            if on_log:
+                on_log(f"删除 {path_str} 失败: 目录被句柄占用")
+            return False
+
+    # ── Windows 路径(rename 优先 + 后台/同步清理)──────────────────
+    # Windows 上必须 rename 隔离(daemon 中断会留死循环残渣 + Defender 串行删慢),
+    # 详见上方 docstring 的"历史 bug(2026-05 修)"段落。
     residue_path = f"{path_str}._residue.{int(_time.time() * 1000)}"
     try:
         os.rename(path_str, residue_path)
@@ -477,6 +535,8 @@ def _rmtree_skip_locked(
                     os.unlink(entry_path)
                 except OSError:
                     try:
+                        # 文件加 owner 读+写,够用了。S_IRWXU = 0o700 兼容文件/目录两种,
+                        # 但文件不需要 x 位,这里给 0o600 (S_IWRITE | S_IREAD) 即可。
                         os.chmod(entry_path, stat.S_IWRITE | stat.S_IREAD)
                         os.unlink(entry_path)
                     except OSError:
@@ -500,7 +560,11 @@ def _rmtree_skip_locked(
                     os.rmdir(entry_path)
                 except OSError:
                     try:
-                        os.chmod(entry_path, stat.S_IWRITE | stat.S_IREAD)
+                        # 目录必须给 S_IRWXU (0o700),含 x 执行位,否则 Mac 上
+                        # 后续 rmdir 仍会因为父进程进不去目录而失败,且会留下
+                        # drw------- 怪异权限的残渣,下次卸载循环检测不掉。
+                        # Windows 上 0o700 与 0o600 等价(不区分 x 位),无副作用。
+                        os.chmod(entry_path, stat.S_IRWXU)
                         os.rmdir(entry_path)
                     except OSError:
                         pass
