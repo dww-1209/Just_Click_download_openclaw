@@ -20,6 +20,7 @@ from src.models.constants import (
     NODEJS_MSI_MIRRORS, NODEJS_PKG_MIRRORS,
     REGISTRY_NPM_MIRROR, REGISTRY_CLAWHUB,
     NODEJS_VERSION, NODEJS_ARCHIVE_MIRROR_BASES,
+    NPMMIRROR_BINARY_BASE, PNPM_REQUIRED_MAJOR,
 )
 
 # 只在非 Windows 平台导入 select（Windows 下 select.select 不支持文件描述符）
@@ -38,6 +39,7 @@ from src.models.install import (
 from src.adapters.install_git import ensure_git_installed
 from src.adapters.run_shell import run_shell, ShellResult
 from src.models.utils import (
+    cleanup_orphan_residues,
     ensure_dir_in_path,
     ensure_local_bin_in_path,
     force_rmtree,
@@ -262,6 +264,9 @@ class OpenClawInstaller(BaseInstaller):
                         self._log(f"已清理残留目录: {d}")
                     else:
                         self._log(f"清理残留目录失败 {d}")
+            # 顺便扫一下用户主目录里历史 .residue 残渣(上次安装异常退出留下的),
+            # 后台 daemon 清理,不阻塞当前流程
+            cleanup_orphan_residues(os.path.expanduser("~"), self._log)
 
             # ========================
             # 阶段 2：进入统一本地构建流程
@@ -544,82 +549,119 @@ class OpenClawInstaller(BaseInstaller):
             self._run_shell_cmd(pkg_cmd, timeout=TIMEOUT_OPENCLAW_CMD)
 
     def _step2_check_and_install_pnpm(self) -> Optional[InstallResult]:
-        """步骤 2：检查/安装 pnpm。"""
-        self._log("检查 pnpm 环境...")
-        # 先用 where/which 快查 PATH 是否有 pnpm 命令包装器,有再跑一次 --version 验证它能不能用。
-        # 单查 where 不够 —— Windows 上 npm 卸载偶尔会留下孤儿 pnpm.cmd 壳子(指向已删的 node_modules),
-        # where 看到文件就算命中,但实际跑会报"找不到模块"或 silent 失败。
-        pnpm_works = False
-        if self._which_cmd("pnpm"):
-            verify = self._run_shell_cmd("pnpm --version", timeout=30)
-            ver_out = (verify.stdout or "").strip()
-            if verify.returncode == 0 and ver_out:
-                self._log(f"pnpm {ver_out} 已存在")
-                pnpm_works = True
-            else:
-                err = (verify.stderr or verify.stdout or "无输出").strip()
-                self._log(f"pnpm 包装器存在但运行失败 ({err}),将重新安装...")
-        if not pnpm_works:
-            self._log("正在安装 pnpm...")
-            if self._inst_on_progress:
-                self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=15, message="正在安装系统依赖...", current_task="安装 pnpm"))
-            npm_cmd = "npm.cmd" if self._inst_is_win else "npm"
-            pnpm_install = self._run_shell_cmd(f"{npm_cmd} install -g pnpm", timeout=120)
+        """步骤 2:启用 corepack 并安装 pnpm shim。
 
-            if pnpm_install.returncode != 0 and self.os_type == "macos":
-                err_text = pnpm_install.stderr.strip() if pnpm_install.stderr else ""
-                if "EACCES" in err_text or "permission denied" in err_text.lower():
-                    self._log("普通权限安装 pnpm 失败，正在弹出密码框申请管理员权限...")
-                    install_script = 'do shell script "cd /tmp && export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && npm install -g pnpm" with administrator privileges'
-                    pnpm_install = subprocess.run(
-                        ["osascript", "-e", install_script],
-                        capture_output=True, text=True, timeout=TIMEOUT_INSTALL_CMD
-                    )
+        关键转折(2026-05 实测):之前用 `npm install -g pnpm@<major>` 全局装 pnpm 是错的。
+        理由:Node 24 内置的 corepack 会在 PATH 里部署 `pnpm` shim,这个 shim 进入项目
+        目录时会自动读 package.json 的 `packageManager` 字段、动态切换到指定的 pnpm 版本。
+        OpenClaw 项目锁的是 `pnpm@10.23.0`,corepack 会在 cwd 切到这个版本运行。
+        而 `npm install -g pnpm` **会覆盖 corepack shim**,装一个固定版本(如 10.33.4),
+        从此 pnpm 不再读项目 packageManager,版本永远停在 10.33.4。
+        即使大版本对了(10),小版本与 OpenClaw lockfile 不匹配也会撞 hoist 行为差异
+        (实测崩在 yargs/cliui ESM 解析,Mac 同 pnpm 10.23.0 跑通,Win 10.33.4 不通)。
 
-            if pnpm_install.returncode != 0:
-                err = pnpm_install.stderr.strip() if pnpm_install.stderr else "未知错误"
-                self._log(f"pnpm 安装失败: {err}")
-                err_detail = pnpm_install.error_detail if hasattr(pnpm_install, "error_detail") else None
-                user_msg = f"无法安装 pnpm: {err}"
-                if err_detail:
-                    user_msg = f"{err_detail.user_message}\n\n{err_detail.suggestion}"
-                return InstallResult(
-                    status=InstallStatus.FAILED, message="pnpm 安装失败",
-                    error_message=user_msg,
-                    log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
-                    error_detail=err_detail,
+        所以正确做法:`corepack enable pnpm` 让 PATH 上有 corepack shim,后续 pnpm install
+        在项目目录跑会自动用 10.23.0,行为与 Mac 完全对齐。
+
+        前提:Node 22.12+ 内置 corepack。Node 自动安装那一步已确保版本满足。
+        """
+        self._log("配置 pnpm 环境(通过 corepack)...")
+        if self._inst_on_progress:
+            self._inst_on_progress(InstallProgress(
+                stage=InstallStage.INSTALLING, progress_percent=15,
+                message="正在配置 pnpm...", current_task="corepack enable pnpm",
+            ))
+
+        # 只跑一次 `corepack enable pnpm`,把 shim 写到 Node 的 bin 目录(Win:
+        # nvm4w/nodejs/,Mac/Linux: ~/.nvm/.../bin/),从此 PATH 里的 `pnpm` 就是
+        # corepack shim。已启用过的话再跑也幂等。
+        # 不再做 `corepack prepare` 预下载、`pnpm --version` 验证 —— 后续 _step5
+        # 进项目目录跑 pnpm install 时,corepack shim 会自动读 packageManager 字段
+        # 下载并切到项目要求的版本(实测会暂停几秒下 ~3MB,可接受)。
+        # enable 失败才 fallback 到 npm install -g(常见于 macOS brew 装 Node 的
+        # EACCES,corepack enable 写 bin 目录被拒)。
+        corepack_cmd = "corepack.cmd" if self._inst_is_win else "corepack"
+        enable_res = self._run_shell_cmd(f"{corepack_cmd} enable pnpm", timeout=60)
+        if enable_res.returncode != 0:
+            err = (enable_res.stderr or enable_res.stdout or "").strip()
+            self._log(f"corepack enable pnpm 失败: {err}")
+            self._log(f"退化到 npm install -g pnpm@{PNPM_REQUIRED_MAJOR}(corepack 不可用)...")
+            return self._fallback_npm_install_pnpm()
+
+        self._log("pnpm 已就绪(corepack shim,进项目目录后会自动切到 lockfile 锁定的版本)")
+        return None
+
+    def _fallback_npm_install_pnpm(self) -> Optional[InstallResult]:
+        """corepack 不可用时的兜底:用 npm install -g pnpm@<major> 全局装。
+
+        副作用警告:这会覆盖 corepack shim,装一个固定小版本的 pnpm。可能导致
+        与项目 lockfile 不匹配的小版本兼容问题(如 yargs/cliui ESM 解析差异)。
+        但总比根本没 pnpm 强,作为 corepack 失败时的最后一招。
+        """
+        self._log(f"正在通过 npm 全局安装 pnpm@{PNPM_REQUIRED_MAJOR}...")
+        npm_cmd = "npm.cmd" if self._inst_is_win else "npm"
+        pnpm_install = self._run_shell_cmd(
+            f"{npm_cmd} install -g pnpm@{PNPM_REQUIRED_MAJOR}", timeout=120
+        )
+
+        if pnpm_install.returncode != 0 and self.os_type == "macos":
+            err_text = pnpm_install.stderr.strip() if pnpm_install.stderr else ""
+            if "EACCES" in err_text or "permission denied" in err_text.lower():
+                self._log("普通权限安装 pnpm 失败,正在弹出密码框申请管理员权限...")
+                install_script = (
+                    f'do shell script "cd /tmp && export PATH=/usr/local/bin:/usr/bin:/bin:$PATH '
+                    f'&& npm install -g pnpm@{PNPM_REQUIRED_MAJOR}" with administrator privileges'
                 )
-            self._log("pnpm 安装完成")
+                pnpm_install = subprocess.run(
+                    ["osascript", "-e", install_script],
+                    capture_output=True, text=True, timeout=TIMEOUT_INSTALL_CMD,
+                )
 
-            if self._inst_is_win:
-                try:
-                    npm_bin_res = self._run_shell_cmd("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
-                    if npm_bin_res.returncode == 0:
-                        npm_bin_path = npm_bin_res.stdout.strip().strip('"').strip()
-                        if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in self._inst_env.get("PATH", ""):
-                            self._inst_env["PATH"] = npm_bin_path + os.pathsep + self._inst_env.get("PATH", "")
-                            self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}")
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._log(f"获取 npm 全局 bin 路径失败: {e}")
-                appdata = os.environ.get("APPDATA", "")
-                fallback_paths = [
-                    os.path.join(appdata, "npm"),
-                    r"C:\Program Files\nodejs",
-                ]
-                for fp in fallback_paths:
-                    if os.path.exists(fp) and fp not in self._inst_env.get("PATH", ""):
-                        self._inst_env["PATH"] = fp + os.pathsep + self._inst_env.get("PATH", "")
-                        self._log(f"已添加 fallback PATH: {fp}")
-            elif self.os_type == "macos":
-                try:
-                    npm_bin_res = self._run_shell_cmd("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
-                    if npm_bin_res.returncode == 0:
-                        npm_bin_path = npm_bin_res.stdout.strip().strip()
-                        if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in self._inst_env.get("PATH", ""):
-                            self._inst_env["PATH"] = npm_bin_path + ":" + self._inst_env.get("PATH", "")
-                            self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}")
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._log(f"获取 npm 全局 bin 路径失败: {e}")
+        if pnpm_install.returncode != 0:
+            err = pnpm_install.stderr.strip() if pnpm_install.stderr else "未知错误"
+            self._log(f"pnpm 安装失败: {err}")
+            err_detail = pnpm_install.error_detail if hasattr(pnpm_install, "error_detail") else None
+            user_msg = f"无法安装 pnpm: {err}"
+            if err_detail:
+                user_msg = f"{err_detail.user_message}\n\n{err_detail.suggestion}"
+            return InstallResult(
+                status=InstallStatus.FAILED, message="pnpm 安装失败",
+                error_message=user_msg,
+                log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+                error_detail=err_detail,
+            )
+        self._log("pnpm 安装完成(npm 全局安装方式)")
+
+        # 把 npm global bin 加到 PATH,确保后续能找到 pnpm.cmd
+        if self._inst_is_win:
+            try:
+                npm_bin_res = self._run_shell_cmd("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
+                if npm_bin_res.returncode == 0:
+                    npm_bin_path = npm_bin_res.stdout.strip().strip('"').strip()
+                    if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in self._inst_env.get("PATH", ""):
+                        self._inst_env["PATH"] = npm_bin_path + os.pathsep + self._inst_env.get("PATH", "")
+                        self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}")
+            except (OSError, subprocess.SubprocessError) as e:
+                self._log(f"获取 npm 全局 bin 路径失败: {e}")
+            appdata = os.environ.get("APPDATA", "")
+            fallback_paths = [
+                os.path.join(appdata, "npm"),
+                r"C:\Program Files\nodejs",
+            ]
+            for fp in fallback_paths:
+                if os.path.exists(fp) and fp not in self._inst_env.get("PATH", ""):
+                    self._inst_env["PATH"] = fp + os.pathsep + self._inst_env.get("PATH", "")
+                    self._log(f"已添加 fallback PATH: {fp}")
+        elif self.os_type == "macos":
+            try:
+                npm_bin_res = self._run_shell_cmd("npm bin -g", timeout=TIMEOUT_NODE_MSI_INSTALL)
+                if npm_bin_res.returncode == 0:
+                    npm_bin_path = npm_bin_res.stdout.strip().strip()
+                    if npm_bin_path and os.path.exists(npm_bin_path) and npm_bin_path not in self._inst_env.get("PATH", ""):
+                        self._inst_env["PATH"] = npm_bin_path + ":" + self._inst_env.get("PATH", "")
+                        self._log(f"已添加 npm 全局 bin 到 PATH: {npm_bin_path}")
+            except (OSError, subprocess.SubprocessError) as e:
+                self._log(f"获取 npm 全局 bin 路径失败: {e}")
         return None
 
     def _step3_clone_repository(self) -> Optional[InstallResult]:
@@ -722,130 +764,203 @@ class OpenClawInstaller(BaseInstaller):
         return None
 
     def _step4_set_pnpm_registry(self) -> None:
-        """步骤 4：设置 pnpm 国内镜像。"""
+        """步骤 4：设置 pnpm 国内镜像，并为已知原生包注入 binary 镜像 env var。
+
+        - registry 切到 npmmirror（npm tarball 走国内）。
+        - sharp 通过 npm_config_sharp_libvips_binary_host 切到 npmmirror 二进制镜像。
+        - electron / electron-builder 通过 ELECTRON_MIRROR 等切到 npmmirror。
+        - matrix-sdk-crypto / node-llama-cpp 没有官方镜像 env var，硬编码 GitHub URL，
+          只能靠 _step5 的重试机制兜底。
+        """
         self._run_in_project_dir(['pnpm', 'config', 'set', 'registry', REGISTRY_NPM_MIRROR], silence_timeout=TIMEOUT_OPENCLAW_CMD)
 
+        # sharp：postinstall 时下载 libvips 预编译产物，npmmirror 镜像了 sharp-libvips 全量
+        self._inst_env["npm_config_sharp_libvips_binary_host"] = f"{NPMMIRROR_BINARY_BASE}/sharp-libvips"
+        # 旧版 sharp 用 sharp_binary_host，一并设上确保兼容
+        self._inst_env["npm_config_sharp_binary_host"] = f"{NPMMIRROR_BINARY_BASE}/sharp"
+        # electron / playwright 等常见原生包的镜像（同 ~/.npmrc 里写 ELECTRON_MIRROR 的效果）
+        self._inst_env["ELECTRON_MIRROR"] = f"{NPMMIRROR_BINARY_BASE}/electron/"
+        self._inst_env["ELECTRON_BUILDER_BINARIES_MIRROR"] = f"{NPMMIRROR_BINARY_BASE}/electron-builder-binaries/"
+        self._inst_env["PLAYWRIGHT_DOWNLOAD_HOST"] = f"{NPMMIRROR_BINARY_BASE}/playwright"
+        # node-sass / sass-embedded 等
+        self._inst_env["SASS_BINARY_SITE"] = f"{NPMMIRROR_BINARY_BASE}/node-sass"
+
+        # node-llama-cpp 的 postinstall 默认跳过。原因:
+        # 1. 它会从 GitHub Releases 下 GPU/CPU 预编译,国内网慢且经常 0xC0000005 段错误
+        #    (常见于缺 VC++ 运行库 / Defender 拦截 .node 文件 / 老 CPU 不支持 AVX2)。
+        # 2. OpenClaw 主流程不依赖本地 llama 推理(使用 cloud API),跳过对核心功能无影响。
+        # 3. 如未来需要本地推理,删掉这一行即可恢复(用户需自行确保 VC++ 运行库等环境)。
+        # 该 env var 是 node-llama-cpp 官方支持的开关,见其 config.js。
+        # self._inst_env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
+
+        self._log("已注入原生包二进制镜像环境变量")
+
+    # pnpm install 失败重试时识别的「可重试」错误关键词（小写匹配）。
+    # native crash 错误码（3221225477=0xC0000005, 134=SIGABRT, 139=SIGSEGV）单独判定，
+    # 这类崩溃重试也无效，应该尽早 bail。
+    _PNPM_RETRYABLE_KEYWORDS = (
+        "etimedout", "econnreset", "econnrefused", "enotfound",
+        "socket hang up", "network", "fetch failed", "tunneling socket",
+        "request to https", "getaddrinfo", "transfer closed",
+        "ssl_error", "tls_error", "unable to verify",
+    )
+    # 这些 exit code 是 native 段错误/中止，不是网络问题，重试无意义
+    _NATIVE_CRASH_EXIT_CODES = (3221225477, 134, 139, 3221225725, 3221225495)
+
     def _step5_pnpm_install_deps(self) -> Optional[InstallResult]:
-        """步骤 5：pnpm install（安装项目依赖）。"""
+        """步骤 5：pnpm install（安装项目依赖），支持网络错误下的多次重试。
+
+        策略：
+        - 最多 3 次尝试,每次都用普通 `pnpm install`(不加 --prefer-offline)。
+          之前用 --prefer-offline 重试踩过坑:首次失败时 store 状态不完整,
+          再加 --prefer-offline 会让 pnpm 优先用残缺 store 跳过远程下载,
+          导致 .bin wrapper / esbuild optional deps 找不到文件而 ENOENT。
+          所以重试时还是走完整 install,慢一点但保证一致性。
+        - 失败后看 exit code & stderr:
+          - native crash 码(3221225477/134/139 等)→ 不重试,直接 bail,
+            提示装 VC++ 运行库或关杀软。
+          - 网络关键词或不可分类 → 普通 install 重试,失败的 postinstall
+            会在重新拉一遍 tarball 后再跑。
+        - 重试前先把 node_modules 删掉,避免脏 store 误导 pnpm。
+        """
         self._log("正在安装依赖...")
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=35, message="正在安装依赖...", current_task="pnpm install"))
-        rc = self._run_in_project_dir(['pnpm', 'install'], silence_timeout=TIMEOUT_BUILD_CMD)
-        if rc != 0:
-            recent_logs = "\n".join(self.log_lines[-30:])
+
+        max_attempts = 3
+        last_rc = 0
+        last_recent_logs = ""
+        node_modules_dir = self._inst_project_dir / "node_modules"
+
+        for attempt in range(1, max_attempts + 1):
+            if self.is_cancelled:
+                return self._build_cancelled_result()
+
+            # 重试时清掉上次残缺的 node_modules,避免脏 store 让 pnpm 误判已安装。
+            # 第一次进来 node_modules 不存在,跳过。
+            if attempt > 1 and node_modules_dir.exists():
+                self._log("清理上次残缺的 node_modules 后重试...")
+                force_rmtree(node_modules_dir, self._log)
+
+            cmd = ['pnpm', 'install']
+            self._log(f"第 {attempt}/{max_attempts} 次尝试 pnpm install...")
+
+            rc = self._run_in_project_dir(cmd, silence_timeout=TIMEOUT_BUILD_CMD)
+            if rc == 0:
+                if attempt > 1:
+                    self._log(f"pnpm install 在第 {attempt} 次尝试时成功")
+                return None
+
+            last_rc = rc
+            last_recent_logs = "\n".join(self.log_lines[-30:])
+
+            # native crash:不可重试,直接 bail 给出有针对性的提示
+            if rc in self._NATIVE_CRASH_EXIT_CODES:
+                self._log(f"检测到原生模块崩溃(exit code {rc}),不再重试")
+                break
+
+            # 判断 stderr 是否含可重试网络关键词;不含也允许重试,但提示"非典型错误"
+            stderr_lower = last_recent_logs.lower()
+            is_network_err = any(k in stderr_lower for k in self._PNPM_RETRYABLE_KEYWORDS)
+            if attempt < max_attempts:
+                if is_network_err:
+                    self._log(f"检测到网络错误,{2 if attempt == 1 else 3} 秒后重试...")
+                else:
+                    self._log(f"pnpm install 失败(exit code {rc}),{2 if attempt == 1 else 3} 秒后重试...")
+                time.sleep(2 if attempt == 1 else 3)
+
+        # 所有重试均失败,根据最后一次的错误特征给出诊断
+        if last_rc in self._NATIVE_CRASH_EXIT_CODES:
+            # 0xC0000005 / SIGSEGV / SIGABRT:原生模块崩溃,八成是 VC++ 运行库缺失或杀软拦截。
+            # Windows 上先尝试自动检测+安装 VC++ 运行库 —— 若成功则需用户重启安装器(因为
+            # 当前 Python 进程还没 dlopen 新装的 vcruntime,新建子进程才能加载),
+            # 失败则给出原来的"手动安装"提示。
+            if is_windows():
+                from src.adapters.install_vcredist import is_vcredist_installed, install_vcredist
+
+                if not is_vcredist_installed():
+                    self._log("=" * 60)
+                    self._log("检测到原生模块崩溃,且未安装 Visual C++ 运行库")
+                    self._log("将自动下载并安装 VC++ 运行库,需您授权管理员权限")
+                    self._log("=" * 60)
+
+                    if install_vcredist(on_log=self._log):
+                        return InstallResult(
+                            status=InstallStatus.FAILED,
+                            message="VC++ 运行库已安装,请重启安装器",
+                            error_message=(
+                                "已自动安装 Visual C++ 运行库。\n\n"
+                                "请关闭本安装器,然后重新打开重试 ——\n"
+                                "因为当前进程还没加载新装的运行时 DLL,新启动的进程才能加载。\n\n"
+                                "(无需重启电脑)"
+                            ),
+                            log_lines=self.log_lines.copy(),
+                            duration_seconds=time.time() - self.start_time,
+                            error_detail=InstallErrorDetail(
+                                category=ErrorCategory.DEPENDENCY_MISSING,
+                                stage="INSTALLING",
+                                context="自动安装 VC++ 运行库后需要重启安装器进程",
+                                raw_error=f"returncode={last_rc}\n最近日志:\n{last_recent_logs}",
+                                user_message="已为您安装 Visual C++ 运行库,请关闭并重新打开安装器",
+                                suggestion="无需重启电脑,只需关闭本安装器后重新打开",
+                            ),
+                        )
+                    # VC++ 自动安装失败(下载失败 / 用户拒绝 UAC),走下面的手动指引
+                    self._log("VC++ 运行库自动安装失败,请按下方提示手动安装")
+
             return InstallResult(
-                status=InstallStatus.FAILED, message="依赖安装失败",
-                error_message="pnpm install 失败，可能是网络不稳定或 npm 镜像源不可用。\n\n建议：\n1. 检查网络连接后重试\n2. 暂时关闭代理/VPN 后重试\n3. 查看高级模式中的完整日志",
+                status=InstallStatus.FAILED, message="原生模块崩溃",
+                error_message=(
+                    f"依赖安装时原生模块崩溃(exit code {last_rc})。\n\n"
+                    f"常见原因:\n"
+                    f"1. 缺少 Visual C++ 运行库\n"
+                    f"   下载地址: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                    f"2. 杀毒软件/Windows Defender 拦截了 .node 文件\n"
+                    f"   建议: 暂时关闭实时保护后重试\n"
+                    f"3. CPU 不支持某些指令集(老机器需特殊编译)\n"
+                ),
                 log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
                 error_detail=InstallErrorDetail(
-                    category=ErrorCategory.NETWORK_UNKNOWN,
+                    category=ErrorCategory.PROCESS_CRASHED,
                     stage="INSTALLING",
-                    context="执行 pnpm install 安装项目依赖",
-                    raw_error=f"returncode={rc}\n最近日志:\n{recent_logs}",
-                    user_message="pnpm install 失败，可能是网络不稳定或 npm 镜像源不可用",
-                    suggestion="1. 检查网络连接后重试\n2. 暂时关闭代理/VPN 后重试\n3. 查看高级模式中的完整日志",
+                    context="执行 pnpm install 时原生模块 postinstall 崩溃",
+                    raw_error=f"returncode={last_rc}\n最近日志:\n{last_recent_logs}",
+                    user_message=f"原生模块崩溃(exit code {last_rc}),通常是 VC++ 运行库缺失或杀软拦截",
+                    suggestion=(
+                        "1. 安装 Visual C++ 运行库: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                        "2. 暂时关闭杀毒软件/Windows Defender 实时保护后重试\n"
+                        "3. 若是老 CPU,可尝试在 BIOS 中检查 SSE4/AVX 支持"
+                    ),
                 ),
             )
-        return None
 
-    def _resolve_native_cache_dir(self) -> Optional[str]:
-        """解析原生缓存资源目录路径。
-
-        按以下优先级查找 resources/native-cache/matrix-sdk-crypto：
-        1. PyInstaller 运行时：sys._MEIPASS 临时目录
-        2. 可执行文件同目录
-        3. 开发模式：项目根目录下
-
-        Returns:
-            缓存目录路径，若不存在则返回 None。
-        """
-        cache_subdir = "resources/native-cache/matrix-sdk-crypto"
-        # PyInstaller 模式
-        if getattr(sys, "_MEIPASS", None):
-            candidate = os.path.join(sys._MEIPASS, cache_subdir)
-            if os.path.isdir(candidate):
-                return candidate
-
-        # 可执行文件同目录模式
-        exe_dir = Path(sys.executable).parent.resolve()
-        candidate = exe_dir / cache_subdir
-        if candidate.exists():
-            return str(candidate)
-
-        # 开发模式：从 adapters/ 向上两级到项目根
-        project_root = Path(__file__).parent.parent.parent.resolve()
-        candidate = project_root / cache_subdir
-        if candidate.exists():
-            return str(candidate)
-
-        return None
-
-    def _step5b_inject_native_cache(self) -> None:
-        """步骤 5b：注入 matrix-sdk-crypto 预编译原生缓存。
-
-        pnpm install 执行后，matrix-sdk-crypto 的 postinstall 脚本可能因网络问题
-        未能从 GitHub 下载预编译的 .node 文件。本步骤作为兜底：若检测到 .node
-        文件缺失，则使用安装器内置的缓存副本进行注入，避免后续触发 Rust 源码编译。
-        """
-        cache_dir = self._resolve_native_cache_dir()
-        if not cache_dir:
-            self._log("未找到原生缓存目录，跳过注入")
-            return
-
-        # 确定当前平台对应的 .node 文件名
-        machine = platform.machine().lower()
-        if is_macos():
-            if machine in ("arm64", "aarch64"):
-                node_file = "matrix-sdk-crypto.darwin-arm64.node"
-            else:
-                node_file = "matrix-sdk-crypto.darwin-x64.node"
-        elif is_windows():
-            if machine == "arm64":
-                node_file = "matrix-sdk-crypto.win32-arm64-msvc.node"
-            elif machine in ("amd64", "x86_64", "x64"):
-                node_file = "matrix-sdk-crypto.win32-x64-msvc.node"
-            else:
-                node_file = "matrix-sdk-crypto.win32-ia32-msvc.node"
-        else:  # linux
-            if machine in ("arm64", "aarch64"):
-                node_file = "matrix-sdk-crypto.linux-arm64-gnu.node"
-            else:
-                node_file = "matrix-sdk-crypto.linux-x64-gnu.node"
-
-        cache_file = os.path.join(cache_dir, node_file)
-        if not os.path.exists(cache_file):
-            self._log(f"原生缓存文件不存在: {node_file}")
-            return
-
-        # 在 pnpm virtual store 中查找 matrix-sdk-crypto 的实际安装路径
-        import glob
-        project_dir = self._inst_project_dir
-        search_pattern = str(
-            project_dir / "node_modules" / ".pnpm" / "@matrix-org+matrix-sdk-crypto-nodejs@*"
-            / "node_modules" / "@matrix-org" / "matrix-sdk-crypto-nodejs"
+        # 网络/未知错误:已经重试 3 次仍失败
+        return InstallResult(
+            status=InstallStatus.FAILED, message="依赖安装失败",
+            error_message=(
+                "pnpm install 失败(已重试 3 次)。\n\n"
+                "可能原因:\n"
+                "1. 网络持续不稳定(尤其是访问 GitHub Releases)\n"
+                "2. 部分原生模块预编译产物只在 GitHub 有,国内无镜像\n\n"
+                "建议:\n"
+                "1. 切换网络环境(手机热点 / 公司网 / 家庭网)后重试\n"
+                "2. 暂时开启代理/VPN 后重试\n"
+                "3. 查看高级模式中的完整日志,定位具体卡在哪个包"
+            ),
+            log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
+            error_detail=InstallErrorDetail(
+                category=ErrorCategory.NETWORK_UNKNOWN,
+                stage="INSTALLING",
+                context="执行 pnpm install 安装项目依赖(已重试 3 次)",
+                raw_error=f"returncode={last_rc}\n最近日志:\n{last_recent_logs}",
+                user_message="pnpm install 失败(已重试 3 次),网络或 GitHub Releases 访问异常",
+                suggestion=(
+                    "1. 切换网络环境后重试\n"
+                    "2. 暂时开启代理/VPN(尤其是能访问 GitHub 的代理)后重试\n"
+                    "3. 查看高级模式中的完整日志,定位具体卡在哪个包"
+                ),
+            ),
         )
-        matches = glob.glob(search_pattern)
-        if not matches:
-            self._log("未找到 matrix-sdk-crypto 安装路径，跳过注入")
-            return
-
-        target_dir = matches[0]
-        target_file = os.path.join(target_dir, node_file)
-
-        # 若目标文件已存在且大小正常，则无需注入
-        if os.path.exists(target_file):
-            existing_size = os.path.getsize(target_file)
-            cache_size = os.path.getsize(cache_file)
-            if existing_size == cache_size:
-                self._log(f"matrix-sdk-crypto 原生文件已存在且大小匹配，跳过注入")
-                return
-            self._log(f"matrix-sdk-crypto 原生文件大小不匹配 ({existing_size} != {cache_size})，执行替换")
-
-        try:
-            shutil.copy2(cache_file, target_file)
-            self._log(f"已注入 matrix-sdk-crypto 原生缓存: {node_file}")
-        except OSError as e:
-            self._log(f"注入 matrix-sdk-crypto 原生缓存失败: {e}")
 
     def _step6_build_ui(self) -> Optional[InstallResult]:
         """步骤 6：pnpm ui:build（构建前端界面）。"""
@@ -871,7 +986,17 @@ class OpenClawInstaller(BaseInstaller):
         return None
 
     def _step7_build_core(self) -> Optional[InstallResult]:
-        """步骤 7：pnpm build（构建核心服务）。"""
+        """步骤 7：pnpm build（构建核心服务）。
+
+        重要(Windows): pnpm build 内部会调 `pnpm dlx rolldown`,而 dlx 缓存一旦因
+        网络抖动/进程中断留下不完整状态,会被 hash 永久命中,导致后续每次都缺
+        `@rolldown/binding-win32-x64-msvc` 这种平台原生绑定。表现:
+            Cannot find native binding... Cannot find module '@rolldown/binding-win32-x64-msvc'
+        修复策略(2026-05):
+            1. build 前先清理 %LOCALAPPDATA%\pnpm-cache\dlx,强制重拉
+            2. build 失败若命中"Cannot find native binding"特征,清缓存后再 retry 一次
+        离线版直接复用从在线版打的产物,所以只要在线版打出来是干净的,离线就不踩这个坑。
+        """
         if self._inst_is_win:
             bash_dir = ""
             for candidate in [r"C:\Program Files\Git\bin", r"C:\Program Files (x86)\Git\bin"]:
@@ -889,10 +1014,22 @@ class OpenClawInstaller(BaseInstaller):
                         self._inst_env["PATH"] = bash_dir + os.pathsep + self._inst_env.get("PATH", "")
                         self._log(f"找到 bash: {bash_dir}")
 
+            # build 前清 dlx 缓存,避免命中残缺缓存导致 native binding 缺失
+            self._clean_pnpm_dlx_cache()
+
         self._log("正在构建核心服务...")
         if self._inst_on_progress:
             self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=70, message="正在构建核心服务...", current_task="pnpm build"))
         rc = self._run_in_project_dir(['pnpm', 'build'], silence_timeout=TIMEOUT_INSTALL_CMD)
+
+        # Windows + native binding 缺失时自动 retry 一次
+        if rc != 0 and self._inst_is_win and self._is_native_binding_failure():
+            self._log("检测到 native binding 缺失(疑似 dlx 缓存损坏),清空 dlx 缓存后重试...")
+            self._clean_pnpm_dlx_cache(force=True)
+            if self._inst_on_progress:
+                self._inst_on_progress(InstallProgress(stage=InstallStage.INSTALLING, progress_percent=72, message="正在重试构建核心服务...", current_task="pnpm build (retry)"))
+            rc = self._run_in_project_dir(['pnpm', 'build'], silence_timeout=TIMEOUT_INSTALL_CMD)
+
         if rc != 0:
             recent_logs = "\n".join(self.log_lines[-20:])
             return InstallResult(
@@ -909,6 +1046,39 @@ class OpenClawInstaller(BaseInstaller):
                 ),
             )
         return None
+
+    def _clean_pnpm_dlx_cache(self, force: bool = False) -> None:
+        """清空 pnpm dlx 缓存(Windows 专用)。
+
+        位置: %LOCALAPPDATA%\\pnpm-cache\\dlx
+        force=True 时无条件清,否则只在目录存在时清。失败不抛异常,只记日志。
+        """
+        if not self._inst_is_win:
+            return
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if not local_appdata:
+            return
+        dlx_dir = os.path.join(local_appdata, "pnpm-cache", "dlx")
+        if not os.path.exists(dlx_dir):
+            if force:
+                self._log(f"dlx 缓存目录不存在,跳过清理: {dlx_dir}")
+            return
+        try:
+            self._log(f"清理 pnpm dlx 缓存: {dlx_dir}")
+            force_rmtree(dlx_dir, self._log)
+        except Exception as e:
+            self._log(f"清理 dlx 缓存失败(继续): {e}")
+
+    def _is_native_binding_failure(self) -> bool:
+        """检测最近日志是否含 native binding 缺失特征。"""
+        recent = "\n".join(self.log_lines[-50:])
+        markers = [
+            "Cannot find native binding",
+            "Cannot find module '@rolldown/binding",
+            "Cannot find module '@swc/core-",
+            "Cannot find module '@esbuild/",
+        ]
+        return any(m in recent for m in markers)
 
     def _step8_onboard_config(self) -> int:
         """步骤 8：初始化配置（onboard）。
@@ -1104,6 +1274,20 @@ class OpenClawInstaller(BaseInstaller):
         self._inst_env = os.environ.copy()
         self._inst_env["PYTHONIOENCODING"] = "utf-8"
         self._inst_env["NODE_OPTIONS"] = "--max-old-space-size=8192"
+
+        # Windows 上 pnpm 创建 .bin/ wrapper 时,如果 PATHEXT 含 .JS,会尝试给
+        # .js 文件添加 .EXE 后缀(实际是 pnpm 内部的兼容逻辑),撞 ENOENT 写不出
+        # wrapper,导致后续 postinstall 脚本(如 node-llama-cpp)找不到依赖入口,
+        # 撞 ERR_MODULE_NOT_FOUND。Windows 默认 PATHEXT 就含 .JS / .JSE,所以
+        # 这是 Windows 通用问题。修复:从 PATHEXT 移除 .JS / .JSE,让 pnpm 老实
+        # 用 .CMD 包装。
+        if self._inst_is_win:
+            pathext = self._inst_env.get("PATHEXT", "")
+            cleaned = ";".join(
+                p for p in pathext.split(";") if p.strip().upper() not in (".JS", ".JSE")
+            )
+            self._inst_env["PATHEXT"] = cleaned
+
         self._inst_project_dir = Path(target_dir)
         self._inst_on_progress = on_progress
         self._inst_on_log = on_log
@@ -1159,9 +1343,6 @@ class OpenClawInstaller(BaseInstaller):
         result = self._step5_pnpm_install_deps()
         if result:
             return result
-
-        # 步骤 5b：注入 matrix-sdk-crypto 预编译原生缓存（兜底）
-        self._step5b_inject_native_cache()
 
         # 步骤 6：pnpm ui:build（构建前端界面）
         cancelled = self._check_cancelled_result()
