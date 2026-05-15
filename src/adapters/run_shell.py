@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Union
 
 from src.models.install import ErrorCategory, InstallErrorDetail
-from src.models.constants import is_windows, is_macos, is_linux
+from src.models.constants import is_windows
 
 
 @dataclass
@@ -289,7 +289,7 @@ def classify_shell_error(
             returncode=returncode,
         )
 
-    # 权限相关（EACCES 为 Linux/macOS 权限不足的系统错误码）
+    # 权限相关（EACCES 为 macOS 权限不足的系统错误码）
     if any(
         k in combined
         for k in ["access denied", "permission denied", "拒绝访问", "权限不足", "eacces"]
@@ -467,15 +467,11 @@ def _get_suggestion(category: ErrorCategory) -> str:
                 "2. 检查 ~/openclaw-cn 与 ~/.openclaw 所在磁盘是否可写\n"
                 "3. 在公司电脑上可能是组策略拦截,请联系 IT"
             )
-        if is_macos():
-            return (
-                "1. 在「系统设置 → 隐私与安全性」中允许本程序运行\n"
-                "2. 确认 ~/openclaw-cn 与 ~/.openclaw 属于当前用户(终端执行 ls -l ~)\n"
-                "3. 公司 Mac 可能受 MDM 限制,请联系 IT"
-            )
+        # macOS
         return (
-            "1. 检查 ~/openclaw-cn 与 ~/.openclaw 是否当前用户可写\n"
-            "2. 若安装到非家目录(/opt 等),用 sudo 重试或改回家目录路径"
+            "1. 在「系统设置 → 隐私与安全性」中允许本程序运行\n"
+            "2. 确认 ~/openclaw-cn 与 ~/.openclaw 属于当前用户(终端执行 ls -l ~)\n"
+            "3. 公司 Mac 可能受 MDM 限制,请联系 IT"
         )
 
     if category == ErrorCategory.NETWORK_DNS:
@@ -485,16 +481,11 @@ def _get_suggestion(category: ErrorCategory) -> str:
                 "2. 刷新 DNS 缓存:在命令提示符执行 ipconfig /flushdns\n"
                 "3. 检查是否使用了公司内网,可能需要联系 IT 开启访问权限"
             )
-        if is_macos():
-            return (
-                "1. 检查 DNS 设置(系统设置 → 网络),尝试改为 114.114.114.114 或 8.8.8.8\n"
-                "2. 刷新 DNS 缓存:终端执行 sudo dscacheutil -flushcache\n"
-                "3. 公司 Wi-Fi 可能拦截外网,请联系 IT"
-            )
+        # macOS
         return (
-            "1. 检查 /etc/resolv.conf 或 NetworkManager 配置中的 DNS\n"
-            "2. 尝试将 DNS 改为 114.114.114.114 或 8.8.8.8\n"
-            "3. 刷新 DNS 缓存:执行 sudo systemd-resolve --flush-caches"
+            "1. 检查 DNS 设置(系统设置 → 网络),尝试改为 114.114.114.114 或 8.8.8.8\n"
+            "2. 刷新 DNS 缓存:终端执行 sudo dscacheutil -flushcache\n"
+            "3. 公司 Wi-Fi 可能拦截外网,请联系 IT"
         )
 
     if category == ErrorCategory.ANTIVIRUS_BLOCKED:
@@ -504,15 +495,11 @@ def _get_suggestion(category: ErrorCategory) -> str:
                 "2. 将本程序添加到杀毒软件白名单\n"
                 "3. 右键安装包选择\"属性\",勾选\"解除锁定\"后重试"
             )
-        if is_macos():
-            return (
-                "1. 在「系统设置 → 隐私与安全性」中允许本程序运行\n"
-                "2. 若被 Gatekeeper 拦截,通过启动项目下方「双击运行-*.command」绕过\n"
-                "3. 关闭第三方安全软件(如 Lulu / Little Snitch)后重试"
-            )
+        # macOS
         return (
-            "1. 关闭 SELinux/AppArmor 等强制访问控制,或调整策略后重试\n"
-            "2. 关闭第三方安全工具后重试"
+            "1. 在「系统设置 → 隐私与安全性」中允许本程序运行\n"
+            "2. 若被 Gatekeeper 拦截,通过启动项目下方「双击运行-*.command」绕过\n"
+            "3. 关闭第三方安全软件(如 Lulu / Little Snitch)后重试"
         )
 
     # ----- 平台无关 -----

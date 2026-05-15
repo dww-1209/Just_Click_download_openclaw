@@ -41,16 +41,6 @@ REGISTRY_CLAWHUB = "https://cn.clawhub-mirror.com/"
 # 仅指定大版本号(10),不锁小版本,小版本升级仍可享受 bugfix。
 PNPM_REQUIRED_MAJOR = 10
 
-# Microsoft Visual C++ 2015-2022 Redistributable (x64) 下载镜像。
-# 用途:Windows 上原生 npm 包(node-llama-cpp/sharp/better-sqlite3 等)的 .node
-# 文件运行时依赖 vcruntime140.dll/msvcp140.dll。这两个不在 Windows 镜像里,
-# 普通用户多半通过 Office/VSCode/游戏顺带装上,但全新出厂笔记本 / 公司 IT 极简
-# 镜像 / 虚拟机环境往往缺失,导致 native module 加载时段错误(0xC0000005)。
-# 顺序:微软官方短链放第一(国内访问也较稳),其他 CDN 兜底。
-VCREDIST_X64_MIRRORS = [
-    "https://aka.ms/vs/17/release/vc_redist.x64.exe",
-]
-
 # GitHub Releases 反代镜像列表（用于原生 npm 包 postinstall 从 GitHub 下预编译产物）
 # 这几个全部是「URL 前缀反代」：用法是 f"{base}https://github.com/foo/bar/..."，
 # 即直接拼接完整 GitHub URL 在后面，不接受 HTTP CONNECT 隧道，所以不能当 https_proxy 用。
@@ -189,8 +179,3 @@ def is_windows() -> bool:
 def is_macos() -> bool:
     """判断当前系统是否为 macOS。"""
     return sys.platform == "darwin"
-
-
-def is_linux() -> bool:
-    """判断当前系统是否为 Linux。"""
-    return sys.platform.startswith("linux")

@@ -146,7 +146,7 @@ class InstallConfig:
     保存与当前安装任务相关的配置参数。
 
     Attributes:
-        os_type: 目标操作系统类型（windows / linux / macos）。
+        os_type: 目标操作系统类型（windows / macos）。
         command_template: OpenClaw 官方安装命令模板，根据 os_type 自动生成。
     """
 
@@ -163,15 +163,15 @@ def get_official_command(os_type: str, use_mirror: bool = True) -> str:
     """获取 OpenClaw 官方安装命令。
 
     使用官方提供的命令行安装方式（默认使用国内镜像加速）：
-    - Linux/macOS: curl -fsSL https://open-claw.org.cn/install-cn.sh | bash
+    - macOS: curl -fsSL https://open-claw.org.cn/install-cn.sh | bash
     - Windows: iwr -useb https://open-claw.org.cn/install-cn.ps1 | iex
 
     注意：官方脚本不支持自定义安装路径，默认安装到用户目录：
     - Windows: %USERPROFILE%\\.openclaw
-    - Linux/macOS: ~/.openclaw
+    - macOS: ~/.openclaw
 
     Args:
-        os_type: windows/linux/macos
+        os_type: windows/macos
         use_mirror: 是否使用国内镜像（默认 True）
 
     Returns:
@@ -184,8 +184,6 @@ def get_official_command(os_type: str, use_mirror: bool = True) -> str:
                 f'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
                 f'iwr -useb https://open-claw.org.cn/install-cn.ps1 | iex"'
             )
-        elif os_type == "linux":
-            command = 'bash -c "curl -fsSL https://open-claw.org.cn/install-cn.sh | bash"'
         else:
             command = 'bash -c "curl -fsSL https://open-claw.org.cn/install-cn.sh | bash"'
     else:
@@ -195,8 +193,6 @@ def get_official_command(os_type: str, use_mirror: bool = True) -> str:
                 f'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
                 f'iwr -useb https://openclaw.ai/install.ps1 | iex"'
             )
-        elif os_type == "linux":
-            command = 'bash -c "curl -fsSL https://openclaw.ai/install.sh | bash"'
         else:
             command = 'bash -c "curl -fsSL https://openclaw.ai/install.sh | bash"'
 

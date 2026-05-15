@@ -1,6 +1,6 @@
 import subprocess
 import os
-import platform  # 仅用于 platform.machine() 获取 CPU 架构；OS 判断统一走 is_windows/is_macos/is_linux
+import platform  # 仅用于 platform.machine() 获取 CPU 架构；OS 判断统一走 is_windows/is_macos
 import signal
 import shutil
 import time
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Callable, Optional
 
 from src.models.constants import (
-    is_windows, is_macos, is_linux,
+    is_windows, is_macos,
     TIMEOUT_SHORT_CMD, TIMEOUT_OPENCLAW_CMD, TIMEOUT_INSTALL_CMD,
     TIMEOUT_NODE_MSI_INSTALL, TIMEOUT_GIT_INSTALL_MAX, TIMEOUT_BUILD_CMD,
     NODEJS_MSI_MIRRORS, NODEJS_PKG_MIRRORS,
@@ -56,31 +56,30 @@ class OpenClawInstaller(BaseInstaller):
     设计要点：
     - 所有耗时操作均通过回调（on_progress / on_log）向 UI 层反馈，避免阻塞主线程。
     - 安装流程为"在线构建"模式：不预置 OpenClaw 本体，而是从 Gitee 拉取源码后本地编译。
-    - 平台差异（Windows/macOS/Linux）集中在 Node.js 安装方式与命令包装器生成上，其余步骤尽量统一。
+    - 平台差异（Windows / macOS）集中在 Node.js 安装方式与命令包装器生成上，其余步骤尽量统一。
     """
 
     def __init__(self, os_type: str = None) -> None:
         """初始化安装器，自动识别或接受外部传入的操作系统类型。
 
         Args:
-            os_type: 可选，强制指定操作系统类型（"windows" / "macos" / "linux"）。
-                     默认通过 is_windows()/is_macos()/is_linux() 自动判断。
+            os_type: 可选，强制指定操作系统类型（"windows" / "macos"）。
+                     默认通过 is_windows()/is_macos() 自动判断。
         """
         super().__init__()
         if os_type:
             self.os_type = os_type
         elif is_windows():
             self.os_type = "windows"
-        elif is_macos():
-            self.os_type = "macos"
         else:
-            self.os_type = "linux"
+            # 仅支持 Win/Mac;Linux 在入口已被拦截
+            self.os_type = "macos"
 
         self.process: Optional[subprocess.Popen] = None
         self.start_time: float = 0.0
 
         # 平台标识（用于 resources/ 子目录名）
-        self._platform = "windows" if is_windows() else ("macos" if is_macos() else "linux")
+        self._platform = "windows" if is_windows() else "macos"
 
         # Node.js 本地安装目录（tarball/zip 解压目标，无需管理员权限）
         self._node_dir: Path = Path.home() / ".openclaw-node"
@@ -146,7 +145,7 @@ class OpenClawInstaller(BaseInstaller):
                     )
                 self._log("Git 已就绪")
 
-            elif self.os_type == "macos":
+            else:
                 # macOS：检查 curl（系统自带），然后设置内部 git 避免 Xcode CLT 弹窗
                 self._log("检查前置依赖 (git, curl)...")
 
@@ -184,60 +183,6 @@ class OpenClawInstaller(BaseInstaller):
                     )
 
                 self._log("前置依赖已就绪")
-
-            else:
-                # Linux：仅需 git/curl；Node.js 由 _install_nodejs() 统一安装，pnpm 由 _step2 安装
-                self._log("检查前置依赖 (git, curl)...")
-                missing_deps = []
-                for cmd, name in [("git", "Git"), ("curl", "curl")]:
-                    try:
-                        result = subprocess.run([cmd, "--version"], capture_output=True, shell=False, timeout=TIMEOUT_SHORT_CMD)
-                        if result.returncode != 0:
-                            missing_deps.append(name)
-                    except FileNotFoundError:
-                        missing_deps.append(name)
-
-                if missing_deps:
-                    self._log(f"缺少依赖: {', '.join(missing_deps)}，将在系统授权后自动安装")
-                    # 使用 pkexec 安装 git/curl（apt 需要 root）
-                    self._log("正在安装系统依赖 (git, curl)...")
-                    self._log("[授权提示] 即将通过 pkexec 执行系统级安装命令：")
-                    self._log("  apt update && apt-get install -y git curl")
-                    pkexec_dep_cmd = (
-                        "pkexec bash -c '"
-                        "apt update >/dev/null 2>&1; "
-                        "apt-get install -y git curl >/dev/null 2>&1; "
-                        "echo \"[OK] system deps ready\""
-                        "'"
-                    )
-                    dep_result = subprocess.run(
-                        pkexec_dep_cmd, shell=True, capture_output=True, text=True, timeout=TIMEOUT_GIT_INSTALL_MAX
-                    )
-                    if dep_result.stdout:
-                        for line in dep_result.stdout.splitlines():
-                            if line.strip():
-                                self._log(line.strip())
-                    if dep_result.returncode != 0:
-                        err = dep_result.stderr.strip() if dep_result.stderr else "系统依赖安装失败"
-                        self._log(err)
-                        return InstallResult(
-                            status=InstallStatus.FAILED,
-                            message="系统依赖安装失败",
-                            error_message=f"自动安装 git/curl 失败，请确保网络畅通后重试。\n错误：{err}",
-                            log_lines=self.log_lines.copy(),
-                            duration_seconds=time.time() - self.start_time,
-                            error_detail=InstallErrorDetail(
-                                category=ErrorCategory.NETWORK_UNKNOWN,
-                                stage="INSTALLING",
-                                context="Linux 系统依赖安装 (pkexec)",
-                                raw_error=err,
-                                user_message="Linux 系统依赖安装失败",
-                                suggestion="1. 确保网络畅通后重试\n2. 手动执行: sudo apt install -y git curl",
-                            ),
-                        )
-                    self._log("系统依赖安装完成")
-                else:
-                    self._log("前置依赖已就绪")
 
             # ========================
             # 阶段 1：清理残留目录
@@ -329,10 +274,7 @@ class OpenClawInstaller(BaseInstaller):
             return f"node-v{version}-darwin-x64.tar.gz"
         elif is_windows():
             return f"node-v{version}-win-x64.zip"
-        else:  # linux
-            if machine in ("arm64", "aarch64"):
-                return f"node-v{version}-linux-arm64.tar.xz"
-            return f"node-v{version}-linux-x64.tar.xz"
+        return None  # 仅支持 macOS/Windows
 
     def _resolve_resource_dir(self) -> str:
         """解析资源目录路径。
@@ -501,7 +443,7 @@ class OpenClawInstaller(BaseInstaller):
         else:
             self._log(f"警告: 未找到 Node.js bin 目录 {node_bin}")
 
-        # macOS/Linux: 持久化到 shell 配置文件
+        # macOS: 持久化到 shell 配置文件
         if not is_windows():
             ensure_dir_in_path(node_bin, self._log)
 
@@ -573,7 +515,7 @@ class OpenClawInstaller(BaseInstaller):
             ))
 
         # 只跑一次 `corepack enable pnpm`,把 shim 写到 Node 的 bin 目录(Win:
-        # nvm4w/nodejs/,Mac/Linux: ~/.nvm/.../bin/),从此 PATH 里的 `pnpm` 就是
+        # nvm4w/nodejs/,Mac: ~/.nvm/.../bin/),从此 PATH 里的 `pnpm` 就是
         # corepack shim。已启用过的话再跑也幂等。
         # 不再做 `corepack prepare` 预下载、`pnpm --version` 验证 —— 后续 _step5
         # 进项目目录跑 pnpm install 时,corepack shim 会自动读 packageManager 字段
@@ -871,52 +813,18 @@ class OpenClawInstaller(BaseInstaller):
 
         # 所有重试均失败,根据最后一次的错误特征给出诊断
         if last_rc in self._NATIVE_CRASH_EXIT_CODES:
-            # 0xC0000005 / SIGSEGV / SIGABRT:原生模块崩溃,八成是 VC++ 运行库缺失或杀软拦截。
-            # Windows 上先尝试自动检测+安装 VC++ 运行库 —— 若成功则需用户重启安装器(因为
-            # 当前 Python 进程还没 dlopen 新装的 vcruntime,新建子进程才能加载),
-            # 失败则给出原来的"手动安装"提示。
-            if is_windows():
-                from src.adapters.install_vcredist import is_vcredist_installed, install_vcredist
-
-                if not is_vcredist_installed():
-                    self._log("=" * 60)
-                    self._log("检测到原生模块崩溃,且未安装 Visual C++ 运行库")
-                    self._log("将自动下载并安装 VC++ 运行库,需您授权管理员权限")
-                    self._log("=" * 60)
-
-                    if install_vcredist(on_log=self._log):
-                        return InstallResult(
-                            status=InstallStatus.FAILED,
-                            message="VC++ 运行库已安装,请重启安装器",
-                            error_message=(
-                                "已自动安装 Visual C++ 运行库。\n\n"
-                                "请关闭本安装器,然后重新打开重试 ——\n"
-                                "因为当前进程还没加载新装的运行时 DLL,新启动的进程才能加载。\n\n"
-                                "(无需重启电脑)"
-                            ),
-                            log_lines=self.log_lines.copy(),
-                            duration_seconds=time.time() - self.start_time,
-                            error_detail=InstallErrorDetail(
-                                category=ErrorCategory.DEPENDENCY_MISSING,
-                                stage="INSTALLING",
-                                context="自动安装 VC++ 运行库后需要重启安装器进程",
-                                raw_error=f"returncode={last_rc}\n最近日志:\n{last_recent_logs}",
-                                user_message="已为您安装 Visual C++ 运行库,请关闭并重新打开安装器",
-                                suggestion="无需重启电脑,只需关闭本安装器后重新打开",
-                            ),
-                        )
-                    # VC++ 自动安装失败(下载失败 / 用户拒绝 UAC),走下面的手动指引
-                    self._log("VC++ 运行库自动安装失败,请按下方提示手动安装")
-
+            # 0xC0000005 / SIGSEGV / SIGABRT:原生模块崩溃,常见原因是杀软拦截 .node。
+            # 实测中现代 Windows(Win10/11)出厂或日常使用基本都已带 VC++ 运行库,
+            # 故不再自动下载/安装 vc_redist;仅在错误提示中保留链接,让极少数用户自行处理。
             return InstallResult(
                 status=InstallStatus.FAILED, message="原生模块崩溃",
                 error_message=(
                     f"依赖安装时原生模块崩溃(exit code {last_rc})。\n\n"
                     f"常见原因:\n"
-                    f"1. 缺少 Visual C++ 运行库\n"
-                    f"   下载地址: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
-                    f"2. 杀毒软件/Windows Defender 拦截了 .node 文件\n"
+                    f"1. 杀毒软件/Windows Defender 拦截了 .node 文件\n"
                     f"   建议: 暂时关闭实时保护后重试\n"
+                    f"2. 缺少 Visual C++ 运行库(罕见,现代 Windows 大多自带)\n"
+                    f"   下载地址: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
                     f"3. CPU 不支持某些指令集(老机器需特殊编译)\n"
                 ),
                 log_lines=self.log_lines.copy(), duration_seconds=time.time() - self.start_time,
@@ -925,10 +833,10 @@ class OpenClawInstaller(BaseInstaller):
                     stage="INSTALLING",
                     context="执行 pnpm install 时原生模块 postinstall 崩溃",
                     raw_error=f"returncode={last_rc}\n最近日志:\n{last_recent_logs}",
-                    user_message=f"原生模块崩溃(exit code {last_rc}),通常是 VC++ 运行库缺失或杀软拦截",
+                    user_message=f"原生模块崩溃(exit code {last_rc}),通常是杀软拦截 .node 文件",
                     suggestion=(
-                        "1. 安装 Visual C++ 运行库: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
-                        "2. 暂时关闭杀毒软件/Windows Defender 实时保护后重试\n"
+                        "1. 暂时关闭杀毒软件/Windows Defender 实时保护后重试\n"
+                        "2. 若仍失败,安装 Visual C++ 运行库: https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
                         "3. 若是老 CPU,可尝试在 BIOS 中检查 SSE4/AVX 支持"
                     ),
                 ),
@@ -1252,7 +1160,7 @@ class OpenClawInstaller(BaseInstaller):
 
         平台差异处理：
         - Windows：使用 STARTUPINFO + CREATE_NO_WINDOW 隐藏子进程黑框，避免用户体验割裂。
-        - macOS/Linux：通过 osascript / pkexec 处理需要管理员权限的操作，尽量减少弹窗次数。
+        - macOS：通过 osascript 处理需要管理员权限的操作，尽量减少弹窗次数。
 
         Args:
             target_dir: 本地克隆目标路径。

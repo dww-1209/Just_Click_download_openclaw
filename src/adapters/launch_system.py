@@ -12,7 +12,7 @@ import subprocess
 import webbrowser
 from typing import Sequence
 
-from src.models.constants import is_windows, is_macos
+from src.models.constants import is_windows
 
 
 class SystemLauncher:
@@ -21,7 +21,6 @@ class SystemLauncher:
     平台策略:
     - Windows: subprocess.Popen + CREATE_NEW_CONSOLE / cmd start
     - macOS:  AppleScript (osascript) 唤起 Terminal / 默认浏览器
-    - Linux:  依次尝试 gnome-terminal / xterm / konsole 终端模拟器
     """
 
     def open_terminal_command(
@@ -60,25 +59,12 @@ class SystemLauncher:
                     creationflags=subprocess.CREATE_NEW_CONSOLE,
                 )
                 return True
-            if is_macos():
-                # macOS: 通过 AppleScript 唤起 Terminal,内嵌命令需做引号转义
-                joined = " ".join(shlex.quote(a) for a in [command, *args])
-                escaped = joined.replace('"', '\\"')
-                script = f'tell application "Terminal" to do script "{escaped}"'
-                subprocess.Popen(["osascript", "-e", script])
-                return True
-            # Linux: 依次尝试常见终端模拟器,使用 shlex.quote 防止命令注入
+            # macOS: 通过 AppleScript 唤起 Terminal,内嵌命令需做引号转义
             joined = " ".join(shlex.quote(a) for a in [command, *args])
-            terminals = [
-                ["gnome-terminal", "--", "bash", "-c", f"{joined}; exec bash"],
-                ["xterm", "-e", "bash", "-c", f"{joined}; exec bash"],
-                ["konsole", "-e", "bash", "-c", f"{joined}; exec bash"],
-            ]
-            for term in terminals:
-                if shutil.which(term[0]):
-                    subprocess.Popen(term)
-                    return True
-            return False
+            escaped = joined.replace('"', '\\"')
+            script = f'tell application "Terminal" to do script "{escaped}"'
+            subprocess.Popen(["osascript", "-e", script])
+            return True
         except (OSError, subprocess.SubprocessError):
             return False
 

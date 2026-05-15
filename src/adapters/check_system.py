@@ -27,7 +27,7 @@ from src.models.env_check import (
     BrowserResult,
     EnvCheckResult,
 )
-from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_SHORT_CMD
+from src.models.constants import is_windows, is_macos, TIMEOUT_SHORT_CMD
 from src.models.utils import resolve_openclaw_cmd
 
 
@@ -40,7 +40,7 @@ def get_openclaw_install_path() -> str:
     
     官方脚本固定安装到用户目录：
     - Windows: %USERPROFILE%\.openclaw
-    - Linux/macOS: ~/.openclaw
+    - macOS: ~/.openclaw
     
     Returns:
         安装路径字符串
@@ -57,13 +57,10 @@ COMMON_INSTALL_PATHS: List[str] = [
 
 
 def _get_os_type() -> str:
-    """获取统一的操作系统类型标识字符串"""
+    """获取统一的操作系统类型标识字符串(仅 windows / macos)"""
     if is_windows():
         return "windows"
-    elif is_macos():
-        return "macos"
-    else:
-        return "linux"
+    return "macos"
 
 
 def _check_disk_space() -> DiskSpaceResult:
@@ -200,7 +197,7 @@ def _ensure_local_bin_in_rc() -> None:
 def _check_openclaw_installed() -> OpenClawInstallResult:
     """检测 OpenClaw 是否已安装
 
-    判定逻辑(Windows / macOS / Linux 三平台一视同仁,核心是权威标志文件):
+    判定逻辑(Windows / macOS 一视同仁,核心是权威标志文件):
 
     1. **权威标志文件** —— `~/.openclaw/openclaw.json` 或 `~/openclaw-cn/dist/`
        且 dist 目录非空。这两者是安装器流程"成功完成"的真实痕迹:
@@ -210,14 +207,14 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
        会把 dist 里的文件删干净,但因为 scanner 持有 dist 自身的目录句柄而留下
        一个空壳文件夹 —— 那不是真的"已安装"。
 
-    2. **macOS / Linux** 额外走 `which` + `{cmd} --version`,兼容历史
+    2. **macOS** 额外走 `which` + `{cmd} --version`,兼容历史
        `npm install -g` 装法,并用 `--version` 校验排除卸载残留的孤儿包装器。
        Windows **不走 PATH 兜底** —— `where` 找到 .cmd 不代表程序还在
        (cmd 包装器只是 `cd <project_dir> && pnpm openclaw`,目录被删了 cd 就
        静默失败,壳子还在但程序已经废了);Mac 上的 `--version` 校验在 Windows
        要冷启 Node 10-20s,会卡 UI,所以 Windows 完全依赖 Step 1。
 
-    3. **macOS / Linux** 命令不可用但有残留时,自动写 `.bashrc/.zshrc`
+    3. **macOS** 命令不可用但有残留时,自动写 `.bashrc/.zshrc`
        后重新检测一次 —— 应对"程序在但 PATH 没生效"的边缘情况。
 
     历史曾在 Windows 上扫 `~/OpenClaw / Program Files/OpenClaw / %LOCALAPPDATA%/OpenClaw`
@@ -271,7 +268,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
             message="未检测到 OpenClaw",
         )
 
-    # === Step 2 (macOS / Linux 专用): which + --version 校验 ===
+    # === Step 2 (macOS 专用): which + --version 校验 ===
     env = os.environ.copy()
     local_bin = os.path.join(home, ".local", "bin")
     env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
@@ -309,7 +306,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         except (OSError, subprocess.SubprocessError) as e:
             errors.append(f"验证命令异常: {type(e).__name__}: {str(e)}")
 
-    # === Step 3 (macOS / Linux 专用): 命令不可用但有残留目录,自动补 PATH 后重试 ===
+    # === Step 3 (macOS 专用): 命令不可用但有残留目录,自动补 PATH 后重试 ===
     # 对应"残留目录 + 命令包装器还在 PATH 但 PATH 没生效"的边缘情况。
     residual_paths = [
         os.path.expanduser("~/.openclaw"),
@@ -375,7 +372,7 @@ def _check_browser() -> BrowserResult:
             ("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary", "Chrome Canary"),
             ("/Applications/Chromium.app/Contents/MacOS/Chromium", "Chromium"),
         ]
-    elif is_windows():
+    else:
         # Windows
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
@@ -403,18 +400,6 @@ def _check_browser() -> BrowserResult:
                     found.append(name)
         except (OSError, ValueError):
             pass
-    else:
-        # Linux
-        candidates = [
-            ("/usr/bin/google-chrome", "Google Chrome"),
-            ("/usr/bin/google-chrome-stable", "Google Chrome"),
-            ("/usr/bin/microsoft-edge", "Microsoft Edge"),
-            ("/usr/bin/microsoft-edge-stable", "Microsoft Edge"),
-            ("/usr/bin/brave-browser", "Brave Browser"),
-            ("/usr/bin/brave", "Brave Browser"),
-            ("/usr/bin/chromium", "Chromium"),
-            ("/usr/bin/chromium-browser", "Chromium"),
-        ]
 
     for path, name in candidates:
         if os.path.exists(path):

@@ -8,7 +8,7 @@
 - 复用 BaseInstaller 的日志和取消机制。
 - 所有资源从 PyInstaller 打包目录或本地 resources/ 目录读取。
 - 先检测系统已有组件（Node.js、pnpm），有则跳过，无则从资源安装。
-- 当前优先实现 macOS，Windows/Linux 架构已预留。
+- 仅支持 macOS / Windows，Linux 不在支持范围内。
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from typing import Callable
 from src.models.constants import (
     is_windows,
     is_macos,
-    is_linux,
     NODEJS_VERSION,
     CONFIG_DIR_NAME,
     TIMEOUT_SHORT_CMD,
@@ -166,13 +165,11 @@ class OfflineOpenClawInstaller(BaseInstaller):
         self._log("正在安装 Node.js >= 22...")
 
         # 按平台构造 glob 模式，匹配任意版本（如 node-v22.14.0-darwin-arm64.tar.gz）
-        patterns = []
+        patterns: list[str] = []
         if is_macos():
             patterns = ["node-v*-darwin-arm64.tar.gz", "node-v*-darwin-x64.tar.gz"]
         elif is_windows():
             patterns = ["node-v*-win-x64.zip", "node-v*-win-x64.tar.gz"]
-        else:
-            patterns = ["node-v*-linux-x64.tar.xz", "node-v*-linux-x64.tar.gz"]
 
         # 收集所有匹配文件
         all_matches: list[Path] = []
@@ -422,7 +419,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
                 shutil.which("pnpm.cmd")
                 or shutil.which("pnpm.CMD")
                 or shutil.which("pnpm")
-                or "pnpm"  # 兜底,Mac/Linux 无后缀,直接传裸名也能跑
+                or "pnpm"  # 兜底,Mac 无后缀,直接传裸名也能跑
             )
             return True
 

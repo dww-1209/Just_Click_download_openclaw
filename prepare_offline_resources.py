@@ -41,14 +41,13 @@ DEFAULT_GIT_VERSION = "2.54.0"  # 仅作历史参考；Windows 完整版 Git 资
 
 
 def detect_platform() -> str:
-    """检测当前平台。"""
+    """检测当前平台（仅支持 windows / macos）。"""
     sys_platform = sys.platform
-    machine = platform.machine().lower()
     if sys_platform == "win32":
         return "windows"
     if sys_platform == "darwin":
         return "macos"
-    return "linux"
+    raise RuntimeError(f"不支持的平台: {sys_platform}（仅支持 Windows / macOS）")
 
 
 def detect_arch() -> str:
@@ -90,8 +89,6 @@ def download_nodejs(output_dir: Path, version: str, platform_name: str, arch: st
     """
     if platform_name == "macos":
         filename = f"node-v{version}-darwin-{arch}.tar.gz"
-    elif platform_name == "linux":
-        filename = f"node-v{version}-linux-{arch}.tar.xz"
     elif platform_name == "windows":
         filename = f"node-v{version}-win-{arch}.zip"
     else:
@@ -154,7 +151,6 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
     Windows：检查是否已存在 git-*.zip（手动准备的完整版 Git for Windows 便携包），
             不再自动下载 MinGit（功能受限,且与项目期望的完整布局不一致）。
     macOS：内部 git 需要手动从 Xcode CLT 复制，本函数仅做存在性检查。
-    Linux：暂不支持。
 
     Returns:
         已存在的 zip 路径,或 None(未找到/不需要/不支持)。
@@ -310,7 +306,6 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
             )
         return None
 
-    # Linux 暂不支持
     return None
 
 
@@ -495,7 +490,7 @@ def _add_to_tar(
             print(f"  警告: 无法添加 {path}: {e}")
         return
 
-    # 优先识别 junction(_is_junction 在非 Win 平台返回 False,Mac/Linux 走 is_symlink 即可)
+    # 优先识别 junction(_is_junction 在非 Win 平台返回 False,Mac 走 is_symlink 即可)
     if _is_junction(path):
         if tar_root_real is not None:
             _add_junction_as_relsymlink(
@@ -505,7 +500,7 @@ def _add_to_tar(
         return
 
     if path.is_symlink():
-        # 普通 symlink (Mac/Linux 上的 pnpm workspace 软链接、相对路径) 直接 tar.add 即可,
+        # 普通 symlink (Mac 上的 pnpm workspace 软链接、相对路径) 直接 tar.add 即可,
         # tarfile 会保留相对 linkname,目标机器解压能正确解析
         tar.add(path, arcname=arcname)
         return
@@ -618,13 +613,13 @@ def pack_prebuilt(source_dir: Path, output_dir: Path, platform_name: str) -> Pat
     # 正解:走 Python tarfile,自定义 _add_junction_as_relsymlink 把 junction
     # 转为相对路径 SYMTYPE 成员,体积零增长,目标机器用 mklink /J 还原。
     #
-    # 非 Windows 平台:Mac/Linux 上 pnpm 用相对 symlink,系统 tar 能正确处理,
+    # 非 Windows 平台:Mac 上 pnpm 用相对 symlink,系统 tar 能正确处理,
     # 优先用它(更快、且能保留所有元数据)。
     use_system_tar = sys.platform != "win32" and _pack_with_system_tar(source_dir, output_file)
     if use_system_tar:
         print(f"  使用系统 tar 打包完成")
     else:
-        # Windows 必走这条;Mac/Linux 系统 tar 失败时也退化到这里
+        # Windows 必走这条;Mac 系统 tar 失败时也退化到这里
         print(f"  使用 Python tarfile 打包...")
         # tar_root_real:source_dir 的真实绝对路径,用来判断 junction 目标是否
         # 在 tar 范围内(在内 → 转相对 SYMTYPE;在外 → 跳过)
@@ -660,7 +655,7 @@ def main() -> None:
     parser.add_argument(
         "--platform",
         default=detect_platform(),
-        choices=["macos", "windows", "linux"],
+        choices=["macos", "windows"],
         help=f"目标平台 (默认: {detect_platform()})",
     )
     parser.add_argument(

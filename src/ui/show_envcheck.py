@@ -270,9 +270,7 @@ class EnvCheckPage(QWidget):
         self._hide_openclaw_widget()
 
     def update_os_result(self, os_type: str) -> None:
-        os_name = {"windows": "Windows", "macos": "macOS", "linux": "Linux"}.get(
-            os_type, os_type
-        )
+        os_name = {"windows": "Windows", "macos": "macOS"}.get(os_type, os_type)
         self.os_item.set_status(CheckStatus.OK, os_name)
 
     def update_disk_result(self, status: CheckStatus, message: str, path: str | None = None) -> None:

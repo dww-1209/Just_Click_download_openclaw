@@ -12,7 +12,7 @@
 - **图形化模型配置**：支持多供应商 API Key、多选模型、设置默认模型和 fallback
 - **自动启动服务**：安装完成后自动启动 Gateway 并获取带 token 的 WebChat 地址
 - **独立卸载工具**：完全移除 OpenClaw 及其配置、命令包装器
-- **跨平台支持**：Windows / macOS / Ubuntu
+- **跨平台支持**：Windows / macOS
 
 ## 安装流程（6 步）
 
@@ -55,7 +55,7 @@
 | 包管理器 | pnpm（全局安装） |
 | 服务端口号 | 18789 |
 | WebChat 地址 | `http://127.0.0.1:18789?token=<自动获取>` |
-| 命令包装器 | Windows: `%APPDATA%\npm\openclaw.cmd` / macOS&Linux: `~/.local/bin/openclaw` |
+| 命令包装器 | Windows: `%APPDATA%\npm\openclaw.cmd` / macOS: `~/.local/bin/openclaw` |
 
 ## 开发者
 
@@ -273,7 +273,6 @@ uv run python build.py --offline --resources-dir resources/macos
 │   │   ├── node-v*-win-*.zip                  # Node.js 预编译包
 │   │   ├── openclaw-prebuilt-windows.tar.gz   # OpenClaw 预构建产物（需先 build）
 │   │   └── git-*.zip / MinGit-*.zip           # 内部 git（MinGit / PortableGit）
-│   └── linux/                        # Linux 离线资源（预留）
 ```
 
 > **注意**：`resources/` 目录中的二进制文件体积较大（总计可达数百 MB），超出 Git 传输限制，因此 GitHub 仓库中只保留空目录结构（通过 `.gitkeep` 占位）。实际资源文件请在本地准备，详见下方"准备资源"部分。
@@ -302,10 +301,7 @@ git <command>
 3. **杀毒软件**：部分杀毒软件可能拦截 PowerShell/msiexec 命令，如遇问题请暂时关闭或添加白名单。
 4. **端口占用**：Gateway 默认使用 18789 端口。若被占用，安装器会尝试释放该端口。
 5. **macOS 安全放行**：首次运行未签名的 `.app` 时，系统会拦截。请双击 `.command` 辅助脚本启动，或前往 `系统设置 > 隐私与安全性` 点击`仍要打开`。
-6. **Linux 系统要求**：仅支持 **Ubuntu 24.04 LTS 及以上版本** 的桌面环境。首次运行会自动安装 Node.js 等系统依赖。如遇窗口无法打开，可能需要预装 Qt X11 运行库：
-   ```bash
-   sudo apt install -y libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0 libxcb-shape0 libxcb-sync1 libxcb-render-util0 libxcb-keysyms1 libxcb-image0 libxcb-icccm4 libxcb-util1 libegl1 libopengl0
-   ```
+6. **平台支持范围**：仅支持 **Windows / macOS** 桌面端。Linux 不在支持范围内，启动时会被入口卫兵拦截。
 
 ## 技术说明
 

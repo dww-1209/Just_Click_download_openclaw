@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.models.install import InstallResult, InstallStatus
-from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_SHORT_CMD
+from src.models.constants import is_windows, is_macos, TIMEOUT_SHORT_CMD
 from src.models.utils import safe_tar_extract, windows_hidden_subprocess_kwargs
 
 
@@ -190,7 +190,7 @@ class BaseInstaller:
     def _verify_openclaw_command() -> bool:
         """验证 openclaw / openclaw-cn 命令是否在 PATH 中可解析。
 
-        基于 shutil.which,跨平台等价于 Windows where + Linux/macOS which。
+        基于 shutil.which,跨平台等价于 Windows where + macOS which。
         子类如有更复杂的退化路径(如 Windows 下用绝对路径调用 wrapper)
         可在调用本方法之前补充自定义检查。
         """
@@ -271,12 +271,10 @@ class BaseInstaller:
     # ------------------------------------------------------------------
 
     def _detect_platform(self) -> str:
-        """检测当前平台，返回 resources/ 子目录名。"""
+        """检测当前平台，返回 resources/ 子目录名。仅支持 windows / macos。"""
         if is_windows():
             return "windows"
-        if is_macos():
-            return "macos"
-        return "linux"
+        return "macos"
 
     def _resolve_resource_dir(self) -> str:
         """解析资源目录路径。
@@ -325,11 +323,7 @@ class BaseInstaller:
 
         macOS：检测 Xcode CLT，未安装时解压内部 git 并创建 wrapper。
         Windows：直接解压 MinGit 便携版到 ~/.openclaw-git/ 并加入 PATH。
-        Linux：暂不支持。
         """
-        if is_linux():
-            return
-
         git_dest = Path.home() / ".openclaw-git"
 
         if is_macos():

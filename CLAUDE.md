@@ -58,10 +58,8 @@ resources/
 │   ├── node-v22.14.0-darwin-arm64.tar.gz
 │   ├── openclaw-prebuilt-macos.tar.gz
 │   └── git-macos-arm64.tar.gz   # macOS 离线版独有
-├── windows/
-│   └── node-v22.14.0-win-x64.zip
-└── linux/
-    └── ...
+└── windows/
+    └── node-v22.14.0-win-x64.zip
 ```
 
 ### 测试
@@ -97,7 +95,7 @@ UI ──▶ Services ──▶ Contracts ──▶ Core ──▶ Adapters ─�
 
 ### 关键常量
 
-`src/models/constants.py` 集中所有可调参数：Node.js 版本、`DEFAULT_GATEWAY_PORT=18789`、Gitee 仓库 URL、各类镜像列表（npm/Node.js MSI/PKG/tarball）、超时阈值、健康检查参数。修改任何"魔法值"都应该改这里。平台判断函数 `is_windows() / is_macos() / is_linux()` 也在此模块——**项目内禁止混用 `platform.system()` 和 `sys.platform`**。
+`src/models/constants.py` 集中所有可调参数：Node.js 版本、`DEFAULT_GATEWAY_PORT=18789`、Gitee 仓库 URL、各类镜像列表（npm/Node.js MSI/PKG/tarball）、超时阈值、健康检查参数。修改任何"魔法值"都应该改这里。平台判断函数 `is_windows() / is_macos()` 也在此模块——**项目内禁止混用 `platform.system()` 和 `sys.platform`**。Linux 不在支持范围内,三个 `launch_*.py` 入口都有平台卫兵会拒绝在非 Win/Mac 上启动。
 
 ## 项目特有约定
 
@@ -122,7 +120,7 @@ git <command>
 本项目代码**需要写中文注释**（覆盖 Claude Code 默认的"不写注释"建议）：
 - 函数 / 类：写 docstring 或简短中文功能说明
 - 复杂逻辑 / 条件分支：解释**为什么**这样写，而非做什么
-- 平台特殊处理：标注 Windows / macOS / Linux 差异的原因
+- 平台特殊处理：标注 Windows / macOS 差异的原因
 - 错误处理 / 重试逻辑：说明重试策略和兜底设计意图
 
 不必每行都注释，但在非显而易见的约束、invariant、workaround 处必须注释。
@@ -137,7 +135,7 @@ git <command>
 
 - 程序源码：`~/openclaw-cn`
 - 配置（含 API Key）：`~/.openclaw`
-- 命令包装器：Windows `%APPDATA%\npm\openclaw.cmd` / macOS&Linux `~/.local/bin/openclaw`
+- 命令包装器：Windows `%APPDATA%\npm\openclaw.cmd` / macOS `~/.local/bin/openclaw`
 - Gateway 端口：`18789`（被占用时安装器会尝试释放）
 
 ### 5. macOS 离线版内部 git（避免 Xcode CLT 弹窗）
@@ -153,7 +151,7 @@ git <command>
 
 Python 3.12 的 `shutil.rmtree` 使用 `_rmtree_safe_fd`，`onerror` 回调中调用 `os.open(path)` 会因缺少 `flags` 参数而失败。`src/models/utils.py` 中的 `force_rmtree()` 自己实现，**按平台分流**——这是 2026-05 修了一次"统一路径"回归 bug 后的最终设计：
 
-#### Mac/Linux 快路径（APFS/ext4 友好，秒删）
+#### Mac 快路径（APFS 友好，秒删）
 
 1. `chmod -R u+rwx`（**必须含 x 位**，见下方 §7.7 关键陷阱）
 2. `_rmtree_skip_locked()` — `os.walk` 自底向上逐个 `os.unlink` / `os.rmdir`。删完直接返回 True
@@ -195,7 +193,7 @@ Windows 上 `pnpm`、`npm`、`openclaw-cn` 实际是 **`.cmd` 批处理包装器
 
 #### 7.2 命令包装器路径
 
-| | Windows | macOS / Linux |
+| | Windows | macOS |
 |---|---|---|
 | 目录 | `%APPDATA%\Roaming\npm\` | `~/.local/bin/` |
 | 文件名 | `openclaw.cmd`, `openclaw-cn.cmd` | `openclaw`, `openclaw-cn` |
@@ -205,7 +203,7 @@ Windows 上 `pnpm`、`npm`、`openclaw-cn` 实际是 **`.cmd` 批处理包装器
 
 #### 7.3 进程管理
 
-| 操作 | Windows | macOS / Linux |
+| 操作 | Windows | macOS |
 |---|---|---|
 | 查端口占用 | `netstat -ano` | `lsof -ti :<port>` |
 | 杀进程 | `taskkill /F /IM <name> /T` | `kill -9 <pid>` |
@@ -245,7 +243,7 @@ git -c http.postBuffer=524288000 -c core.compression=0 clone --depth 1 --single-
 **铁律**：任何对**目录**的 chmod 必须保留 owner 的 x 位。统一写法：
 - 文件 fallback chmod：`stat.S_IWRITE | stat.S_IREAD` (0o600，文件不需要 x)
 - 目录 fallback chmod：`stat.S_IRWXU` (0o700，含 x)
-- 整树 chmod（Mac/Linux 入口）：`subprocess.run(["chmod", "-R", "u+rwx", path])`，**不要**只写 `+w` 或 `+rw`
+- 整树 chmod（Mac 入口）：`subprocess.run(["chmod", "-R", "u+rwx", path])`，**不要**只写 `+w` 或 `+rw`
 
 这是 `force_rmtree` → `_rmtree_skip_locked` 内层目录 fallback 的关键 invariant。曾出现 `drw-------` 怪权限残渣，导致卸载器自检永远报"卸载部分完成"死循环。改这两处 chmod 之前先想清楚，错了 Mac 直接残废。
 
@@ -256,7 +254,7 @@ git -c http.postBuffer=524288000 -c core.compression=0 clone --depth 1 --single-
 - 新增功能 → 先在 Contracts 定义 Protocol → 各层分别实现 → Composition Root 装配
 - 新增错误类型 → 改 `src/models/user_messages.py` 即可，UI 自动适配
 - 新增镜像 / 调整超时 → 改 `src/models/constants.py`
-- 新增平台（如 Linux ARM64）→ 改 `src/models/constants.py`（镜像 URL）+ Adapters（平台特殊处理）
+- 新增平台 → 先在三个 `launch_*.py` 入口卫兵放行该平台，然后改 `src/models/constants.py`（新增 `is_xxx()` + 镜像 URL）+ Adapters（平台特殊处理）
 - 离线版资源更新 → 改 `prepare_offline_resources.py` 或手动准备 tarball，保持 `resources/{platform}/` 目录结构
 
 ## 常见问题排查

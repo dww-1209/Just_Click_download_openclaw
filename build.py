@@ -116,7 +116,7 @@ def _build_single(
         launcher_script_name: macOS .command 脚本文件名（不含扩展名）
         launcher_display_name: .command 脚本中的显示名称
         add_data: 额外打包的资源目录列表（PyInstaller --add-data）。
-                  每个元素格式为 "SRC:DEST"（macOS/Linux）或 "SRC;DEST"（Windows）
+                  每个元素格式为 "SRC:DEST"（macOS）或 "SRC;DEST"（Windows）
     """
     cmd = get_pyinstaller_cmd()
     sep = ";" if is_windows() else ":"
@@ -239,7 +239,7 @@ def build(
 
     # 自动检测当前平台的离线资源目录
     auto_resources_dir = None
-    platform_name = "windows" if is_windows() else ("macos" if is_macos() else "linux")
+    platform_name = "windows" if is_windows() else "macos"
     candidate = f"resources/{platform_name}"
     if os.path.isdir(candidate) and any(os.scandir(candidate)):
         auto_resources_dir = candidate
@@ -274,8 +274,7 @@ def build(
     print()
 
     # macOS 双架构发布: 产物文件名加 -arm64 / -x64 后缀,让用户能区分下载哪个。
-    # Windows / Linux 不加后缀: Windows 我们只发 x64(ARM64 走 Prism 模拟),
-    # Linux 单一架构,加后缀只会让用户困惑。
+    # Windows 不加后缀: Windows 我们只发 x64(ARM64 走 Prism 模拟)。
     if is_macos():
         machine = platform.machine().lower()
         if machine in ("arm64", "aarch64"):

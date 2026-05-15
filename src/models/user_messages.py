@@ -3,7 +3,7 @@
 from typing import Optional
 
 from src.models.install import ErrorCategory
-from src.models.constants import is_windows, is_macos
+from src.models.constants import is_windows
 
 
 def _platform_permission_solutions() -> list[str]:
@@ -18,16 +18,11 @@ def _platform_permission_solutions() -> list[str]:
             "右键安装包→属性,勾选「解除锁定」(若有此选项)后重试",
             "确认 ~/openclaw-cn 与 ~/.openclaw 所在磁盘有写入权限",
         ]
-    if is_macos():
-        return [
-            "在「系统设置 → 隐私与安全性」中允许本程序运行",
-            "确认 ~/openclaw-cn 与 ~/.openclaw 属于当前用户(可在终端执行 ls -l ~ 查看)",
-            "若在公司 Mac 上,联系 IT 解除 MDM 写入限制",
-        ]
-    # Linux
+    # macOS
     return [
-        "检查目标目录权限,如 ls -ld ~/openclaw-cn 是否当前用户可写",
-        "若安装到非家目录(/opt 等),用 sudo 重新运行,或选择家目录下的路径",
+        "在「系统设置 → 隐私与安全性」中允许本程序运行",
+        "确认 ~/openclaw-cn 与 ~/.openclaw 属于当前用户(可在终端执行 ls -l ~ 查看)",
+        "若在公司 Mac 上,联系 IT 解除 MDM 写入限制",
     ]
 
 

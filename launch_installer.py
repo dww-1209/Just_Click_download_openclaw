@@ -18,6 +18,14 @@ _PROJECT_ROOT = Path(__file__).parent.resolve()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# 平台守卫:仅支持 Windows / macOS。Linux 上的代码路径未经测试,直接拒绝启动。
+if sys.platform not in ("win32", "darwin"):
+    sys.stderr.write(
+        f"[OpenClaw 安装器] 不支持的平台: {sys.platform}\n"
+        f"本程序仅支持 Windows 与 macOS。\n"
+    )
+    sys.exit(1)
+
 # UI 层入口(只接受 Protocol 抽象,具体实现由本文件注入)
 from src.ui.installer_window import InstallerWindow
 

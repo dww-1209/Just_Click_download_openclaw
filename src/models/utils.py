@@ -18,7 +18,7 @@ import tarfile
 from pathlib import Path
 from typing import Callable, Any, Optional
 
-from src.models.constants import is_windows, is_macos, TIMEOUT_SHORT_CMD
+from src.models.constants import is_windows, TIMEOUT_SHORT_CMD
 
 
 def windows_hidden_subprocess_kwargs() -> dict:
@@ -142,7 +142,7 @@ def force_rmtree(
 
     平台分流:
 
-    - **Mac/Linux**(快路径,APFS/ext4 友好 + 无 Defender):直接 chmod +w 后
+    - **Mac**(快路径,APFS/ext4 友好 + 无 Defender):直接 chmod +w 后
       逐文件 unlink/rmdir,几秒删完 100k 文件,UI 立刻关窗。`wait` 参数在这条
       路径上几乎无意义,因为同步删本来就快。极少数文件锁场景才走 rename 兜底。
 
@@ -177,7 +177,7 @@ def force_rmtree(
     import time as _time
     import threading as _threading
 
-    # ── Mac/Linux 快路径 ──────────────────────────────────────────────
+    # ── Mac 快路径 ──────────────────────────────────────────────
     # APFS / ext4 + 没有 Defender 实时扫描,直接逐文件删 100k 文件几秒搞定,
     # 不需要 rename 隔离这一圈。早期版本就是这套(commit 4d0a747 之前),
     # 卸载体验"秒退窗"。Windows 那套 rename + robocopy + daemon 是为了绕开
@@ -309,7 +309,7 @@ def _background_purge(target_path: str) -> None:
     2. robocopy 把空目录"镜像"到 target,等于删空 target
     3. rmdir 删掉变空的 target 和临时目录
 
-    其他平台 (macOS/Linux) 走 Python 的 _rmtree_skip_locked 已经够快
+    其他平台 (macOS) 走 Python 的 _rmtree_skip_locked 已经够快
     (rm -rf 等价语义),且没有 robocopy 这种 native 工具的等价物。
     """
     if not os.path.exists(target_path):
@@ -603,10 +603,10 @@ def resolve_openclaw_cmd(env: Optional[dict] = None) -> str:
 
     优先检测 openclaw-cn，fallback 到 openclaw。
     Windows 使用 where 命令（能正确处理 %APPDATA% 等环境变量展开），
-    Linux/macOS 使用 shutil.which。
+    macOS 使用 shutil.which。
 
     Args:
-        env: 可选的环境变量字典，用于 Linux/macOS 的自定义 PATH 检测。
+        env: 可选的环境变量字典，用于 macOS 的自定义 PATH 检测。
 
     Returns:
         str: 检测到的命令名（如 "openclaw-cn"），若都未找到则返回 "openclaw"。
@@ -733,8 +733,8 @@ def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = No
 
     # 如果没有任何 rc 文件存在（全新系统），主动创建一个
     if not written:
-        # macOS 默认 zsh，Linux 默认 bash
-        default_rc = ".zshrc" if is_macos() else ".bashrc"
+        # macOS 默认 zsh
+        default_rc = ".zshrc"
         rc_path = os.path.join(home, default_rc)
         try:
             with open(rc_path, "w", encoding="utf-8") as f:

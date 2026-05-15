@@ -26,7 +26,7 @@ from src.models.utils import (
     resolve_openclaw_cmd,
     windows_hidden_subprocess_kwargs,
 )
-from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD, TIMEOUT_NODE_MSI_INSTALL
+from src.models.constants import is_windows, is_macos, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD, TIMEOUT_NODE_MSI_INSTALL
 from src.contracts.define_base_manager import BaseOpenClawManager
 from src.contracts.define_decorators import log_method
 
@@ -287,7 +287,7 @@ class OpenClawManager(BaseOpenClawManager):
         """检查 openclaw 命令是否可用
 
         Windows 使用 where 检测（避免某些 CLI 不支持 --version 导致误判）；
-        Linux/macOS 使用 which 检测，并显式将 ~/.local/bin 加入 PATH，
+        macOS 使用 which 检测，并显式将 ~/.local/bin 加入 PATH，
         以确保用户通过安装器创建的 wrapper 能被找到。
 
         Returns:
@@ -308,7 +308,7 @@ class OpenClawManager(BaseOpenClawManager):
                 )
                 return result.returncode == 0
             else:
-                # Linux/macOS: 使用 which 检测，并确保 ~/.local/bin 在 PATH 中
+                # macOS: 使用 which 检测，并确保 ~/.local/bin 在 PATH 中
                 import os
                 env = os.environ.copy()
                 home = os.path.expanduser("~")
@@ -484,7 +484,7 @@ class OpenClawManager(BaseOpenClawManager):
 
         # 把 wrapper 安装目录加到 PATH 最前面。平台分两套:
         # - Windows: %APPDATA%\Roaming\npm (openclaw.cmd / openclaw-cn.cmd 在这)
-        # - macOS / Linux: ~/.local/bin (无后缀脚本)
+        # - macOS: ~/.local/bin (无后缀脚本)
         # 历史 bug: 之前这里 Windows / Mac 走同一套 ~/.local/bin + ":" 拼接,Win 上
         # 不存在这目录又用了错的分隔符,导致 PATH 整个被搞坏 → shutil.which 找不到
         # openclaw-cn.cmd → 子进程 [WinError 2]。
@@ -539,7 +539,7 @@ class OpenClawManager(BaseOpenClawManager):
         1. 先检查网关是否已在运行（最多重试 3 次）。
         2. 若端口 18789 被占用，尝试释放该端口。
         3. 使用前台模式启动（openclaw gateway，不加 start），避免需要管理员权限。
-        4. Windows 使用 PowerShell 包装并隐藏窗口；Linux/macOS 直接运行。
+        4. Windows 使用 PowerShell 包装并隐藏窗口；macOS 直接运行。
         5. 轮询最多 20 秒：检查进程是否存活、通过 gateway status 检查、检测端口开放。
 
         Returns:
@@ -565,7 +565,7 @@ class OpenClawManager(BaseOpenClawManager):
                 time.sleep(1)
 
             # 所有平台统一使用前台模式（不需要管理员权限）
-            os_label = "windows" if is_windows() else ("macos" if is_macos() else "linux")
+            os_label = "windows" if is_windows() else "macos"
             self._log(f"Detected OS: {os_label}")
             self._log("Starting gateway in foreground mode...")
 
@@ -807,7 +807,7 @@ class OpenClawManager(BaseOpenClawManager):
 
         先对端口进行防御性校验（纯数字、1-65535），然后按平台执行：
         - Windows: netstat -ano 查找 PID，再 taskkill /F 强制结束。
-        - Linux/macOS: lsof -ti :port 查找 PID，再 kill -9 强制结束。
+        - macOS: lsof -ti :port 查找 PID，再 kill -9 强制结束。
 
         Args:
             port: 要释放的端口号。
@@ -1532,7 +1532,7 @@ class OpenClawManager(BaseOpenClawManager):
         1. 停止 Gateway（若正在运行）。
         2. 删除本地构建目录（~/openclaw-cn、~/.openclaw）。
         3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）。
-        4. 删除命令包装器（Windows: %APPDATA%\npm\\*.cmd；Linux/macOS: ~/.local/bin）。
+        4. 删除命令包装器（Windows: %APPDATA%\npm\\*.cmd；macOS: ~/.local/bin）。
 
         每一步之前都会检查 cancel_event，若返回 True 则提前终止并返回 False。
 
