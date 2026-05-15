@@ -433,11 +433,22 @@ def _background_purge_sync(target_path: str, on_log: Callable[[str], None] | Non
                 except Exception:
                     pass
         else:
-            # 非 Windows 或非 residue 路径
+            # 非 Windows 或非 residue 路径:Python 流式删 + rm -rf 兜底
+            # 与 force_rmtree Mac 主路径对齐(utils.py:215-217),双重保险。
+            # 历史 bug: 仅靠 _rmtree_skip_locked 的"软删除"语义,遇到 pnpm workspace
+            # 循环 symlink、特殊文件类型时会静默残留,卸载循环报"部分完成"死循环。
             try:
                 _rmtree_skip_locked(target_path, on_log)
             except Exception:
                 pass
+            if os.path.exists(target_path):
+                try:
+                    subprocess.run(
+                        ["rm", "-rf", target_path],
+                        capture_output=True, timeout=300,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
     finally:
         stop_heartbeat.set()
 
@@ -553,9 +564,21 @@ def _rmtree_skip_locked(
                             on_log(f"清理中... 已处理 {deleted} 个文件/目录")
                         last_hb = now
 
-            # 再删空目录
+            # 再删空目录(或 symlink-to-dir)
             for dn in dirnames:
                 entry_path = os.path.join(dirpath, dn)
+                # pnpm workspace 内部循环 symlink(如 extensions/*/node_modules/openclaw
+                # 指回项目根)在 os.walk(followlinks=False) 下会出现在 dirnames 里。
+                # 此时必须 unlink(删链接本身),不能 rmdir(rmdir 对 symlink 报 ENOTDIR)。
+                # 历史 bug: 之前一律走 rmdir,导致 pnpm workspace 残渣永远删不干净,
+                # 卸载循环报"部分完成"。
+                if os.path.islink(entry_path):
+                    try:
+                        os.unlink(entry_path)
+                    except OSError:
+                        pass
+                    deleted += 1
+                    continue
                 try:
                     os.rmdir(entry_path)
                 except OSError:
