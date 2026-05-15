@@ -247,6 +247,54 @@ git -c http.postBuffer=524288000 -c core.compression=0 clone --depth 1 --single-
 
 这是 `force_rmtree` → `_rmtree_skip_locked` 内层目录 fallback 的关键 invariant。曾出现 `drw-------` 怪权限残渣，导致卸载器自检永远报"卸载部分完成"死循环。改这两处 chmod 之前先想清楚，错了 Mac 直接残废。
 
+#### 7.8 Mac GUI 启动 PATH 不读 shell rc（与 §7.1 PATHEXT 同级坑）
+
+Windows 的 `shell=False` 不查 PATHEXT；macOS 的 GUI 启动（Finder 双击 `.app` / `.command` / launchd）**不读 `~/.zshrc` `~/.bash_profile`**，拿到的 PATH 是 launchd 注入的最小集（约 `/usr/bin:/bin:/usr/sbin:/sbin`）。
+
+**症状**：用户首次安装走完所有步骤都正常（因为安装时 `_inst_env` 显式注入了 `~/.openclaw-node/bin`），但之后从环境检测页点"快速启动"跳过安装直接进 Gateway 启动，`subprocess.Popen(["pnpm", "openclaw", "gateway"])` 抛 `FileNotFoundError: 'pnpm'`。终端 `pnpm --version` 正常，因为终端读 rc 文件加载了 PATH。
+
+**修复策略**（已落到 `src/models/utils.py:resolve_pnpm_cmd`）：
+1. **强不变量**：项目自己装的 pnpm 一定在 `~/.openclaw-node/bin/pnpm`（Mac）或 `~/.openclaw-node/pnpm.cmd`（Win），由 `install_openclaw.py` 显式控制。优先用这个。
+2. **兜底**：`shutil.which("pnpm", path=env["PATH"])` 查传入 env 的 PATH。找到就用完整路径。
+3. 还找不到 → 用户手动删了或没装。返回裸 `"pnpm"` 让上层报错。
+
+**铁律**：
+- **任何 GUI 进程里调 `pnpm` / `openclaw` 必须先经过 `resolve_pnpm_cmd(env)`**，不要直接传裸名给 Popen。
+- `_build_clean_env` 必须把 `~/.openclaw-node/bin`（Mac）/ `~/.openclaw-node`（Win）插到 PATH 头，否则 pnpm 内部 spawn `node` 会失败。
+- 不要硬编码"用户可能装在 `/opt/homebrew/bin` 或 `~/Library/pnpm`"——用户装到哪我们不知道，但**项目自己装的位置我们百分百知道**，这个就够了。
+
+#### 7.9 pnpm workspace 循环 symlink（force_rmtree 必修陷阱）
+
+OpenClaw 是 pnpm workspace，`extensions/<addon>/node_modules/openclaw` 是指向项目根的 symlink，存在循环。`os.walk(path, followlinks=False)` 把这种 symlink-to-dir 放在 `dirnames` 里返回，但**它本质是 symlink**——`os.rmdir(symlink)` 在 Mac 上会报 `ENOTDIR`，在 Linux 上行为模糊，结果就是 ENOTDIR 被吞掉、symlink 留下、外层目录非空 → `force_rmtree` 整棵子树永远清不掉。
+
+**症状**：虚拟机或全新机器卸载，`~/openclaw-cn._residue.<ms>` 残渣总有几个 symlink 留着，下次启动卸载器自检又检测到 → 死循环报"卸载部分完成"。本机不出现是因为我们的开发机权限缓存或文件系统差异遮盖了这个 bug。
+
+**修复**（`src/models/utils.py:_rmtree_skip_locked`）：
+
+```python
+for dn in dirnames:
+    entry_path = os.path.join(dirpath, dn)
+    # pnpm workspace 内部循环 symlink 在 os.walk(followlinks=False) 下出现在 dirnames 里。
+    # 此时必须 unlink(删链接本身),不能 rmdir(rmdir 对 symlink 报 ENOTDIR)。
+    if os.path.islink(entry_path):
+        try:
+            os.unlink(entry_path)
+        except OSError:
+            pass
+        continue
+    try:
+        os.rmdir(entry_path)
+    except OSError:
+        os.chmod(entry_path, stat.S_IRWXU)
+        os.rmdir(entry_path)
+```
+
+**第二层兜底**：`_background_purge_sync` 的 Mac 分支（非 Windows / 非 residue 路径）在 Python 流式删后，必须再调 `subprocess.run(["rm", "-rf", target_path])` 兜底——Python 端再小心也比不过 BSD `rm -rf` 对各种边缘情况的鲁棒性。Mac 上 `rm -rf` 处理 100k 文件也就几秒，不要怕慢。
+
+**铁律**：
+- `os.walk(followlinks=False)` 返回的 dirname **不一定是目录**，永远先 `os.path.islink` 判一下。
+- `force_rmtree` 任何代码路径都不要假设"删完 Python 端就一定干净"——Mac 必须 `rm -rf` 兜底，Windows 必须 robocopy/rename 兜底。
+
 ## 修改方向参考
 
 - 换 UI 框架 → 只改 UI 层，下层通过 Protocol 无感知
