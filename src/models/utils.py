@@ -13,6 +13,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from typing import Callable, Any, Optional
@@ -132,145 +133,386 @@ def kill_port_process(port: int, on_log: Callable[[str], None] | None = None) ->
     return killed
 
 
-def force_rmtree(path: str | Path, on_log: Callable[[str], None] | None = None) -> bool:
-    """强制删除目录树,模仿 Mac rm -rf 的语义:逐文件删,锁住的跳过。
+def force_rmtree(
+    path: str | Path,
+    on_log: Callable[[str], None] | None = None,
+    wait: bool = False,
+) -> bool:
+    """强制删除目录树。
 
-    三步:
-    1. chmod/attrib 去只读属性,确保文件可删。
-    2. _rmtree_skip_locked 自底向上遍历,逐个 os.unlink/os.rmdir。
-       单个文件失败(锁住/权限不够)就跳过,不影响其他文件的删除。
-       不像 Windows rmdir /s /q 那样"一个文件锁了整棵树留下"。
-    3. 还有残留(锁住的文件删不掉)就 os.rename 移出权威路径,
-       残渣后台清理。NTFS rename 不受子文件锁影响,几乎瞬间完成。
+    两种语义,由 `wait` 参数选择:
+
+    - **wait=False(默认,安装/重装路径用)**:rename 优先 + 后台 daemon 清残渣。
+      rename 完(<100ms)就返回 True,daemon 慢慢删。卸载场景**不要用这个**——
+      用户看到"已卸载"就关窗,daemon 会被中断,残渣留在磁盘。
+
+    - **wait=True(卸载路径用)**:同步等到真删干净才返回。先 rename 把目录挪开
+      (避免被占用句柄影响),然后**前台**调 _background_purge 把 residue 真删完。
+      期间通过 on_log 输出心跳,让用户知道还在跑。耗时可能数分钟,但卸载完
+      就是真完。
+
+    历史 bug(2026-05 修): wait=False 模式下卸载器调用,导致用户秒关窗 → daemon 中断
+    → 用户重新打开卸载器,cleanup_orphan_residues 又检测到残渣 → 又跑卸载逻辑 →
+    又 rename → 又秒关 → 永远清不完的死循环。卸载场景必须 wait=True 同步等。
 
     Args:
         path: 要删除的目录路径。
         on_log: 可选的日志回调。
+        wait: True 时同步等待清理完成;False 时 rename + 后台 daemon。
 
     Returns:
-        True 表示权威路径已清理(目录不存在或已改名);
-        False 表示连改名都失败(被 Explorer/CWD 锁死)。
+        True 表示已清理完成或已隔离;False 表示彻底失败。
     """
     path_str = str(path)
     if not os.path.exists(path_str):
         return True
 
-    # 去掉只读属性,等效 Mac 的 chmod -R +w。
-    # pnpm 依赖目录有时带只读位,不先去掉 os.unlink/os.rmdir 会失败。
-    if is_windows():
-        try:
-            subprocess.run(
-                ["cmd", "/c", "attrib", "-R", path_str + "\\*", "/S", "/D"],
-                capture_output=True, timeout=30,
-                **windows_hidden_subprocess_kwargs(),
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
-    else:
-        try:
-            subprocess.run(
-                ["chmod", "-R", "+w", path_str],
-                capture_output=True, timeout=30,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
+    # 第一招: 优先 rename 把整棵目录搬到权威路径之外,O(1) 操作。
+    # 失败的常见原因:Explorer 正在浏览这个目录、cmd 的 cwd 在里面、
+    # 安装器自己 chdir 进去了(后两者本仓库不会发生)。
+    import time as _time
+    import threading as _threading
+    residue_path = f"{path_str}._residue.{int(_time.time() * 1000)}"
+    try:
+        os.rename(path_str, residue_path)
+        if on_log:
+            if wait:
+                on_log(f"已隔离: {os.path.basename(residue_path)},正在彻底清理...")
+            else:
+                on_log(f"已隔离残留(后台清理中): {os.path.basename(residue_path)}")
 
-    # 逐文件删除: 遇到锁住/权限不够的跳过,能删多少删多少。
-    # 这等效 Mac 上 rm -rf 的语义 —— 不像 Windows rmdir /s /q 那样
-    # "一个文件锁了整棵树留下",而是逐个文件尝试,失败的跳过,其他照删。
-    # 传入 on_log 让删除大目录(node_modules ~100k 文件)时定期发心跳,
-    # 否则 Windows + Defender 下几十秒一句话不输出,用户会以为程序卡死。
+        if wait:
+            # 同步清残渣,直到真删完才返回。心跳由 _background_purge_sync 内部输出。
+            _background_purge_sync(residue_path, on_log)
+            if not os.path.exists(residue_path):
+                if on_log:
+                    on_log(f"已彻底清理: {os.path.basename(residue_path)}")
+                return True
+            else:
+                if on_log:
+                    on_log(f"清理未完全(部分文件被句柄占用): {os.path.basename(residue_path)}")
+                return False
+        else:
+            # 后台 daemon 线程清残渣,不阻塞主流程。
+            # daemon=True: 安装器进程退出时线程自动结束,不会成为僵尸。
+            # 没清完的 .residue.* 留在磁盘上,下次 cleanup_for_reinstall 会一并扫掉。
+            _threading.Thread(
+                target=_background_purge,
+                args=(residue_path,),
+                daemon=True,
+                name="force_rmtree_bg",
+            ).start()
+            return True
+    except OSError:
+        # rename 失败(目录被锁),退化为同步逐文件删
+        pass
+
+    if on_log:
+        on_log(f"目录被占用,改为逐文件删除: {path_str}")
+
+    # 第二招: 同步逐文件删。这是 fallback,大多数情况进不到这里。
+    # 不再做 attrib /S /D —— 那是浪费时间(扫一遍 + 真删一遍 = 扫两遍),
+    # _rmtree_skip_locked 内层有 chmod+retry 兜底已经够用。
     _rmtree_skip_locked(path_str, on_log)
 
-    # 目录已清空
     if not os.path.exists(path_str):
         if on_log:
             on_log(f"已删除: {path_str}")
         return True
 
-    # 还有残留(锁住删不掉的文件) → rename 出去,权威路径立刻空出。
+    # 同步删之后还残留:再试一次 rename 兜底
     try:
-        import time as _time
-        residue_path = f"{path_str}._residue.{int(_time.time())}"
-        os.rename(path_str, residue_path)
+        residue_path2 = f"{path_str}._residue.{int(_time.time() * 1000)}"
+        os.rename(path_str, residue_path2)
         if on_log:
-            on_log(f"已隔离残留: {os.path.basename(residue_path)}")
-        # 残渣后台清理,不阻塞主流程
-        try:
-            if is_windows():
-                subprocess.run(
-                    ["cmd", "/c", "rmdir", "/s", "/q", residue_path],
-                    capture_output=True, timeout=60,
-                    **windows_hidden_subprocess_kwargs(),
-                )
-            else:
-                subprocess.run(
-                    ["rm", "-rf", residue_path],
-                    capture_output=True, timeout=60,
-                )
-        except (OSError, subprocess.SubprocessError):
-            pass
+            on_log(f"已隔离剩余残留: {os.path.basename(residue_path2)}")
+        if wait:
+            _background_purge_sync(residue_path2, on_log)
         return True
     except OSError:
         if on_log:
-            on_log(f"删除 {path_str} 失败: 目录被占用")
+            on_log(f"删除 {path_str} 失败: 目录被句柄占用")
         return False
+
+
+def _background_purge(target_path: str) -> None:
+    """后台 daemon 线程的清理实现:Windows 用 robocopy,其他平台用 Python 流式删。
+
+    安全门禁(2026-05 修): **只允许 basename 含 ._residue. 的隔离目录走 robocopy**。
+    历史教训:robocopy /MIR 是"镜像同步"语义,在 daemon 并发或路径解析异常时
+    可能误清空非隔离目录(实际撞过 ~/openclaw-cn 被清空的事故)。所以 path 必须
+    是 force_rmtree 改名后的 .residue 路径,任何其他路径都退化到 Python 单线程
+    路径,牺牲速度换安全。
+
+    Windows + Defender 下,单线程 DeleteFile 串行删 100k 文件要 1-3 分钟;
+    robocopy /MIR /MT:16 用 16 个并发线程跑 DeleteFile,实测能快 5-10 倍,
+    且锁住的文件 (/R:0 /W:0) 立刻跳过不重试。流程:
+    1. 创建一个空临时目录
+    2. robocopy 把空目录"镜像"到 target,等于删空 target
+    3. rmdir 删掉变空的 target 和临时目录
+
+    其他平台 (macOS/Linux) 走 Python 的 _rmtree_skip_locked 已经够快
+    (rm -rf 等价语义),且没有 robocopy 这种 native 工具的等价物。
+    """
+    if not os.path.exists(target_path):
+        return
+
+    # 安全门禁:basename 必须含 ._residue. 才允许 robocopy。
+    # force_rmtree 改名后的隔离路径形如 "xxx._residue.<ms>",
+    # cleanup_orphan_residues 扫的也是这种路径。
+    # 任何"长得像正常项目目录"的路径都不能用 robocopy/MIR 清,以免误伤。
+    is_residue = "._residue." in os.path.basename(target_path)
+
+    if is_windows() and is_residue:
+        try:
+            import tempfile
+            empty_dir = tempfile.mkdtemp(prefix="oc_empty_")
+            try:
+                # robocopy: 内置工具,无需安装。返回码 0-7 都算成功 (含跳过/不一致),
+                # 8+ 才算真失败。这里完全吞掉返回码,反正后面会 rmdir 兜底。
+                # /MIR  镜像 source 到 dest = 把 dest 清空(因为 source 是空的)
+                # /MT:16 16 线程并发删,绕开单线程 DeleteFile 串行瓶颈
+                # /R:0 /W:0 锁住的文件立刻跳过,不重试
+                # /NFL/NDL/NJH/NJS/NC/NS/NP 全静默,不打印进度
+                subprocess.run(
+                    [
+                        "robocopy", empty_dir, target_path,
+                        "/MIR", "/MT:16",
+                        "/R:0", "/W:0",
+                        "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP",
+                    ],
+                    capture_output=True,
+                    timeout=600,  # 10 分钟兜底,理论上不会触发
+                    **windows_hidden_subprocess_kwargs(),
+                )
+            finally:
+                # 清掉临时空目录;target_path 此时也已经空了,顺手 rmdir 干掉
+                for d in (empty_dir, target_path):
+                    try:
+                        os.rmdir(d)
+                    except OSError:
+                        pass
+            return
+        except (OSError, subprocess.SubprocessError):
+            # robocopy 不可用 (理论上 Vista+ 都内置) → 走 Python 兜底
+            pass
+
+    # 非 Windows / 非 _residue 路径 / robocopy 失败:走 Python 流式删
+    try:
+        _rmtree_skip_locked(target_path, None)
+    except Exception:
+        pass
+
+
+def _background_purge_sync(target_path: str, on_log: Callable[[str], None] | None) -> None:
+    """同步版本的 _background_purge,带心跳日志。卸载器专用。
+
+    与 _background_purge 不同:
+    - 阻塞调用方直到 robocopy/Python 流式删跑完
+    - 起一个心跳线程每 5 秒输出"还在清理"日志,让用户知道程序没卡死
+    - robocopy 用 /MT:32 提到 32 线程(后台 daemon 的 /MT:16 是怕抢资源,这里前台跑就猛点)
+    """
+    if not os.path.exists(target_path):
+        return
+
+    is_residue = "._residue." in os.path.basename(target_path)
+
+    # 起心跳线程:每 5 秒说一句"还在清理 N 个文件"
+    import threading as _threading
+    import time as _time
+    stop_heartbeat = _threading.Event()
+
+    def _heartbeat() -> None:
+        start = _time.time()
+        while not stop_heartbeat.wait(5.0):
+            try:
+                # 估算剩余:用 os.scandir 浅扫一层,大致看到还有多少 entry
+                count = 0
+                for _ in os.scandir(target_path):
+                    count += 1
+                    if count > 1000:
+                        break
+                elapsed = int(_time.time() - start)
+                if on_log:
+                    suffix = "+" if count > 1000 else ""
+                    on_log(f"  正在清理...(已 {elapsed}s,目录顶层剩余 {count}{suffix} 项,请耐心等待)")
+            except OSError:
+                # 目录已删则正常,心跳自然结束
+                if not os.path.exists(target_path):
+                    return
+
+    hb_thread = _threading.Thread(target=_heartbeat, daemon=True, name="purge_heartbeat")
+    hb_thread.start()
+
+    try:
+        if is_windows() and is_residue:
+            try:
+                import tempfile
+                empty_dir = tempfile.mkdtemp(prefix="oc_empty_")
+                try:
+                    # /MT:32: 前台跑,放手用 32 线程(daemon 用 /MT:16 是怕抢主流程资源)
+                    subprocess.run(
+                        [
+                            "robocopy", empty_dir, target_path,
+                            "/MIR", "/MT:32",
+                            "/R:0", "/W:0",
+                            "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP",
+                        ],
+                        capture_output=True,
+                        timeout=1800,  # 30 分钟兜底
+                        **windows_hidden_subprocess_kwargs(),
+                    )
+                finally:
+                    for d in (empty_dir, target_path):
+                        try:
+                            os.rmdir(d)
+                        except OSError:
+                            pass
+            except (OSError, subprocess.SubprocessError):
+                # robocopy 失败(理论上 Vista+ 都内置)→ 走 Python 兜底
+                try:
+                    _rmtree_skip_locked(target_path, on_log)
+                except Exception:
+                    pass
+        else:
+            # 非 Windows 或非 residue 路径
+            try:
+                _rmtree_skip_locked(target_path, on_log)
+            except Exception:
+                pass
+    finally:
+        stop_heartbeat.set()
+
+
+def cleanup_orphan_residues(
+    parent_dir: str | Path,
+    on_log: Callable[[str], None] | None = None,
+    wait: bool = False,
+) -> int:
+    """扫描指定目录下的 *._residue.* 残渣并后台清理。
+
+    force_rmtree 的 rename 兜底会留下 .residue.<timestamp> 文件夹,正常情况下
+    daemon 线程会清掉,但安装器进程异常退出时可能留下残渣。下次安装/卸载时
+    调用本函数把它们补一刀。同样不阻塞主流程,起 daemon 线程后台清。
+
+    Args:
+        parent_dir: 要扫描的父目录(如用户主目录)。
+        on_log: 可选的日志回调。
+        wait: True 时同步等待每个残渣清完才返回,卸载器专用;
+              False 时起 daemon 线程后台清,不阻塞主流程。
+
+    Returns:
+        发现的残渣个数(wait=False 时不等于成功清理数)。
+    """
+    parent = Path(parent_dir)
+    if not parent.exists():
+        return 0
+
+    # 收集所有残渣
+    residues: list[str] = []
+    try:
+        for entry in parent.iterdir():
+            if "._residue." in entry.name:
+                residues.append(str(entry))
+    except OSError:
+        pass
+
+    if not residues:
+        return 0
+
+    if wait:
+        # 同步模式:逐个清,前台跑,带心跳
+        if on_log:
+            on_log(f"发现 {len(residues)} 个历史残渣,开始彻底清理...")
+        for i, _path in enumerate(residues, 1):
+            name = os.path.basename(_path)
+            if on_log:
+                on_log(f"[{i}/{len(residues)}] 清理 {name}...")
+            _background_purge_sync(_path, on_log)
+            if not os.path.exists(_path) and on_log:
+                on_log(f"[{i}/{len(residues)}] 已彻底清理 {name}")
+        return len(residues)
+
+    # 异步模式:起 daemon 后台清,立即返回
+    import threading as _threading
+    for _path in residues:
+        if on_log:
+            on_log(f"发现历史残渣,后台清理: {os.path.basename(_path)}")
+        _threading.Thread(
+            target=_background_purge,
+            args=(_path,),
+            daemon=True,
+            name="orphan_residue_bg",
+        ).start()
+    return len(residues)
 
 
 def _rmtree_skip_locked(
     root_path: str,
     on_log: Callable[[str], None] | None = None,
 ) -> None:
-    """逐文件删除目录树,锁住/权限不够的文件跳过,能删多少删多少。
+    """流式逐文件删除目录树,锁住/权限不够的文件跳过,能删多少删多少。
 
-    自底向上(os.walk topdown=False)遍历:先删子文件再删父目录。
-    单个文件失败只跳过这一个,不影响其他文件的删除。这是 Mac rm -rf 的行为。
+    自底向上(os.walk topdown=False)遍历:边遍历边删,不 buffer。
+    心跳改为时间驱动:每 1.5s 输出一次进度,与文件数量无关——这样大小目录
+    都有合理的反馈频率,UI 不会因为信号洪水卡顿(~0.7Hz 远低于 30Hz 安全线)。
 
     Args:
         root_path: 要删除的目录树根路径。
-        on_log: 可选的日志回调。删除大目录(node_modules)时,Windows+Defender
-            可能让总耗时达分钟级,期间没有任何输出会让用户以为程序卡死。
-            因此每删 5000 个 entry 输出一次心跳。
+        on_log: 可选的日志回调。
     """
-    entries: list[tuple[str, bool]] = []  # [(path, is_dir), ...]
+    import time as _t
+
+    last_hb = _t.monotonic()
+    deleted = 0
+    started_log = False
+
     try:
+        # 流式遍历:不 buffer,边走边删
         for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
+            # 先删文件
             for fn in filenames:
-                entries.append((os.path.join(dirpath, fn), False))
+                entry_path = os.path.join(dirpath, fn)
+                try:
+                    os.unlink(entry_path)
+                except OSError:
+                    try:
+                        os.chmod(entry_path, stat.S_IWRITE | stat.S_IREAD)
+                        os.unlink(entry_path)
+                    except OSError:
+                        pass  # 真删不掉就跳过
+                deleted += 1
+                # 时间驱动心跳:每 1.5s 输出一次
+                if on_log:
+                    now = _t.monotonic()
+                    if now - last_hb > 1.5:
+                        if not started_log:
+                            on_log(f"正在清理大型目录,已处理 {deleted} 个文件...")
+                            started_log = True
+                        else:
+                            on_log(f"清理中... 已处理 {deleted} 个文件/目录")
+                        last_hb = now
+
+            # 再删空目录
             for dn in dirnames:
-                entries.append((os.path.join(dirpath, dn), True))
+                entry_path = os.path.join(dirpath, dn)
+                try:
+                    os.rmdir(entry_path)
+                except OSError:
+                    try:
+                        os.chmod(entry_path, stat.S_IWRITE | stat.S_IREAD)
+                        os.rmdir(entry_path)
+                    except OSError:
+                        pass
+                deleted += 1
     except OSError:
         pass
 
-    total = len(entries)
-    # 大目录(>10k entry)才出心跳,小目录避免噪音
-    heartbeat = on_log is not None and total > 10000
-    if heartbeat and on_log:
-        on_log(f"开始删除 {total} 个文件/目录(大型目录可能需要数分钟,请耐心等待)...")
-
-    deleted = 0
-    for entry_path, is_dir in entries:
-        try:
-            if is_dir:
-                os.rmdir(entry_path)
-            else:
-                os.unlink(entry_path)
-        except OSError:
-            # 权限不够:加写权限后重试一次
-            try:
-                os.chmod(entry_path, stat.S_IWRITE | stat.S_IREAD)
-                if is_dir:
-                    os.rmdir(entry_path)
-                else:
-                    os.unlink(entry_path)
-            except OSError:
-                pass  # 真删不掉就算了,最后剩下的会被 rename 出去
-
-        deleted += 1
-        # 每 5000 个 entry 一次心跳。频率不高于 ~30Hz 才不会拖累 UI(信号洪水),
-        # 5000 文件在 SSD+无 Defender 是 ~0.5s,Windows+Defender 是 ~30s。
-        if heartbeat and on_log and deleted % 5000 == 0:
-            on_log(f"已删除 {deleted}/{total} ({deleted * 100 // total}%)...")
+    # 最后试着删根目录本身
+    try:
+        os.rmdir(root_path)
+    except OSError:
+        pass
 
 
 def remove_readonly(func: Callable[..., None], path: str, _: Any) -> None:
@@ -328,6 +570,64 @@ def resolve_openclaw_cmd(env: Optional[dict] = None) -> str:
     return "openclaw"
 
 
+def persist_user_path_windows(
+    new_dir: str, on_log: Callable[[str], None] | None = None
+) -> bool:
+    """Windows: 把目录追加到 HKCU\\Environment\\Path,新终端立即可见。
+
+    为何不用 setx:
+    - setx 1024 字符截断,开发机 PATH 易超。
+    - setx 写入时 %PATH% 展开会合并 USER+SYSTEM,再写回 USER 时污染。
+    winreg 直接读写注册表,无截断、不混淆。
+    写入后广播 WM_SETTINGCHANGE 通知 Explorer / 新进程刷新。
+
+    Returns:
+        True 写入成功或已存在。
+    """
+    if not is_windows():
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        ) as key:
+            try:
+                current_value, value_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current_value, value_type = "", winreg.REG_EXPAND_SZ
+
+            existing = [p for p in current_value.split(";") if p]
+            if any(new_dir.lower() == p.strip().lower() for p in existing):
+                if on_log:
+                    on_log(f"用户 PATH 已包含 {new_dir},无需重复写入")
+                return True
+
+            new_value = (current_value.rstrip(";") + ";" + new_dir) if current_value else new_dir
+            winreg.SetValueEx(key, "Path", 0, value_type, new_value)
+            if on_log:
+                on_log(f"已通过 winreg 将 {new_dir} 写入用户 PATH")
+
+        try:
+            import ctypes
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            SMTO_ABORTIFHUNG = 0x0002
+            result = ctypes.c_long()
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                "Environment", SMTO_ABORTIFHUNG, 5000, ctypes.byref(result),
+            )
+        except (OSError, AttributeError) as e:
+            if on_log:
+                on_log(f"广播环境变量变更失败(非致命): {e}")
+        return True
+    except (OSError, ImportError) as e:
+        if on_log:
+            on_log(f"通过 winreg 写入用户 PATH 失败: {e}")
+        return False
+
+
 def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = None) -> None:
     """将指定目录持久化到用户 shell 配置文件的 PATH 中。
 
@@ -338,10 +638,9 @@ def ensure_dir_in_path(directory: str, on_log: Callable[[str], None] | None = No
         directory: 要加入 PATH 的目录绝对路径。
         on_log: 可选的日志回调函数，用于输出操作结果。
     """
-    # Windows 平台无 bashrc/zshrc 概念，直接跳过
+    # Windows: 写注册表 HKCU\Environment\Path,新进程会自动继承。
     if is_windows():
-        if on_log:
-            on_log("Windows 平台跳过 shell 配置写入")
+        persist_user_path_windows(directory, on_log)
         return
 
     path_export = f'export PATH="{directory}:$PATH"'
@@ -394,21 +693,60 @@ def ensure_local_bin_in_path(on_log: Callable[[str], None] | None = None) -> Non
 
 
 def detect_openclaw_installation() -> tuple[bool, list[str]]:
-    """检测用户主目录下是否存在 OpenClaw 安装记录。
+    """检测系统中是否存在任何 OpenClaw 残留(供卸载器使用)。
 
-    检查两个目录:
-    - ~/openclaw-cn: 程序源码/构建目录
-    - ~/.openclaw: 配置文件目录
+    设计原则:**宽松检测,任一残留就提供卸载**。这与安装器的"严格检测,完整可用才算
+    已装"是相反的方向。卸载器存在的意义就是"清理一切残留",哪怕用户手动删过一部分,
+    剩下的也应该一并卸干净。
+
+    检查范围与 OpenClawManager.uninstall() 删除的目标完全对齐:
+    - ~/openclaw-cn:程序源码/构建目录
+    - ~/.openclaw:配置文件 + API key 等
+    - ~/.openclaw-git:macOS 离线版内置 git
+    - ~/.openclaw-node:在线版下载的 Node.js
+    - 命令包装器:Windows %APPDATA%\\Roaming\\npm\\openclaw*.cmd / *nix ~/.local/bin/openclaw*
+    - 历史隔离残渣:~/openclaw-cn._residue.* 等(force_rmtree 后台清理未完成留下的)
 
     Returns:
-        (是否已安装, 检测到的目录描述列表)
+        (是否需要卸载, 检测到的残留描述列表)
     """
     home = os.path.expanduser("~")
     details: list[str] = []
-    if os.path.exists(os.path.join(home, "openclaw-cn")):
-        details.append("程序文件: ~/openclaw-cn")
-    if os.path.exists(os.path.join(home, ".openclaw")):
-        details.append("配置文件: ~/.openclaw")
+
+    # 1. 主要目录(全平台)
+    main_dirs = [
+        ("openclaw-cn", "程序文件: ~/openclaw-cn"),
+        (".openclaw", "配置文件: ~/.openclaw"),
+        (".openclaw-git", "内置 Git: ~/.openclaw-git"),
+        (".openclaw-node", "内置 Node.js: ~/.openclaw-node"),
+    ]
+    for dirname, label in main_dirs:
+        if os.path.exists(os.path.join(home, dirname)):
+            details.append(label)
+
+    # 2. 命令包装器(平台分两套)
+    if is_windows():
+        wrapper_dir = os.path.join(home, "AppData", "Roaming", "npm")
+        wrapper_files = ["openclaw.cmd", "openclaw-cn.cmd"]
+        wrapper_label_template = "命令包装器: %APPDATA%\\Roaming\\npm\\{}"
+    else:
+        wrapper_dir = os.path.join(home, ".local", "bin")
+        wrapper_files = ["openclaw", "openclaw-cn"]
+        wrapper_label_template = "命令包装器: ~/.local/bin/{}"
+    for wf in wrapper_files:
+        if os.path.isfile(os.path.join(wrapper_dir, wf)):
+            details.append(wrapper_label_template.format(wf))
+
+    # 3. 历史隔离残渣(force_rmtree 后台清理未完成的)
+    try:
+        for entry in os.listdir(home):
+            if "._residue." in entry and (
+                entry.startswith("openclaw-cn") or entry.startswith(".openclaw")
+            ):
+                details.append(f"历史残渣: ~/{entry}")
+    except OSError:
+        pass
+
     return bool(details), details
 
 
@@ -464,20 +802,28 @@ def safe_tar_extract(
     """
     dest_path = Path(dest).resolve()
 
-    for member in tar.getmembers():
-        # 在校验前先把成员名中的反斜杠归一为正斜杠。
-        # tar 规范要求路径分隔符为 "/"，任何反斜杠都视作可疑：
-        # - Windows 下 Path("foo\\..\\bar") 会被识别为 ".." 组件并被拦截，
-        # - 但 POSIX 下 Path("foo\\..\\bar").parts 只看到一个组件 "foo\\..\\bar"，
-        #   会漏检；统一归一后再走下面的检查就能在所有平台一致拦截。
-        normalized_name = member.name.replace("\\", "/")
-        normalized_parts = Path(normalized_name).parts
+    # 性能关键(2026-05-14 优化): 校验循环中绝对禁止调用 Path.resolve() 这种
+    # 触发文件系统访问的 API。230k 个 tar 成员,Windows + Defender 下每次 resolve()
+    # 都触发 Defender 扫描,单次 ~1-3ms,累计循环耗时 5-15 分钟,严重拖慢解压。
+    # 改为纯字符串校验:
+    # 1. 拒绝绝对路径前缀(/、盘符、UNC)
+    # 2. 拒绝任意 ".." 组件(无需 resolve 就能识别 zip-slip)
+    # 3. 拒绝软链接 linkname 含绝对路径或 ".." 逃逸的情况
+    # 这等价于"绝对路径白名单(必须以非 .. 相对路径开头)",安全等级与 resolve 一致。
+    dest_str = str(dest_path).replace("\\", "/")
 
-        # 拒绝绝对路径（POSIX 的 / 开头、Windows 的盘符、UNC 路径）和包含 .. 的原始路径
+    for member in tar.getmembers():
+        # 归一反斜杠: tar 规范用 "/",反斜杠都视作可疑。
+        # POSIX 下 Path("foo\\..\\bar").parts 只看到一个组件,漏检 ".." 攻击,
+        # 归一后跨平台检查一致。
+        normalized_name = member.name.replace("\\", "/")
+        normalized_parts = normalized_name.split("/")
+
+        # 拒绝绝对路径(POSIX /、Windows 盘符、UNC //)和含 ".." 的原始路径
         is_absolute = (
             normalized_name.startswith("/")
-            or normalized_name.startswith("//")  # UNC 形式
-            or (len(normalized_name) >= 2 and normalized_name[1] == ":")  # Windows 盘符
+            or normalized_name.startswith("//")
+            or (len(normalized_name) >= 2 and normalized_name[1] == ":")
         )
         if is_absolute or ".." in normalized_parts:
             msg = f"拒绝不安全的 tar 成员: {member.name}"
@@ -485,33 +831,330 @@ def safe_tar_extract(
                 on_log(msg)
             raise tarfile.TarError(msg)
 
-        # 校验最终解析后的绝对路径是否在目标目录内（第二层过滤）
-        member_path = (dest_path / normalized_name).resolve()
-        try:
-            member_path.relative_to(dest_path)
-        except ValueError:
-            msg = f"拒绝不安全的 tar 成员: {member.name} -> {member_path}"
-            if on_log:
-                on_log(msg)
-            raise tarfile.TarError(msg)
-
-        # 拒绝设备文件（字符设备/块设备），防止恶意 tar 包创建设备节点
+        # 拒绝设备文件
         if member.isdev():
             msg = f"拒绝 tar 设备文件: {member.name}"
             if on_log:
                 on_log(msg)
             raise tarfile.TarError(msg)
 
-        # 校验软链接目标是否逃逸出目标目录
-        # 注意：软链接目标应相对于软链接文件所在目录解析，而非解压目标目录
+        # 校验软链接 linkname:
+        # SYMTYPE 我们的打包脚本约定生成相对路径(如 "../../.."),解压时按相对解析。
+        # 用纯字符串模拟"link 所在目录 + linkname"的结果,看会不会跑出 dest_path。
+        # 不调 resolve(),避免文件系统访问。
         if member.issym() or member.islnk():
-            link_target = (member_path.parent / member.linkname).resolve()
-            try:
-                link_target.relative_to(dest_path)
-            except ValueError:
-                msg = f"拒绝不安全的软链接目标: {member.linkname}"
+            link_name = member.linkname.replace("\\", "/")
+            # 绝对路径软链接直接拒绝(我们的打包流程不应该产生这种)
+            if (
+                link_name.startswith("/")
+                or link_name.startswith("//")
+                or (len(link_name) >= 2 and link_name[1] == ":")
+            ):
+                msg = f"拒绝不安全的软链接目标(绝对路径): {member.linkname}"
                 if on_log:
                     on_log(msg)
                 raise tarfile.TarError(msg)
 
-    tar.extractall(dest)
+            # 模拟 link 所在目录的相对位置(在 dest_path 下),计算 linkname 解析后
+            # 的相对深度。用计数器代替路径拼接 + resolve。
+            # link 在 tar 内位置: dest_path/<member.name 路径>。link 父目录深度 = parts 数 - 1。
+            link_parent_depth = len(normalized_parts) - 1  # link 父目录在 dest 下的深度
+            depth = link_parent_depth
+            for part in link_name.split("/"):
+                if part in ("", "."):
+                    continue
+                if part == "..":
+                    depth -= 1
+                    if depth < 0:
+                        msg = f"拒绝不安全的软链接目标(逃出 dest): {member.linkname}"
+                        if on_log:
+                            on_log(msg)
+                        raise tarfile.TarError(msg)
+                else:
+                    depth += 1
+
+    # 分两阶段解压(2026-05-14 验证后定稿):
+    # Win 上用 7z.exe(7-Zip 命令行版,多线程,不加 \\?\ 前缀避开 LongPaths 限制),
+    # 比 Python tarfile 快 5-10 倍。7z 找不到才退化到 Python tarfile。
+    # 7z.exe 优先位置: 项目内置 resources/windows/7z.exe > C:\Program Files\7-Zip\
+    # > C:\Program Files (x86)\7-Zip\ > PATH 上的 7z。
+    #
+    # SYMTYPE 在 Win 上仍需手动处理:默认 extract 创建文件软链接,我们要的是
+    # 目录型链接(junction 或 directory symlink)。
+    members_all = tar.getmembers()
+    sym_members = [m for m in members_all if m.issym()]
+    non_sym_members = [m for m in members_all if not m.issym()]
+
+    if non_sym_members:
+        if is_windows():
+            _extract_with_7z_or_python(tar, dest_path, sym_members, on_log)
+        else:
+            tar.extractall(dest, members=non_sym_members)
+
+    if sym_members:
+        total = len(sym_members)
+        if on_log:
+            on_log(f"还原 {total} 个目录链接(使用 NTFS junction,通常数秒完成)...")
+        for idx, sym in enumerate(sym_members, start=1):
+            if is_windows():
+                _extract_directory_symlink(sym, dest_path, on_log)
+            else:
+                tar.extract(sym, dest)
+            # 每 500 个心跳一次,避免长跑无声让用户以为卡死
+            if on_log and idx % 500 == 0:
+                on_log(f"  目录链接进度: {idx}/{total}")
+        if on_log:
+            on_log(f"目录链接全部还原完成 ({total}/{total})")
+
+
+def _find_7z_exe() -> Optional[str]:
+    """找 Windows 上的 7z.exe 可执行文件路径,按优先级:
+    1. 项目内置 resources/windows/7z.exe(便于离线版自包含)
+    2. 系统安装位置(C:\\Program Files\\7-Zip\\、Program Files (x86)\\7-Zip\\)
+    3. PATH 上的 7z
+
+    Returns:
+        7z.exe 绝对路径,找不到返回 None。
+    """
+    if not is_windows():
+        return None
+
+    # 1. 项目 resources/windows/(开发模式 + PyInstaller _MEIPASS)
+    candidates = []
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, "resources", "windows", "7z.exe"))
+        candidates.append(os.path.join(sys._MEIPASS, "resources", "windows", "7za.exe"))
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    candidates.extend([
+        str(project_root / "resources" / "windows" / "7z.exe"),
+        str(project_root / "resources" / "windows" / "7za.exe"),
+    ])
+
+    # 2. 系统安装位置
+    candidates.extend([
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+    ])
+
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+
+    # 3. PATH 兜底
+    return shutil.which("7z.exe") or shutil.which("7za.exe")
+
+
+def _extract_with_7z_or_python(
+    tar: tarfile.TarFile,
+    dest_path: Path,
+    sym_members: list,
+    on_log: Callable[[str], None] | None,
+) -> None:
+    """Windows 解压主路径:优先 7z.exe,失败退化 Python tarfile。
+
+    7z.exe 解压 .tar.gz 需要两步(它先解 gzip 再解 tar),用管道一步到位:
+        7z x -so <archive.tar.gz> | 7z x -si -ttar -o<dest>
+    或更直接的两步:
+        7z e -so <archive.tar.gz> > <archive.tar>  # 第一步:解 gzip
+        7z x -ttar -o<dest> <archive.tar>          # 第二步:解 tar
+    用临时文件而不是管道,避免 Python 中转管道反而拖慢。
+    """
+    archive_path = tar.name
+    if not archive_path:
+        if on_log:
+            on_log("tarball 无文件路径,退化到 Python tarfile")
+        non_sym = [m for m in tar.getmembers() if not m.issym()]
+        tar.extractall(str(dest_path), members=non_sym)
+        return
+
+    seven_z = _find_7z_exe()
+    if not seven_z:
+        if on_log:
+            on_log("未找到 7z.exe,退化到 Python tarfile(慢但稳定)")
+        non_sym = [m for m in tar.getmembers() if not m.issym()]
+        tar.extractall(str(dest_path), members=non_sym)
+        return
+
+    # 7z.exe 解压 .tar.gz 流程:先解到临时 .tar,再 7z x 该 .tar
+    # exclude SYMTYPE 路径:避免 7z 错误创建文件软链接,我们 Python 后处理
+    import tempfile
+    if on_log:
+        on_log(f"使用 7z.exe 解压(可执行文件: {seven_z})...")
+
+    tmp_tar_fd, tmp_tar_path = tempfile.mkstemp(suffix=".tar", prefix="oc_extract_")
+    os.close(tmp_tar_fd)
+    try:
+        # 第一步:解 gzip → .tar
+        # stderr 同样需要 DEVNULL 避免管道死锁(同第二步)
+        if on_log:
+            on_log(f"  步骤 1/2: 解压 gzip → 临时 .tar")
+        with open(tmp_tar_path, "wb") as tar_out:
+            result1 = subprocess.run(
+                [seven_z, "e", "-so", "-bsp0", archive_path],
+                stdout=tar_out,
+                stderr=subprocess.DEVNULL,
+                timeout=600,
+                **windows_hidden_subprocess_kwargs(),
+            )
+        if result1.returncode != 0:
+            if on_log:
+                on_log(f"  7z 解 gzip 失败,返回码 {result1.returncode}")
+            raise RuntimeError("7z gzip extract failed")
+
+        # 第二步:解 tar 到目标目录,exclude SYMTYPE
+        # -bso0 / -bse0 / -bsp0 = 关 stdout / stderr / progress 输出。
+        # 必须关 —— 7z 默认每文件输出一行,跑 23 万文件会输出几 MB,把 subprocess
+        # 64KB pipe buffer 写满,导致 Python 不读 + 7z 不能写 → 双向死锁。
+        # 实测前一次跑到 20 万文件后卡了 47 分钟没动,就是这个 bug。
+        if on_log:
+            on_log(f"  步骤 2/2: 解压 tar 到目标目录(预计 1-7 分钟,请勿关闭窗口)")
+        cmd = [
+            seven_z, "x", "-ttar",
+            f"-o{dest_path}",
+            tmp_tar_path,
+            "-y",      # 全部 yes,跳过 prompts
+            "-bso0",   # 关 stdout(每文件进度日志)
+            "-bsp0",   # 关 progress 输出
+            # 不关 stderr(-bse0),保留真错误信息;但用 DEVNULL 防止管道死锁
+        ]
+        # SYMTYPE 成员要 exclude(由 Python 后处理重建为 junction/dirlink)。
+        # 历史 bug(2026-05 修): 之前用 `-x!<path>` 单参数追加,3000+ junction
+        # 时命令行超过 Windows CreateProcess 32K 限制,抛 WinError 206
+        # ("文件名或扩展名太长")。改用 7z 的 `-x@<listfile>` 从文件读 exclude
+        # 列表,把命令行长度恒定下来。
+        # 注意:7z 的 list file 用 \r\n 行结束符,内部按 OEM/UTF-8 解析。
+        # 我们的 SYMTYPE 路径都是 ASCII(pnpm 包名 + 数字版本),UTF-8 编码安全。
+        sym_list_path = None
+        if sym_members:
+            sym_list_fd, sym_list_path = tempfile.mkstemp(suffix=".txt", prefix="oc_exclude_")
+            with os.fdopen(sym_list_fd, "w", encoding="utf-8", newline="\r\n") as f:
+                for sym in sym_members:
+                    f.write(sym.name + "\n")
+            cmd.append(f"-x@{sym_list_path}")
+
+        # 心跳线程:每 5 秒扫一次 dest_path 文件数,让用户知道在动。
+        # 7z 必须 -bso0 关 stdout 否则管道死锁,所以无法从子进程拿进度,只能外部数。
+        import threading
+        heartbeat_stop = threading.Event()
+
+        def _heartbeat() -> None:
+            # 只在 10s 后打一条提示,不再周期刷屏。
+            # 用户怕的是"完全没动静",一条提示足够;持续刷会让人焦虑、且超出预计时间会有落差。
+            if not heartbeat_stop.wait(10.0):
+                if on_log:
+                    on_log("  解压中...(共约 7-8 万文件,请耐心等待)")
+
+        hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+        hb_thread.start()
+        try:
+            result2 = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,  # 必须 DEVNULL,见上面注释
+                timeout=1800,
+                **windows_hidden_subprocess_kwargs(),
+            )
+        finally:
+            heartbeat_stop.set()
+            hb_thread.join(timeout=2)
+        if sym_list_path:
+            try:
+                os.remove(sym_list_path)
+            except OSError:
+                pass
+        # 7z 退出码: 0 = 成功, 1/2 = warnings(实际成功),其他才是真失败。
+        # 我们的 tarball 含相对路径 SYMTYPE,7z 视为"危险链接"会全部拒绝并抛
+        # warnings(rc=2),但所有非 SYMTYPE 文件都成功解压。SYMTYPE 后续由 Python
+        # _extract_directory_symlink 单独重建,所以 rc=2 视为成功。
+        if result2.returncode not in (0, 1, 2):
+            if on_log:
+                on_log(f"  7z 解 tar 真正失败,返回码 {result2.returncode}")
+            raise RuntimeError("7z tar extract failed")
+        if result2.returncode in (1, 2) and on_log:
+            on_log(f"  7z 警告退出 (rc={result2.returncode}),SYMTYPE 已交由 Python 后处理")
+
+        if on_log:
+            on_log("7z.exe 解压完成")
+
+    except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+        if on_log:
+            on_log(f"7z 调用异常({e}),退化到 Python tarfile...")
+        non_sym = [m for m in tar.getmembers() if not m.issym()]
+        tar.extractall(str(dest_path), members=non_sym)
+    finally:
+        try:
+            os.remove(tmp_tar_path)
+        except OSError:
+            pass
+
+
+def _extract_directory_symlink(
+    member: tarfile.TarInfo,
+    dest_path: Path,
+    on_log: Callable[[str], None] | None,
+) -> None:
+    """解压 SYMTYPE 成员,优先创建目录型 symlink,fallback 到 NTFS junction(Windows 专用)。
+
+    pnpm workspace 在 Windows 上原本用 junction,我们打包时把它转成了 SYMTYPE 相对路径
+    (linkname 形如 "../../../.."),解压时要确保还原成可用的目录链接。
+    """
+    normalized_name = member.name.replace("\\", "/")
+    link_path = dest_path / normalized_name
+
+    # 确保父目录存在
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 已存在则先删,避免 FileExistsError
+    if link_path.exists() or link_path.is_symlink():
+        try:
+            if link_path.is_dir() and not link_path.is_symlink():
+                # 不应该,但保险起见用 rmdir(空目录)而不是递归删
+                link_path.rmdir()
+            else:
+                link_path.unlink()
+        except OSError:
+            pass
+
+    # 第一招: os.symlink target_is_directory=True (Win10+ 开发者模式可免特权)
+    try:
+        if is_windows():
+            os.symlink(member.linkname, link_path, target_is_directory=True)
+        else:
+            os.symlink(member.linkname, link_path)
+        return
+    except OSError as e:
+        if not is_windows():
+            # 非 Windows 平台无 fallback,直接报错
+            if on_log:
+                on_log(f"创建 symlink 失败 {link_path} -> {member.linkname}: {e}")
+            raise
+
+    # 第二招(仅 Windows): NTFS junction,无特权要求。
+    # junction 必须用绝对路径,把相对 linkname 解析成绝对路径。
+    #
+    # 历史 bug(2026-05 修): 原先走 `cmd /c mklink /J` 子进程,3037 个 junction
+    # 每个都要 fork cmd.exe + Defender 扫描,实测跑 15 分钟+。更恶劣的是
+    # subprocess.run(timeout=5) 在 Windows 睡眠/时间跳变时会拿到负秒数立即
+    # TimeoutExpired (报 "-916 seconds" 那种负数超时),整个解压流程崩溃。
+    # 改用 _winapi.CreateJunction —— 直接调 NTFS 内核 API,无子进程,几乎零延迟。
+    target_abs = (link_path.parent / member.linkname).resolve()
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target_abs), str(link_path))
+        return
+    except (OSError, AttributeError, ImportError) as e:
+        # _winapi.CreateJunction 是 CPython 内部 API,极端情况下可能不存在,
+        # 退化到 mklink /J(单进程超时给到 30s,避免时钟跳变误判)
+        target_abs_str = str(target_abs)
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link_path), target_abs_str],
+                check=True,
+                capture_output=True,
+                timeout=30,
+                **windows_hidden_subprocess_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError) as e2:
+            if on_log:
+                on_log(f"创建 junction 失败 {link_path} -> {target_abs}: {e2} (_winapi 兜底亦失败: {e})")
+            raise

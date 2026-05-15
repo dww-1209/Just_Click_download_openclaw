@@ -22,10 +22,13 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import posixpath
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from urllib.request import urlretrieve
 from urllib.error import URLError
@@ -165,12 +168,33 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
 
         # 2) 自动从系统 Git for Windows 安装目录打包，避免手动操作
         git_zip = output_dir / f"git-windows-{arch}.zip"
-        git_exe = shutil.which("git")
+        # shutil.which 可能返回 mingw64/bin/git.exe(纯二进制目录),向上两级到 mingw64
+        # 找不到 cmd/git.exe。要的是完整 Git for Windows 安装根(含 cmd/、mingw64/、usr/)。
+        # 解析顺序:先尝试 cmd/git.exe(完整版根目录的入口);失败再向上探测 git_root。
+        git_exe = shutil.which("git.exe", path=os.environ.get("PATH", ""))
+        # 如果 which 命中的是 mingw64/bin/git.exe,向上 3 级才是根目录
+        # (mingw64/bin -> mingw64 -> Git/);命中 cmd/git.exe 则向上 2 级到 Git/。
+        candidates = []
         if git_exe:
             git_exe_path = Path(git_exe).resolve()
-            # git.exe 通常在 cmd/git.exe，向上两级为安装根目录
-            git_root = git_exe_path.parent.parent
-            expected_git = git_root / "cmd" / "git.exe"
+            # 向上探测 1-4 级,找包含 cmd/git.exe 的根目录
+            cur = git_exe_path.parent
+            for _ in range(4):
+                if (cur / "cmd" / "git.exe").is_file() and (cur / "mingw64").is_dir():
+                    candidates.append(cur)
+                    break
+                cur = cur.parent
+        # 兜底:常见 Git for Windows 安装路径
+        for fallback in [r"C:\Program Files\Git", r"C:\Program Files (x86)\Git"]:
+            fb = Path(fallback)
+            if fb.is_dir() and (fb / "cmd" / "git.exe").is_file() and (fb / "mingw64").is_dir():
+                if fb not in candidates:
+                    candidates.append(fb)
+
+        if candidates:
+            git_root = candidates[0]
+            git_exe_path = git_root / "cmd" / "git.exe"
+            expected_git = git_exe_path
 
             if expected_git.is_file():
                 print(f"检测到系统 Git: {git_root}")
@@ -205,7 +229,7 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
                         if git_zip.exists():
                             git_zip.unlink()
         else:
-            print("未在 PATH 中找到 git.exe。")
+            print("未找到完整版 Git for Windows 安装目录(应含 cmd/、mingw64/、usr/)。")
 
         # 3) 自动失败 → 给出手动准备指引（详细步骤见 README §4）
         print(
@@ -291,47 +315,242 @@ def download_git(output_dir: Path, version: str, platform_name: str, arch: str) 
 
 
 def _is_junction(path: Path) -> bool:
-    """检测 Windows junction（重解析点）。
+    """检测 Windows junction(重解析点)。
 
-    pnpm workspace 在 Windows 上创建 junction 而非 symlink，
-    pathlib.Path.is_symlink() 对 junction 返回 False。
+    pnpm workspace 在 Windows 上创建 junction 而非 symlink,
+    pathlib.Path.is_symlink() 在 Python 3.8+ 对 junction 返回 True,但更早不会。
+    保险起见用 lstat.st_file_attributes 直接查 FILE_ATTRIBUTE_REPARSE_POINT 位。
+
+    历史 bug(2026-05-13 修): 之前写成 `os.stat.FILE_ATTRIBUTE_REPARSE_POINT`,
+    把 `os.stat`(函数) 当成模块用,实际应该是 `stat.FILE_ATTRIBUTE_REPARSE_POINT`
+    (stat 模块的常量)。错误访问触发 AttributeError → 被 except 吞 → 永远返回 False,
+    导致 junction 没被识别、当普通目录递归进 tarball 体积爆炸。
     """
     if sys.platform != "win32":
         return False
     try:
         st = os.lstat(path)
-        return bool(st.st_file_attributes & os.stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        return bool(st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
     except (OSError, AttributeError):
         return False
 
 
-def _add_to_tar(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
-    """递归添加文件/目录到 tar，跳过 symlink/junction 目录避免循环。
+def _read_link_target_clean(link_path: Path) -> str:
+    """读软链接/junction 的目标,清掉 Windows NT 命名空间前缀。
 
-    pnpm workspace 在 Windows 上使用 junction 链接本地包，若当作普通目录
-    递归进入会导致无限嵌套（如 extensions/bluebubbles/node_modules/openclaw/...）。
+    Windows 的 NTFS junction reparse data 有两种规范化形式:
+    - "\\\\?\\C:\\path"  (DOS 设备路径,Win32 API 优先返回这种)
+    - "\\??\\C:\\path"   (NT 内核命名空间,老格式)
+    剥掉前缀后才是普通绝对路径。
     """
-    if path.is_symlink() or _is_junction(path):
-        # symlink（含 junction）：只记录链接本身，绝不跟随
+    raw = os.readlink(link_path)
+    if raw.startswith("\\\\?\\"):
+        return raw[4:]
+    if raw.startswith("\\??\\"):
+        return raw[4:]
+    return raw
+
+
+def _add_junction_as_relsymlink(
+    tar: tarfile.TarFile,
+    link_path: Path,
+    arcname: str,
+    tar_root_real: Path,
+    tar_root_arc_prefix: str,
+) -> bool:
+    """把 NTFS junction 转成"指向 tar 内根目录的相对路径软链接"写入 tarball。
+
+    思路:junction 在 Windows 上是绝对路径不可移植,但如果它指向的是 tar 根目录内的
+    某处(对 pnpm workspace 来说就是 source_dir 自己或其子目录),就把它转成
+    SYMTYPE 成员 + linkname=相对路径(如 "../../../.."),解压时无论目标机器在哪
+    解析,relpath 都能回到 tar 根。
+
+    Args:
+        link_path: junction 文件的真实路径(在 source_dir 下)
+        arcname: tarball 内对应的路径(已含 tar_root_arc_prefix,如 "openclaw-cn/extensions/.../openclaw")
+        tar_root_real: source_dir.resolve(),用来判断 junction 目标是否在打包范围内
+        tar_root_arc_prefix: tar 内对应 source_dir 根的前缀(如 "openclaw-cn"),
+            用来把 target_abs 的相对位置正确映射到 tar 内层级
+
+    Returns:
+        True 表示成功写入 tarball;False 表示 junction 指向 tar root 之外,
+        调用方应该跳过(不打进 tarball)。
+    """
+    try:
+        raw = _read_link_target_clean(link_path)
+    except OSError as e:
+        print(f"  警告: 无法读 junction {link_path}: {e}")
+        return False
+
+    target_abs = Path(raw).resolve()
+    try:
+        target_in_tar = target_abs.relative_to(tar_root_real)
+    except ValueError:
+        # junction 指向 tar root 外,跳过(打进去也无意义,目标机器解析不到)
+        print(f"  跳过指向仓库外的 junction: {link_path} -> {target_abs}")
+        return False
+
+    # arcname 已经含有 tar_root_arc_prefix(如 "openclaw-cn/.../openclaw"),
+    # 把 target_in_tar 也加上同样的前缀,得到它在 tar 内的完整路径,再算 relpath。
+    arc_posix = arcname.replace("\\", "/")
+    link_dir_in_tar = posixpath.dirname(arc_posix)
+
+    target_rel = str(target_in_tar).replace("\\", "/")
+    if target_rel == ".":
+        # target 就是 source_dir 本身,在 tar 内对应 tar_root_arc_prefix
+        target_full_in_tar = tar_root_arc_prefix
+    else:
+        target_full_in_tar = posixpath.join(tar_root_arc_prefix, target_rel)
+
+    rel = posixpath.relpath(target_full_in_tar, link_dir_in_tar or ".")
+
+    ti = tarfile.TarInfo(name=arc_posix)
+    ti.type = tarfile.SYMTYPE
+    ti.linkname = rel
+    # 用源 junction 的 mtime 而不是 time.time(),保留 reproducible build 友好性
+    try:
+        ti.mtime = int(os.lstat(link_path).st_mtime)
+    except OSError:
+        ti.mtime = 0
+    ti.mode = 0o777
+    tar.addfile(ti)
+    return True
+
+
+def _add_to_tar(
+    tar: tarfile.TarFile,
+    path: Path,
+    arcname: str,
+    tar_root_real: Path | None = None,
+    tar_root_arc_prefix: str = "",
+    skip_junction_check: bool = False,
+) -> None:
+    """递归添加文件/目录到 tar。
+
+    junction 处理(2026-05-13 改):pnpm workspace 在 Windows 上用 junction 链接,
+    junction 是绝对路径,直接 tar.add 会编码成 /c/... 这种不可移植的绝对软链接,
+    解压到其他机器无意义。改为转成相对路径 SYMTYPE,解压端 mklink /J 还原。
+
+    性能优化(2026-05-13 改):pnpm `.pnpm/` content-addressable store 内部全是真实
+    文件 + hardlink,不存在 junction。但 Windows + Defender 下每次 os.lstat 都触发
+    扫描,对 `.pnpm/` 里的 10 万文件逐个 lstat 会让打包时间从 5 分钟拖到 1 小时。
+    skip_junction_check=True 时跳过 _is_junction 调用,直接 tar.add 整个子树
+    (tarfile 内部 walk 比我们手写循环更高效,且会自动 hardlink 去重)。
+    进入 `.pnpm/` 时设置该标志,极大提升性能。
+
+    Args:
+        tar_root_arc_prefix: source_dir 在 tar 内对应的目录名(如 "openclaw-cn"),
+            junction 计算相对路径时用作前缀。
+        skip_junction_check: 跳过 junction 检测,直接 tar.add 整个子树。
+            仅在确认子树内不含 junction 时使用(如 pnpm `.pnpm/` 内部)。
+    """
+    # `.pnpm/` 子树 fast path:per-child 容错 + 仍要查 junction。
+    # 历史 bug(2026-05 三次修):
+    #   一次:外层 try 包整个 for,单包 OSError 中断整树 → 字母序后半段缺包
+    #   二次:fast path 直接 tar.add(整树) 让 tarfile 内部 walk → 同样问题
+    #   三次:fast path 跳过 _is_junction → workspace 包(@openclaw/bluebubbles 这种)
+    #         在 .pnpm/ 内放 junction,被当目录递归,无限展开 → tarball 爆到 800MB+
+    # 结论:fast path 真正能省的只是 is_symlink/is_dir 这类双 lstat;_is_junction
+    #       一次 lstat 必须保留。
+    if skip_junction_check:
+        if path.name == ".git":
+            return
+        # 必须查 junction —— pnpm workspace 包会在 .pnpm/ 内放 junction
+        if _is_junction(path):
+            if tar_root_real is not None:
+                _add_junction_as_relsymlink(
+                    tar, path, arcname, tar_root_real, tar_root_arc_prefix,
+                )
+            return
+        try:
+            is_dir = path.is_dir() and not path.is_symlink()
+        except OSError:
+            is_dir = False
+        if is_dir:
+            try:
+                tar.add(path, arcname=arcname, recursive=False)
+            except OSError as e:
+                print(f"  警告: 无法添加目录 {path}: {e}")
+                return
+            try:
+                children = list(path.iterdir())
+            except OSError as e:
+                print(f"  警告: 无法列出 {path}: {e}")
+                return
+            for child in children:
+                if child.name == ".git":
+                    continue
+                try:
+                    _add_to_tar(
+                        tar, child, f"{arcname}/{child.name}",
+                        tar_root_real, tar_root_arc_prefix,
+                        skip_junction_check=True,
+                    )
+                except OSError as e:
+                    print(f"  警告: 无法添加 {child}: {e}")
+            return
+        try:
+            tar.add(path, arcname=arcname)
+        except OSError as e:
+            print(f"  警告: 无法添加 {path}: {e}")
+        return
+
+    # 优先识别 junction(_is_junction 在非 Win 平台返回 False,Mac/Linux 走 is_symlink 即可)
+    if _is_junction(path):
+        if tar_root_real is not None:
+            _add_junction_as_relsymlink(
+                tar, path, arcname, tar_root_real, tar_root_arc_prefix,
+            )
+        # tar_root_real 为 None 时(理论上不会),保守跳过 junction
+        return
+
+    if path.is_symlink():
+        # 普通 symlink (Mac/Linux 上的 pnpm workspace 软链接、相对路径) 直接 tar.add 即可,
+        # tarfile 会保留相对 linkname,目标机器解压能正确解析
         tar.add(path, arcname=arcname)
         return
 
     if path.is_dir():
-        # 添加目录本身，但不递归（recursive=False）
+        # 添加目录本身,但不递归(recursive=False)
         tar.add(path, arcname=arcname, recursive=False)
+        # 历史 bug(2026-05 修): 这里以前是整个 for 循环外包一层 try/except OSError,
+        # 于是 .pnpm/ 下任意一个包的子树 tar.add 内部抛 OSError(路径过长/文件锁/Defender
+        # 临时阻挡)就会中断剩余兄弟节点的迭代,造成"按字母序之后所有包都缺失"。
+        # 实际症状:解压后 onboard 找不到 tsdown 等 t/u/v/w/x/y/z 字母段的包。
+        # 改为对每个 child 单独 try,某个失败只跳过它,不影响其他。
         try:
-            for child in path.iterdir():
-                if child.name == ".git":
-                    continue
-                _add_to_tar(tar, child, f"{arcname}/{child.name}")
+            children = list(path.iterdir())
         except OSError as e:
-            print(f"  警告: 无法访问 {path}: {e}")
+            print(f"  警告: 无法列出 {path}: {e}")
+            return
+        for child in children:
+            if child.name == ".git":
+                continue
+            # 进入 .pnpm/ 后启用 fast path —— 内部全是真实文件,无 junction
+            child_skip = skip_junction_check or child.name == ".pnpm"
+            try:
+                _add_to_tar(
+                    tar, child, f"{arcname}/{child.name}",
+                    tar_root_real, tar_root_arc_prefix,
+                    skip_junction_check=child_skip,
+                )
+            except OSError as e:
+                print(f"  警告: 无法添加 {child}: {e}")
     else:
         tar.add(path, arcname=arcname)
 
 
 def _pack_with_system_tar(source_dir: Path, output_file: Path) -> bool:
-    """尝试使用系统 tar 命令打包（MSYS2/Git Bash tar 能正确处理 Windows junction）。
+    """尝试使用系统 tar 命令打包,**跟随软链接/junction 写入目标内容**。
+
+    重要(2026-05-13 修): Windows 上 pnpm workspace 用 junction 链接 workspace 包,
+    Git Bash tar 默认会把 junction 当软链接编码成绝对路径(如 /c/Users/jiash/openclaw-cn),
+    解压到目标机器时 safe_tar_extract 拒绝指向目标目录外的软链接,导致整个解压失败。
+    用 --dereference (-h) 让 tar 跟随这些链接、把真实内容打进去,
+    这样 tarball 在任何机器上解压都是自包含的。
+
+    代价:tarball 体积会大一些(workspace 包内容会被复制多份),
+    但相比"无法解压"是合理代价。
 
     Returns:
         True 如果打包成功。
@@ -344,7 +563,7 @@ def _pack_with_system_tar(source_dir: Path, output_file: Path) -> bool:
         result = subprocess.run(
             [
                 tar_cmd,
-                "-czf", str(output_file),
+                "-czhf", str(output_file),  # -h = --dereference,跟随软链接/junction
                 "-C", str(source_dir),
                 "--exclude=.git",
                 ".",
@@ -392,18 +611,33 @@ def pack_prebuilt(source_dir: Path, output_dir: Path, platform_name: str) -> Pat
     print(f"  来源: {source_dir}")
     print(f"  目标: {output_file}")
 
-    # Windows 上优先使用系统 tar（MSYS2/Git Bash），避免 Python tarfile
-    # 将 junction 误当作普通目录递归进入导致的路径爆炸。
-    if sys.platform == "win32" and _pack_with_system_tar(source_dir, output_file):
+    # Windows 平台:不能用系统 tar(Git Bash tar)。它会把 NTFS junction 编码成
+    # 绝对路径软链接(/c/Users/...),解压到其他机器时 safe_tar_extract 拒绝
+    # "指向目标外的软链接",整个解压失败。即使加 --dereference 跟随 junction,
+    # tarball 体积会膨胀到 1-2GB(workspace 包内容被复制多份)。
+    # 正解:走 Python tarfile,自定义 _add_junction_as_relsymlink 把 junction
+    # 转为相对路径 SYMTYPE 成员,体积零增长,目标机器用 mklink /J 还原。
+    #
+    # 非 Windows 平台:Mac/Linux 上 pnpm 用相对 symlink,系统 tar 能正确处理,
+    # 优先用它(更快、且能保留所有元数据)。
+    use_system_tar = sys.platform != "win32" and _pack_with_system_tar(source_dir, output_file)
+    if use_system_tar:
         print(f"  使用系统 tar 打包完成")
     else:
-        # 回退到 Python tarfile，手动遍历并跳过 symlink 目录
-        print(f"  使用 Python tarfile 打包（跳过 symlink 目录）...")
+        # Windows 必走这条;Mac/Linux 系统 tar 失败时也退化到这里
+        print(f"  使用 Python tarfile 打包...")
+        # tar_root_real:source_dir 的真实绝对路径,用来判断 junction 目标是否
+        # 在 tar 范围内(在内 → 转相对 SYMTYPE;在外 → 跳过)
+        tar_root_real = source_dir.resolve()
         with tarfile.open(output_file, "w:gz") as tar:
             for item in source_dir.iterdir():
                 if item.name == ".git":
                     continue
-                _add_to_tar(tar, item, f"openclaw-cn/{item.name}")
+                _add_to_tar(
+                    tar, item, f"openclaw-cn/{item.name}",
+                    tar_root_real=tar_root_real,
+                    tar_root_arc_prefix="openclaw-cn",
+                )
 
     print(f"\n预构建产物打包完成: {output_file}")
 
