@@ -231,9 +231,17 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
     # === Step 1: 权威标志文件 ===
     # 我们的安装器正常完成后,这两个文件至少有一个会存在。卸载只要把它们删了,
     # 即使 force_rmtree 失败留下空壳目录或锁定的 node_modules,这一步也会判 NOT_INSTALLED。
+    #
+    # 2026-05 加固:同时要求 ~/openclaw-cn 目录存在。
+    # 之前只要 openclaw.json 在就判已装,但 ~/openclaw-cn 整个被删时,wrapper
+    # 命令包装器执行 `cd <project_dir>` 直接失败,实际命令完全不可用 —— 这是误报。
+    # 加上目录存在性检查后,孤立配置文件会被正确判定为 NOT_INSTALLED,触发重装。
     config_file = os.path.join(home, ".openclaw", "openclaw.json")
-    dist_dir = os.path.join(home, "openclaw-cn", "dist")
-    if os.path.isfile(config_file):
+    project_dir = os.path.join(home, "openclaw-cn")
+    dist_dir = os.path.join(project_dir, "dist")
+    project_exists = os.path.isdir(project_dir)
+
+    if os.path.isfile(config_file) and project_exists:
         install_path = os.path.dirname(config_file)
         return OpenClawInstallResult(
             status=OpenClawStatus.INSTALLED,
@@ -242,6 +250,7 @@ def _check_openclaw_installed() -> OpenClawInstallResult:
         )
     # dist 必须存在**且非空**。Windows 卸载 rmdir 偶尔会把 dist 里的文件全清掉
     # 但留个空壳 —— 那是残留,不是安装。
+    # dist 既然在 project_dir 下,project_dir 一定也存在,无需额外判断。
     if os.path.isdir(dist_dir):
         try:
             if os.listdir(dist_dir):

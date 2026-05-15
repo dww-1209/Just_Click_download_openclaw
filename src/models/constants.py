@@ -35,6 +35,39 @@ GIT_FOR_WINDOWS_URLS = [
 REGISTRY_NPM_MIRROR = "https://registry.npmmirror.com"
 REGISTRY_CLAWHUB = "https://cn.clawhub-mirror.com/"
 
+# pnpm 版本固定:跟随 OpenClaw 项目 package.json 的 packageManager 字段(当前 10.23.0)。
+# 跨平台统一用 10.x,不用 11.x 的原因:pnpm 11 默认 hoist 策略变严,ipull 等老包
+# (在间接依赖里偷 import strip-ansi)在 11 上会撞 ERR_MODULE_NOT_FOUND,10 上能找到。
+# 仅指定大版本号(10),不锁小版本,小版本升级仍可享受 bugfix。
+PNPM_REQUIRED_MAJOR = 10
+
+# Microsoft Visual C++ 2015-2022 Redistributable (x64) 下载镜像。
+# 用途:Windows 上原生 npm 包(node-llama-cpp/sharp/better-sqlite3 等)的 .node
+# 文件运行时依赖 vcruntime140.dll/msvcp140.dll。这两个不在 Windows 镜像里,
+# 普通用户多半通过 Office/VSCode/游戏顺带装上,但全新出厂笔记本 / 公司 IT 极简
+# 镜像 / 虚拟机环境往往缺失,导致 native module 加载时段错误(0xC0000005)。
+# 顺序:微软官方短链放第一(国内访问也较稳),其他 CDN 兜底。
+VCREDIST_X64_MIRRORS = [
+    "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+]
+
+# GitHub Releases 反代镜像列表（用于原生 npm 包 postinstall 从 GitHub 下预编译产物）
+# 这几个全部是「URL 前缀反代」：用法是 f"{base}https://github.com/foo/bar/..."，
+# 即直接拼接完整 GitHub URL 在后面，不接受 HTTP CONNECT 隧道，所以不能当 https_proxy 用。
+# 顺序：国内反代优先，github.com 兜底。
+# 实际拼接示例：f"{GITHUB_PROXY_MIRRORS[0]}https://github.com/sharp/sharp/..."
+GITHUB_PROXY_MIRRORS = [
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://mirror.ghproxy.com/",
+    "",  # 空前缀 = 直连 github.com，最后一档兜底
+]
+
+# 部分原生包在 npmmirror 上有专门的二进制镜像（CNPM 团队搭的）
+# 这些是「目录树镜像」，结构与 GitHub Releases 不一致，需要逐包指定 env var。
+NPMMIRROR_BINARY_BASE = "https://registry.npmmirror.com/-/binary"
+
 # Electron 镜像（用于构建时加速 Electron 下载）
 ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"

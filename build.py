@@ -288,11 +288,11 @@ def build(
         arch_suffix = ""
 
     # 1. 打包在线版安装器（始终构建）
+    # 不再打包 resources/native-cache —— 已废弃。原生包预编译产物改为通过
+    # 多镜像源 + 重试在 pnpm install 阶段下载，详见 install_openclaw.py 的
+    # _step5_pnpm_install_deps 与 GITHUB_PROXY_MIRRORS。
     sep = ";" if is_windows() else ":"
     add_data_online = []
-    native_cache_dir = "resources/native-cache"
-    if os.path.isdir(native_cache_dir):
-        add_data_online.append(f"{native_cache_dir}{sep}resources/native-cache")
 
     # macOS 在线版自带 git，避免 Xcode CLT 弹窗
     # Node.js 由在线安装器从网络镜像下载，不打包以减小体积

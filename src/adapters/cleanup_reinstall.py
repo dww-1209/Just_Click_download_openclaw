@@ -23,7 +23,12 @@ import subprocess
 from typing import Callable, Optional
 
 from src.models.constants import DEFAULT_GATEWAY_PORT, is_windows
-from src.models.utils import force_rmtree, kill_port_process, windows_hidden_subprocess_kwargs
+from src.models.utils import (
+    cleanup_orphan_residues,
+    force_rmtree,
+    kill_port_process,
+    windows_hidden_subprocess_kwargs,
+)
 
 # 单步骤超时(秒): 偏短即可,因为旧 Gateway 是本机进程、npm uninstall 是本地操作
 _STEP_TIMEOUT = 30
@@ -85,6 +90,8 @@ def cleanup_for_reinstall(on_log: Optional[Callable[[str], None]] = None) -> boo
                 log(f"已删除: {d}")
             else:
                 log(f"删除失败(将继续): {d}")
+    # 顺便扫掉历史 .residue 残渣(上次 force_rmtree 后台清理没完成的),后台异步
+    cleanup_orphan_residues(os.path.expanduser("~"), log)
     log("旧文件已处理")
 
     # 3) 删除命令包装器

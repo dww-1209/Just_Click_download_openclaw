@@ -20,6 +20,7 @@ from src.models.config import (
     ConfigResult,
 )
 from src.models.utils import (
+    cleanup_orphan_residues,
     force_rmtree,
     kill_port_process,
     resolve_openclaw_cmd,
@@ -293,8 +294,7 @@ class OpenClawManager(BaseOpenClawManager):
             bool: 命令是否可用。
         """
         try:
-            cmd = resolve_open
-            claw_cmd()
+            cmd = resolve_openclaw_cmd()
             if is_windows():
                 # Windows: 直接用 where 检测命令是否存在，避免某些 CLI 不支持 --version
                 # 隐藏控制台窗口,避免 GUI 上闪烁黑色 cmd 窗口。
@@ -458,7 +458,8 @@ class OpenClawManager(BaseOpenClawManager):
 
         过滤掉包含非 ASCII 字符的环境变量（避免某些中文路径或特殊字符导致
         subprocess 编码错误），同时保留 HOME、PATH 等核心变量。
-        最后确保 ~/.local/bin 在 PATH 最前面，以便找到 wrapper 脚本。
+        最后按平台把 wrapper 安装目录加到 PATH 最前面,以便 shutil.which 能解析
+        到 openclaw / openclaw-cn 命令包装器。
 
         Returns:
             dict: 清理后的环境变量字典。
@@ -480,10 +481,26 @@ class OpenClawManager(BaseOpenClawManager):
                 clean_env[k] = v
             except UnicodeEncodeError:
                 pass
-        # 确保 ~/.local/bin 在 PATH 中（Linux/macOS wrapper 安装位置）
+
+        # 把 wrapper 安装目录加到 PATH 最前面。平台分两套:
+        # - Windows: %APPDATA%\Roaming\npm (openclaw.cmd / openclaw-cn.cmd 在这)
+        # - macOS / Linux: ~/.local/bin (无后缀脚本)
+        # 历史 bug: 之前这里 Windows / Mac 走同一套 ~/.local/bin + ":" 拼接,Win 上
+        # 不存在这目录又用了错的分隔符,导致 PATH 整个被搞坏 → shutil.which 找不到
+        # openclaw-cn.cmd → 子进程 [WinError 2]。
         home = os.path.expanduser("~")
-        local_bin = os.path.join(home, ".local", "bin")
-        clean_env["PATH"] = f"{local_bin}:{clean_env.get('PATH', '')}"
+        if is_windows():
+            wrapper_dir = os.path.join(
+                env.get("APPDATA", os.path.join(home, "AppData", "Roaming")),
+                "npm",
+            )
+            sep = ";"
+        else:
+            wrapper_dir = os.path.join(home, ".local", "bin")
+            sep = ":"
+        existing_path = clean_env.get("PATH", "")
+        if wrapper_dir not in existing_path.split(sep):
+            clean_env["PATH"] = f"{wrapper_dir}{sep}{existing_path}" if existing_path else wrapper_dir
         return clean_env
 
     def _kill_process_tree(self, process: subprocess.Popen) -> None:
@@ -1570,15 +1587,25 @@ class OpenClawManager(BaseOpenClawManager):
             os.path.join(home, ".openclaw-git"),
             os.path.join(home, ".openclaw-node"),
         ]
+        # 卸载场景必须 wait=True 同步删干净:用户看到"已卸载"就关窗,如果用 daemon
+        # 异步清,daemon 会被进程退出中断,残渣留在磁盘 → 下次打开卸载器又检测到残渣 →
+        # 又跑卸载逻辑 → 又秒关 → 永远清不完的死循环。详见 force_rmtree 的 wait 文档。
+        if on_log:
+            on_log("开始彻底清理(可能需要数分钟,请勿关闭窗口)...")
         for d in dirs_to_remove:
             if os.path.exists(d):
-                if force_rmtree(d, on_log):
+                if on_log:
+                    on_log(f"清理目录: {d}")
+                if force_rmtree(d, on_log, wait=True):
                     if on_log:
                         on_log(f"已删除: {d}")
                 else:
                     if on_log:
                         on_log(f"删除 {d} 失败")
                     all_ok = False
+
+        # 同步清掉用户主目录下的 *._residue.* 历史残渣(上次安装/卸载后台清理未完成的)
+        cleanup_orphan_residues(home, on_log, wait=True)
 
         # 3. 卸载 npm 全局包（兼容旧版直接 npm install -g 的情况）
         if cancel_event and cancel_event():
@@ -1672,12 +1699,40 @@ class OpenClawManager(BaseOpenClawManager):
                         if on_log:
                             on_log(f"清理 {rc_file} 失败: {e}")
 
-        # 卸载结束时如实回报: all_ok=False 说明有目录/包装器没删干净(常见于
-        # Windows 反病毒短暂占用、node.exe 句柄未释放),如果还打"卸载完成",
-        # 用户重开安装器看到"已安装"会以为是 bug。明确提示残留并建议重启重试。
+        # 卸载完成后做完整性自检: 重新扫一遍, 看是否还有 OpenClaw 相关目录或残渣。
+        # 这是给用户的"硬保证"——只要这里通过,用户重新点检测就一定看不到残留。
+        if on_log:
+            on_log("正在做卸载后自检...")
+        leftover: list[str] = []
+        check_paths = [
+            os.path.join(home, "openclaw-cn"),
+            os.path.join(home, ".openclaw"),
+            os.path.join(home, ".openclaw-git"),
+            os.path.join(home, ".openclaw-node"),
+        ]
+        for p in check_paths:
+            if os.path.exists(p):
+                leftover.append(p)
+        # 扫 home 下的 ._residue.* 残渣
+        try:
+            for entry in os.scandir(home):
+                if "._residue." in entry.name and (
+                    "openclaw" in entry.name.lower() or ".openclaw" in entry.name.lower()
+                ):
+                    leftover.append(entry.path)
+        except OSError:
+            pass
+
+        if leftover:
+            all_ok = False
+            if on_log:
+                on_log(f"自检发现 {len(leftover)} 项残留:")
+                for p in leftover:
+                    on_log(f"  - {p}")
+
         if on_log:
             if all_ok:
-                on_log("OpenClaw 卸载完成")
+                on_log("OpenClaw 卸载完成,自检通过(系统已干净)")
             else:
                 on_log(
                     "OpenClaw 卸载部分完成,但有文件未能删除。"
