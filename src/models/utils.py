@@ -621,6 +621,47 @@ def remove_readonly(func: Callable[..., None], path: str, _: Any) -> None:
     func(path)
 
 
+def resolve_pnpm_cmd(env: Optional[dict] = None) -> str:
+    """解析 pnpm 命令的可执行路径。
+
+    优先级:
+    1. ~/.openclaw-node/bin/pnpm (macOS) / ~/.openclaw-node/pnpm.cmd (Win) ——
+       这是 install_openclaw.py 自己解压的位置, 是个强 invariant。安装器走完
+       一定有, 路径写死即可零猜测。
+    2. shutil.which("pnpm", path=env["PATH"]) —— 兜底场景: 用户手动 brew/npm
+       装了 pnpm 且不在我们的 .openclaw-node 下。
+
+    为什么不再扩大候选目录(~/Library/pnpm 等):
+    - 由我们的安装器装的 pnpm 一定在 .openclaw-node 下, 命中路径 1。
+    - 用户用其他方式装的, shell PATH 里通常已经有, shutil.which 能找到。
+    - 硬编码 corepack/volta/asdf 路径是赌博,用户可能根本没装那些工具,
+      反而引入误判风险。
+
+    Args:
+        env: 可选环境变量字典。仅 PATH 这一项会被使用,用于 shutil.which 兜底。
+
+    Returns:
+        pnpm 可执行文件的绝对路径。两条路径都失败时返回裸名 "pnpm",
+        让上层 subprocess.Popen 自己抛 FileNotFoundError —— 这是用户手动
+        删除 .openclaw-node/bin/pnpm 等极端情况, 不应静默兜底。
+    """
+    home = os.path.expanduser("~")
+    if is_windows():
+        local_pnpm = os.path.join(home, ".openclaw-node", "pnpm.cmd")
+    else:
+        local_pnpm = os.path.join(home, ".openclaw-node", "bin", "pnpm")
+
+    if os.path.isfile(local_pnpm):
+        return local_pnpm
+
+    path_env = (env or {}).get("PATH") or os.environ.get("PATH", "")
+    resolved = shutil.which("pnpm", path=path_env)
+    if resolved:
+        return resolved
+
+    return "pnpm"
+
+
 def resolve_openclaw_cmd(env: Optional[dict] = None) -> str:
     """检测系统中可用的 openclaw 命令。
 

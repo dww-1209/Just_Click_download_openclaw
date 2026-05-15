@@ -24,6 +24,7 @@ from src.models.utils import (
     force_rmtree,
     kill_port_process,
     resolve_openclaw_cmd,
+    resolve_pnpm_cmd,
     windows_hidden_subprocess_kwargs,
 )
 from src.models.constants import is_windows, is_macos, TIMEOUT_OPENCLAW_CMD, TIMEOUT_SHORT_CMD, TIMEOUT_NODE_MSI_INSTALL
@@ -494,13 +495,23 @@ class OpenClawManager(BaseOpenClawManager):
                 env.get("APPDATA", os.path.join(home, "AppData", "Roaming")),
                 "npm",
             )
+            # ~/.openclaw-node 直接是 Node 解压根目录,node.exe / pnpm.cmd 都在这层
+            node_bin_dir = os.path.join(home, ".openclaw-node")
             sep = ";"
         else:
             wrapper_dir = os.path.join(home, ".local", "bin")
+            # macOS 上 Node tarball 解压后是 .openclaw-node/bin/{node,npm,pnpm}
+            node_bin_dir = os.path.join(home, ".openclaw-node", "bin")
             sep = ":"
         existing_path = clean_env.get("PATH", "")
-        if wrapper_dir not in existing_path.split(sep):
-            clean_env["PATH"] = f"{wrapper_dir}{sep}{existing_path}" if existing_path else wrapper_dir
+        path_parts = existing_path.split(sep) if existing_path else []
+        # 把内置 node bin 也加到 PATH 头部:pnpm 内部会 spawn node,GUI 启动场景
+        # (Mac Finder / .command) 父进程 PATH 可能不含 node,会导致 pnpm 报
+        # "node not found"。我们装在 .openclaw-node 下的 node 必须自己注入。
+        for d in (node_bin_dir, wrapper_dir):
+            if d not in path_parts:
+                path_parts.insert(0, d)
+        clean_env["PATH"] = sep.join(path_parts)
         return clean_env
 
     def _kill_process_tree(self, process: subprocess.Popen) -> None:
@@ -591,12 +602,16 @@ class OpenClawManager(BaseOpenClawManager):
                 "env": env,
             }
 
+            if local_fallback:
+                # resolve_pnpm_cmd 优先用 ~/.openclaw-node/bin/pnpm,
+                # fallback 到 shutil.which。Mac 上 GUI 启动不读 .zshrc 时
+                # 这是唯一能可靠找到 pnpm 的方式。详见 utils.resolve_pnpm_cmd。
+                full_cmd = [resolve_pnpm_cmd(env), "openclaw", "gateway"]
+                popen_kwargs["cwd"] = str(local_project)
+            else:
+                full_cmd = [cmd, "gateway"]
+
             if is_windows():
-                if local_fallback:
-                    full_cmd = ["pnpm", "openclaw", "gateway"]
-                    popen_kwargs["cwd"] = str(local_project)
-                else:
-                    full_cmd = [cmd, "gateway"]
                 # Popen(shell=False) 不查 PATHEXT,把裸命令解析成完整 .cmd 路径。
                 for i in range(len(full_cmd)):
                     head = full_cmd[i]
@@ -611,12 +626,6 @@ class OpenClawManager(BaseOpenClawManager):
                 startupinfo.wShowWindow = 0
                 popen_kwargs["startupinfo"] = startupinfo
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-            else:
-                if local_fallback:
-                    full_cmd = ["pnpm", "openclaw", "gateway"]
-                    popen_kwargs["cwd"] = str(local_project)
-                else:
-                    full_cmd = [cmd, "gateway"]
 
             self._log(f"Execute: {' '.join(full_cmd[:5])}...")
 
@@ -743,15 +752,18 @@ class OpenClawManager(BaseOpenClawManager):
             and (local_project / "package.json").exists()
         )
 
-        if is_windows():
-            if local_fallback:
-                # 在项目目录内执行 pnpm openclaw <args>
-                full_cmd = ["pnpm", "openclaw"] + args
-                cwd = str(local_project)
-            else:
-                full_cmd = [cmd] + args
-                cwd = None
+        if local_fallback:
+            # 在项目目录内执行 <pnpm> openclaw <args>
+            # resolve_pnpm_cmd 优先用 ~/.openclaw-node/bin/pnpm (我们装的局部 pnpm),
+            # fallback 到 shutil.which("pnpm")。这样 Mac 上 GUI 环境不读 .zshrc
+            # 也能找到 pnpm,避免 FileNotFoundError。
+            full_cmd = [resolve_pnpm_cmd(env), "openclaw"] + args
+            cwd = str(local_project)
+        else:
+            full_cmd = [cmd] + args
+            cwd = None
 
+        if is_windows():
             # Windows + shell=False + Popen/run 不查 PATHEXT —— openclaw-cn / pnpm
             # 在 Windows 上实际是 %APPDATA%\Roaming\npm\xxx.cmd 这种批处理包装器,
             # 直接传 ["openclaw-cn", ...] 会报 [WinError 2]。shutil.which 会查
@@ -782,13 +794,6 @@ class OpenClawManager(BaseOpenClawManager):
             )
             return result
         else:
-            if local_fallback:
-                full_cmd = ["pnpm", "openclaw"] + args
-                cwd = str(local_project)
-            else:
-                full_cmd = [cmd] + args
-                cwd = None
-
             self._log(f"Execute: {' '.join(full_cmd[:5])}...")
 
             result = subprocess.run(
