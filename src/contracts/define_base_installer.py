@@ -28,7 +28,7 @@ from typing import Callable, Optional
 
 from src.models.install import InstallResult, InstallStatus
 from src.models.constants import is_windows, is_macos, is_linux, TIMEOUT_SHORT_CMD
-from src.models.utils import safe_tar_extract
+from src.models.utils import safe_tar_extract, windows_hidden_subprocess_kwargs
 
 
 # Node.js 版本检查的子进程超时(秒);保持小值,避免 install() 卡在初始检查
@@ -480,6 +480,28 @@ exec "$GIT_BIN" "$@"
         - 命名: 必须以 git- 开头(匹配 glob "git-*.zip"),例如
           git-2.53.0-windows-x64.zip。
         """
+        # 先检测系统 git。Windows 上 git 不像 macOS 有 Xcode CLT shim 陷阱,
+        # 系统 git 找到即可用,直接 git --version 验证即跳过解压(省 ~10s 和 ~600MB)。
+        import shutil
+        sys_git = shutil.which("git")
+        if sys_git:
+            try:
+                result = subprocess.run(
+                    [sys_git, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_SHORT_CMD,
+                    **windows_hidden_subprocess_kwargs(),
+                )
+                if result.returncode == 0 and "git version" in result.stdout:
+                    self._log(f"系统 git 已可用: {sys_git} ({result.stdout.strip()})")
+                    return
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self._log(f"系统 git 检测失败({sys_git}),将使用内部 git")
+        else:
+            self._log("未找到系统 git,将使用内部 git")
+
         git_zip_pattern = "git-*.zip"
         matches = sorted(Path(self._resource_dir).glob(git_zip_pattern))
         if not matches:

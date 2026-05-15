@@ -237,19 +237,39 @@ class OfflineOpenClawInstaller(BaseInstaller):
         return False
 
     def _check_pnpm(self) -> bool:
-        """检查 pnpm 是否可用。"""
+        """检查 pnpm 是否可用,并把完整可执行路径记到 self._pnpm_path。
+
+        Windows + shell=False + Popen 不查 PATHEXT,直接传 "pnpm" 会撞 WinError 2
+        (找不到 pnpm.cmd)。必须用 shutil.which 主动解析完整路径,它会查 PATHEXT
+        命中 .cmd 后缀。
+
+        重要(2026-05-14 修): 之前这里只验证 pnpm 可用就 return True,但没把
+        解析后的完整路径存到 self._pnpm_path。导致后续 _run_onboard 用
+        `self._pnpm_path or "pnpm"` 时 fallback 到裸 "pnpm",撞 WinError 2。
+        现在在验证通过的同时记录完整路径,onboard 直接复用。
+        """
+        import shutil
+        # 优先用当前进程 PATH 解析(npm install -g 后已把 npm bin 加到 os.environ["PATH"])
+        pnpm_exe = (
+            shutil.which("pnpm.cmd")
+            or shutil.which("pnpm.CMD")
+            or shutil.which("pnpm")
+        )
+        if not pnpm_exe:
+            return False
+
         try:
-            # Windows GUI 程序调子进程必须双保险隐藏窗口(STARTUPINFO + CREATE_NO_WINDOW),
-            # 否则会闪一个黑色 cmd 窗口
             result = subprocess.run(
-                ["pnpm", "-v"],
+                [pnpm_exe, "-v"],
                 capture_output=True,
                 text=True,
                 timeout=TIMEOUT_SHORT_CMD,
                 **windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
-                self._log(f"pnpm {result.stdout.strip()} 已可用")
+                self._log(f"pnpm {result.stdout.strip()} 已可用 ({pnpm_exe})")
+                # 记下完整路径,供后续 _run_onboard 等步骤直接用,避免 PATHEXT 坑
+                self._pnpm_path = pnpm_exe
                 return True
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -394,7 +414,16 @@ class OfflineOpenClawInstaller(BaseInstaller):
             ensure_local_bin_in_path(self._on_log)
 
         if self._check_pnpm():
-            self._pnpm_path = "pnpm"
+            # 记录完整 pnpm 可执行路径,供 _step_onboard 等后续步骤用 shell=False 直接调用
+            # (Windows 下传裸名 "pnpm" 给 shell=False 的 subprocess 会撞 PATHEXT 坑,
+            # 必须存完整路径,这里在 _check_pnpm 已解析过的基础上再 which 一次)
+            import shutil
+            self._pnpm_path = (
+                shutil.which("pnpm.cmd")
+                or shutil.which("pnpm.CMD")
+                or shutil.which("pnpm")
+                or "pnpm"  # 兜底,Mac/Linux 无后缀,直接传裸名也能跑
+            )
             return True
 
         self._log("pnpm 安装后验证失败")
@@ -438,8 +467,12 @@ class OfflineOpenClawInstaller(BaseInstaller):
             with tarfile.open(archive_path, "r:gz") as tar:
                 safe_tar_extract(tar, self._home, self._log)
             self._log(f"已解压预构建产物到 {self._project_dir}")
-        except (OSError, tarfile.TarError) as e:
-            self._log(f"解压预构建产物失败: {e}")
+        except (OSError, tarfile.TarError, EOFError) as e:
+            # EOFError: gzip 流损坏(缺 end-of-stream marker),通常是打包时进程被 kill
+            # 留下不完整 .tar.gz。提示用户但不暴露给上层异常处理(避免被当作"未知错误")。
+            self._log(f"解压预构建产物失败: {type(e).__name__}: {e}")
+            self._log(f"  归档路径: {archive_path}")
+            self._log(f"  建议: 重新生成离线资源 (prepare_offline_resources.py --platform windows)")
             return False
 
         return True
@@ -468,9 +501,14 @@ class OfflineOpenClawInstaller(BaseInstaller):
             os.environ["PATH"] = bin_str + os.pathsep + current_path
             self._log(f"已将 {bin_str} 加入当前进程 PATH")
 
-        # *nix 下额外保证 ~/.local/bin 在 shell 启动时进入 PATH
-        if success and not is_windows():
-            ensure_local_bin_in_path(self._on_log)
+        # 持久化 PATH(让新开终端也能直接跑 openclaw):
+        # - Win: 写 HKCU\Environment\Path,新进程会继承
+        # - *nix: 写 shell rc 文件
+        if success:
+            if is_windows():
+                ensure_dir_in_path(bin_str, self._on_log)
+            else:
+                ensure_local_bin_in_path(self._on_log)
 
         return success
 
@@ -480,12 +518,9 @@ class OfflineOpenClawInstaller(BaseInstaller):
         Returns:
             True 如果 onboard 成功或配置文件已存在。
         """
-        self._log("正在初始化配置（onboard）...")
+        self._log("正在初始化配置（onboard,通常需 1-2 分钟,请勿关闭窗口）...")
 
-        # 确定 pnpm 路径：优先使用已记录的 standalone 路径，fallback 到系统 pnpm
         pnpm_cmd = self._pnpm_path or "pnpm"
-
-        # 若 wrapper 尚未生效，直接使用项目目录内的 pnpm 执行
         cmd = [
             pnpm_cmd, "openclaw", "onboard",
             "--non-interactive", "--accept-risk", "--mode", "local",
@@ -493,26 +528,23 @@ class OfflineOpenClawInstaller(BaseInstaller):
             "--node-manager", "pnpm", "--skip-channels",
         ]
 
+        # onboard 输出含 emoji(🦞 等),Windows 中文系统默认 GBK 解码会炸,
+        # 用户也不关心内部输出。直接 DEVNULL 丢弃,只看 returncode 判成败。
         try:
             result = subprocess.run(
                 cmd,
-                cwd=self._project_dir,
-                capture_output=True,
-                text=True,
+                cwd=str(self._project_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=TIMEOUT_INSTALL_CMD,
                 env=os.environ.copy(),
-                **windows_hidden_subprocess_kwargs(),  # 隐藏 Windows 黑窗(onboard 期间)
+                **windows_hidden_subprocess_kwargs(),
             )
             self._log(f"onboard return code: {result.returncode}")
-            if result.stdout:
-                self._log(f"onboard stdout: {result.stdout[:500]}")
-            if result.stderr:
-                self._log(f"onboard stderr: {result.stderr[:500]}")
 
             if result.returncode == 0:
                 return True
 
-            # 非零可能是重复执行，检查配置文件是否已存在
             config_path = self._home / CONFIG_DIR_NAME / "openclaw.json"
             if config_path.exists():
                 self._log("onboard 返回非零但配置已存在，视为成功")
