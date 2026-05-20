@@ -1135,7 +1135,7 @@ def _extract_with_7z_or_python(
         # 64KB pipe buffer 写满,导致 Python 不读 + 7z 不能写 → 双向死锁。
         # 实测前一次跑到 20 万文件后卡了 47 分钟没动,就是这个 bug。
         if on_log:
-            on_log(f"  步骤 2/2: 解压 tar 到目标目录(预计 1-7 分钟,请勿关闭窗口)")
+            on_log(f"  步骤 2/2: 解压 tar 到目标目录(预计 7-10 分钟,请勿关闭窗口)")
         cmd = [
             seven_z, "x", "-ttar",
             f"-o{dest_path}",

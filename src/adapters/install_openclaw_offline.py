@@ -515,7 +515,7 @@ class OfflineOpenClawInstaller(BaseInstaller):
         Returns:
             True 如果 onboard 成功或配置文件已存在。
         """
-        self._log("正在初始化配置（onboard,通常需 1-2 分钟,请勿关闭窗口）...")
+        self._log("正在初始化配置（onboard,预计需 3 分钟,请勿关闭窗口）...")
 
         pnpm_cmd = self._pnpm_path or "pnpm"
         cmd = [
