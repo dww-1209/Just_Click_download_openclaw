@@ -350,7 +350,11 @@ class OpenClawManager(BaseOpenClawManager):
 
             for key, value in configs:
                 try:
-                    result = self._run_openclaw_command(["config", "set", key, value])
+                    # 首条 config set 在 Windows 上要冷启动 cmd wrapper + pnpm + Node 整链路,
+                    # 实测能花 80-90 秒(后续命令 Node 已热,3 秒就完)。给 90s 留余地。
+                    result = self._run_openclaw_command(
+                        ["config", "set", key, value], timeout=90
+                    )
                     if result.returncode == 0:
                         self._log(f"Set {key}={value} OK")
                     else:
@@ -364,11 +368,14 @@ class OpenClawManager(BaseOpenClawManager):
             self._log("Running onboard...")
             onboard_ok = False
             try:
+                # onboard 即使加了 --skip-skills/--skip-health,首次仍要写 ~/.openclaw 下
+                # cron/agents/canvas/identity 等多个目录,实测 Mac 1 分钟、Windows 2-3 分钟。
+                # 给 600s(10 分钟)兜底,远大于实际耗时。
                 result = self._run_openclaw_command([
                     "onboard", "--non-interactive", "--accept-risk", "--mode", "local",
                     "--skip-skills", "--skip-health", "--no-install-daemon",
                     "--node-manager", "pnpm", "--skip-channels",
-                ])
+                ], timeout=600)
                 self._log(f"onboard return code: {result.returncode}")
                 if result.stdout:
                     self._log(f"onboard stdout: {result.stdout[:500]}")
@@ -735,7 +742,11 @@ class OpenClawManager(BaseOpenClawManager):
             self._log(f"Traceback: {traceback.format_exc()}")
             return False
 
-    def _run_openclaw_command(self, args: list[str]) -> subprocess.CompletedProcess:
+    def _run_openclaw_command(
+        self,
+        args: list[str],
+        timeout: int = TIMEOUT_OPENCLAW_CMD,
+    ) -> subprocess.CompletedProcess:
         """执行 openclaw 子命令（使用 shell=False，彻底避免命令注入）
 
         安全策略：
@@ -745,6 +756,9 @@ class OpenClawManager(BaseOpenClawManager):
 
         Args:
             args: 要执行的 openclaw 子命令参数列表（如 ["config", "set", "gateway.mode", "local"]）。
+            timeout: 子进程超时秒数。默认 TIMEOUT_OPENCLAW_CMD (30s) 适合常规 config 读取;
+                     冷启动 + cmd wrapper + pnpm + Node 链路在 Windows 上首次可能 60s+,
+                     onboard 这种需要写多个目录的命令更要给 600s。调用方按场景指定。
 
         Returns:
             subprocess.CompletedProcess: 包含 returncode、stdout、stderr。
@@ -806,7 +820,7 @@ class OpenClawManager(BaseOpenClawManager):
                 shell=False,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT_OPENCLAW_CMD,
+                timeout=timeout,
                 env=env,
                 cwd=cwd,
                 startupinfo=startupinfo,
@@ -821,7 +835,7 @@ class OpenClawManager(BaseOpenClawManager):
                 shell=False,
                 capture_output=True,
                 text=True,
-                timeout=TIMEOUT_OPENCLAW_CMD,
+                timeout=timeout,
                 env=env,
                 cwd=cwd,
             )
@@ -1197,12 +1211,13 @@ class OpenClawManager(BaseOpenClawManager):
             # 3. 如有 auth_choice，执行 onboard（设置 provider baseUrl 等元信息）
             if auth_choice:
                 try:
+                    # provider onboard 同样写多个配置目录,30s 远不够,给 600s
                     result = self._run_openclaw_command([
                         "onboard", "--auth-choice", auth_choice,
                         "--non-interactive", "--accept-risk", "--mode", "local",
                         "--skip-skills", "--skip-health", "--no-install-daemon",
                         "--node-manager", "pnpm", "--skip-channels",
-                    ])
+                    ], timeout=600)
                     self._log(f"  onboard return code: {result.returncode}")
                     if result.stdout:
                         self._log(f"  onboard stdout: {result.stdout[:300]}")
