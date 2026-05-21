@@ -54,9 +54,10 @@ from src.contracts.define_base_installer import BaseInstaller
 # 离线安装进度百分比映射
 _PROGRESS_NODEJS = 15
 _PROGRESS_PNPM = 25
-_PROGRESS_EXTRACT = 50
-_PROGRESS_WRAPPER = 65
-_PROGRESS_ONBOARD = 80
+_PROGRESS_EXTRACT = 45
+_PROGRESS_BUILD_UI = 60   # 解压后跑 pnpm ui:build,补 dist/control-ui 前端产物
+_PROGRESS_WRAPPER = 70
+_PROGRESS_ONBOARD = 85
 _PROGRESS_VERIFY = 95
 
 
@@ -509,6 +510,77 @@ class OfflineOpenClawInstaller(BaseInstaller):
 
         return success
 
+    def _build_ui_locally(self) -> bool:
+        """构建 Control UI 前端产物 (pnpm ui:build)。
+
+        为什么离线版必须主动跑这一步:
+        1. tarball 不带 dist/control-ui:打包时跑了 pnpm install/build 但没跑 ui:build,
+           即使补上 ui:build 后,tarball 体积会从 263M 涨到 826M(GitHub 仓库膨胀且
+           上游每次改 ui 都要重打,维护成本高,放弃此方案)。
+        2. OpenClaw 的"自愈"覆盖面有限:src/infra/control-ui-assets.ts 里的
+           ensureControlUiAssetsBuilt 只被 onboard / configure / update 命令调用,
+           **gateway 启动路径不触发自愈**(gateway/server.impl.ts 只 import 了
+           root 解析函数,没 import 自愈函数)。
+        3. 用户假设场景(2026-05-20 复盘):
+           a) 离线安装到一半被中途关闭,onboard 没跑完 → dist/control-ui 没生成
+           b) 但 ~/.openclaw/openclaw.json 已经被 onboard 早期写入了
+           c) 用户重启安装器,环境检测页:openclaw.json + ~/openclaw-cn 都在 → 判 INSTALLED
+           d) 用户点「快速启动」直接调 _start_gateway,不走 onboard
+           e) gateway 运行时 control-ui 资源缺失 → 报英文错误 "Build them with pnpm ui:build"
+        4. 我们这一步在解压预构建产物之后立即跑,把产物前置生成,
+           后续无论用户走 onboard 还是快速启动,都能保证 dist/control-ui 存在。
+
+        env 用 os.environ.copy() 而不是手动拼:此时 _install_nodejs 和 _check_pnpm
+        已经把 node + pnpm 路径填进 os.environ["PATH"](见 install_openclaw_offline.py:221
+        和 self._pnpm_path 的设置时机),所以继承的环境一定能找到 pnpm。
+
+        Returns:
+            True 如果构建成功,或产物已存在(prebuilt 已经包含的兼容路径)。
+        """
+        # 健康检查:如果 dist/control-ui/index.html 已存在,直接跳过。
+        # 这分支是为未来"重打 tarball 把 ui 也打进去"的方案留兼容——
+        # 哪天我们决定接受 826M 体积换取省 ui:build,只要 prebuilt 里有这个文件,
+        # 这一步就自动 no-op,不需要再改代码。
+        index_path = self._project_dir / "dist" / "control-ui" / "index.html"
+        if index_path.exists():
+            self._log("Control UI 产物已存在,跳过 ui:build")
+            return True
+
+        self._log("正在构建前端界面 (pnpm ui:build)...")
+
+        pnpm_cmd = self._pnpm_path or "pnpm"
+        cmd = [pnpm_cmd, "ui:build"]
+
+        # 跟 _run_onboard 一样:输出可能含 emoji 等非 ASCII 字符,Windows GBK 解码
+        # 会炸,直接 DEVNULL 丢弃,只看 returncode。失败时根据 returncode 给提示。
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(self._project_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=TIMEOUT_INSTALL_CMD,
+                env=os.environ.copy(),
+                **windows_hidden_subprocess_kwargs(),
+            )
+            self._log(f"ui:build return code: {result.returncode}")
+
+            if result.returncode != 0:
+                self._log("ui:build 失败")
+                return False
+
+            # 二次确认产物真的生成了——returncode=0 不一定意味着 dist 写入成功
+            # (vite 偶尔会因为权限问题静默写不进去)
+            if not index_path.exists():
+                self._log(f"ui:build 返回 0 但 {index_path} 仍不存在")
+                return False
+
+            self._log("Control UI 构建完成")
+            return True
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self._log(f"ui:build 异常: {e}")
+            return False
+
     def _run_onboard(self) -> bool:
         """执行 onboard 配置初始化。
 
@@ -688,6 +760,31 @@ class OfflineOpenClawInstaller(BaseInstaller):
                     error_message=f"无法从 {self._resource_dir} 解压预构建产物",
                     log_lines=self.log_lines.copy(),
                     duration_seconds=time.time() - self.start_time,
+                )
+
+            if self.is_cancelled:
+                return self._build_cancelled_result()
+
+            # 步骤 3.5: 构建前端 UI(pnpm ui:build)
+            # 必须在 _create_wrappers 之前完成:wrapper 创建后用户可能直接退出安装器,
+            # 此时再点"快速启动"会直接调 gateway,gateway 不会触发 OpenClaw 自愈,
+            # 缺 dist/control-ui 就会报英文错。详见 _build_ui_locally docstring。
+            self._log_progress(_PROGRESS_BUILD_UI, "构建前端界面...", "pnpm ui:build", on_progress)
+            if not self._build_ui_locally():
+                return InstallResult(
+                    status=InstallStatus.FAILED,
+                    message="前端界面构建失败",
+                    error_message="pnpm ui:build 失败,可能是内存不足或依赖缺失。\n\n建议:\n1. 关闭其他程序释放内存后重试\n2. 重启电脑后重试",
+                    log_lines=self.log_lines.copy(),
+                    duration_seconds=time.time() - self.start_time,
+                    error_detail=InstallErrorDetail(
+                        category=ErrorCategory.UNKNOWN,
+                        stage="INSTALLING",
+                        context="离线版 pnpm ui:build 构建前端",
+                        raw_error="ui:build returned non-zero or dist/control-ui/index.html missing",
+                        user_message="前端界面构建失败,WebChat 将无法启动",
+                        suggestion="1. 关闭其他程序释放内存后重试\n2. 重启电脑后重试",
+                    ),
                 )
 
             if self.is_cancelled:
