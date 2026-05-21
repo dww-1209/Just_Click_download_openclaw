@@ -26,6 +26,7 @@ if sys.platform not in ("win32", "darwin"):
 from PySide6.QtWidgets import QApplication, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt
 
+from src.ui._theme import GLOBAL_QSS
 from src.ui.show_uninstall_welcome import UninstallWelcomePage
 from src.ui.show_uninstall_progress import UninstallProgressPage
 from src.ui.show_uninstall_done import UninstallDonePage
@@ -43,8 +44,9 @@ class UninstallerWindow:
     def __init__(self) -> None:
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("OpenClaw Uninstaller")
-        # 全局样式重置：避免 macOS 原生风格给 QLabel 添加边框
-        self.app.setStyleSheet("QLabel { background: transparent; border: none; }")
+        # 应用与安装器相同的全局视觉系统(slate 配色 + 极简版式)
+        # 卸载器与安装器是同一产品的两个入口,视觉风格必须保持一致
+        self.app.setStyleSheet(GLOBAL_QSS)
         self.openclaw_manager = OpenClawManager()
         self._setup_window()
 
@@ -55,12 +57,14 @@ class UninstallerWindow:
         self.stacked_widget = QStackedWidget()
         self.stacked_widget.setWindowTitle("OpenClaw Uninstaller")
 
-        # 窗口尺寸自适应屏幕高度，最大不超过屏幕 70%
+        # 窗口尺寸:与安装器(800×700)看齐,统一品牌感受。
+        # 卸载器原本 600×520 偏小,在 56px 阅读边距 + 卡片版式下,
+        # 警告清单和日志区会显得局促;放大到 720×600 后内容呼吸更自然。
         screen = QApplication.primaryScreen().geometry()
-        window_width = 600
-        window_height = min(520, int(screen.height() * 0.7))
+        window_width = 720
+        window_height = min(600, int(screen.height() * 0.8))
         self.stacked_widget.resize(window_width, window_height)
-        self.stacked_widget.setMinimumSize(QSize(500, 420))
+        self.stacked_widget.setMinimumSize(QSize(640, 520))
 
         self.welcome_page = UninstallWelcomePage()
         self.progress_page = UninstallProgressPage()

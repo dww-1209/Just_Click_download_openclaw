@@ -34,145 +34,158 @@ class InstallingPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        from PySide6.QtWidgets import QScrollArea
+        from PySide6.QtWidgets import QScrollArea, QFrame
 
-        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
-        # 使用 QScrollArea 包裹内容，确保在小屏设备上日志区域不会挤占按钮空间。
+        # 主布局:上部可滚动内容区,下部固定按钮栏(带 1px 顶部分割线)
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
 
+        # 内容区透明:必须用 QWidget#锚定 选择器,见 show_uninstall_progress.py:39 同样修复
         content_widget = QWidget()
+        content_widget.setObjectName("installProgressContent")
+        content_widget.setStyleSheet("QWidget#installProgressContent { background-color: transparent; }")
         layout = QVBoxLayout(content_widget)
-        layout.setSpacing(12)
-        layout.setContentsMargins(40, 20, 40, 20)
+        layout.setContentsMargins(56, 40, 56, 32)
+        layout.setSpacing(0)
 
-        # 标题
-        title = QLabel("安装 OpenClaw")
-        title.setAlignment(Qt.AlignCenter)
-        title_font = QFont()
-        title_font.setPointSize(18)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        # ── 标题 ───────────────────────────────────────────────
+        title = QLabel("安装中")
+        title.setStyleSheet(
+            "color: #0F172A; font-size: 28px; font-weight: 700; "
+            "letter-spacing: -0.5px; background: transparent; border: none;"
+        )
+        layout.addWidget(title)
 
-        # 状态标签：显示当前阶段（下载/安装/配置/完成）
+        # 状态文本(动态:下载/安装/配置/完成)
         self.status_label = QLabel("准备安装...")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        status_font = QFont()
-        status_font.setPointSize(11)
-        self.status_label.setFont(status_font)
+        self.status_label.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent; border: none;"
+        )
+        layout.addSpacing(8)
+        layout.addWidget(self.status_label)
 
-        # 当前任务：展示更细粒度的子任务文本，如「正在克隆仓库...」
+        # 子任务细粒度文本(如"正在克隆仓库...")
         self.task_label = QLabel("")
-        self.task_label.setAlignment(Qt.AlignCenter)
-        self.task_label.setStyleSheet("color: #666;")
+        self.task_label.setStyleSheet(
+            "color: #94A3B8; font-size: 12px; background: transparent; border: none;"
+        )
+        self.task_label.setWordWrap(True)
+        layout.addSpacing(4)
+        layout.addWidget(self.task_label)
 
-        # 耗时提示：提前告知用户 10-20 分钟的预期，减少中途关闭的概率
-        self.time_hint_label = QLabel("预计耗时 10-20 分钟，请保持网络畅通并耐心等待")
-        self.time_hint_label.setAlignment(Qt.AlignCenter)
-        self.time_hint_label.setStyleSheet("color: #e67e22; font-size: 12px; padding: 6px;")
+        # ── 耗时预期 ─────────────────────────────────────────
+        # 用静音灰小字提示,不用饱和橙色块——预期信息不需要警示色
+        self.time_hint_label = QLabel("预计耗时 10–20 分钟,请保持网络畅通。")
+        self.time_hint_label.setStyleSheet(
+            "color: #94A3B8; font-size: 12px; background: transparent; border: none;"
+        )
         self.time_hint_label.setWordWrap(True)
+        layout.addSpacing(20)
+        layout.addWidget(self.time_hint_label)
 
-        # Windows 系统授权提示：Git / Node.js 安装器在 Windows 上可能触发
-        # Windows Defender SmartScreen 或 UAC 弹窗。若用户未点击「允许」，
-        # 子进程会被静默拦截，导致安装卡住。因此非 Windows 平台直接隐藏该提示。
+        # ── Windows 安全授权提示 ────────────────────────────
+        # 用 1px 描边 + 浅琥珀背景的 callout 卡片,取代原大色块
+        # 仅在 Windows 上显示,因为 SmartScreen / UAC 是 Windows 特有
         self.security_hint = QLabel(
-            "⚠️ Windows 可能会弹出安全授权窗口，请点击\"允许\"或\"是\"，否则安装无法继续"
+            "Windows 可能弹出安全授权窗口,请点击「允许」或「是」,否则安装无法继续。"
         )
         self.security_hint.setWordWrap(True)
-        self.security_hint.setAlignment(Qt.AlignCenter)
         self.security_hint.setStyleSheet(
-            "background-color: #fff3e0; color: #bf360c; border: 1px solid #ffb74d; "
-            "border-radius: 6px; padding: 10px; font-size: 13px; font-weight: bold;"
+            "background-color: #FFFBEB; color: #92400E; border: 1px solid #FDE68A; "
+            "border-radius: 6px; padding: 10px 14px; font-size: 12px; "
+            "font-weight: 500;"
         )
         if not is_windows():
             self.security_hint.hide()
+        else:
+            layout.addSpacing(12)
+            layout.addWidget(self.security_hint)
 
-        # 进度条：范围 0-100，与 InstallProgress.progress_percent 同步
+        # ── 进度条 ──────────────────────────────────────────
+        # 不显示百分比文字,把数字放到状态标签里更稳
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%p%")
-        self.progress_bar.setMinimumHeight(22)
+        self.progress_bar.setTextVisible(False)
+        layout.addSpacing(24)
+        layout.addWidget(self.progress_bar)
 
-        # 日志区域：只读文本框，最大保留 100 个 block，防止内存无限增长。
-        # 日志内容来自后台 run_shell 的标准输出/错误流。
-        log_label = QLabel("安装日志:")
+        # ── 日志区域 ────────────────────────────────────────
+        # 小节标签 + 黑色日志框,黑色框已在全局 QSS #logArea 中定义
+        log_section_label = QLabel("安装日志")
+        log_section_label.setStyleSheet(
+            "color: #64748B; font-size: 11px; font-weight: 600; "
+            "letter-spacing: 1.5px; background: transparent; border: none;"
+        )
+        layout.addSpacing(28)
+        layout.addWidget(log_section_label)
+        layout.addSpacing(8)
 
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumBlockCount(100)
-        self.log_text.setMinimumHeight(100)
+        self.log_text.setMinimumHeight(160)
         self.log_text.setObjectName("logArea")
+        layout.addWidget(self.log_text, 1)
 
-        # 提示信息：安装失败时展示友好错误提示（黄色背景卡片），平时隐藏
+        # 安装失败时展示友好错误提示(浅琥珀 callout),平时隐藏
         self.hint_label = QLabel("")
         self.hint_label.setWordWrap(True)
-        self.hint_label.setStyleSheet("color: #666;")
         self.hint_label.hide()
-
-        # 添加所有组件到布局
-        layout.addWidget(title)
-        layout.addSpacing(15)
-        layout.addWidget(self.status_label)
-        layout.addSpacing(8)
-        layout.addWidget(self.task_label)
-        layout.addSpacing(8)
-        layout.addWidget(self.time_hint_label)
-        layout.addSpacing(10)
-        layout.addWidget(self.security_hint)
-        layout.addSpacing(15)
-        layout.addWidget(self.progress_bar)
-        layout.addSpacing(15)
-        layout.addWidget(log_label)
-        layout.addWidget(self.log_text, 1)
-        layout.addSpacing(10)
+        layout.addSpacing(12)
         layout.addWidget(self.hint_label)
 
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area, 1)
 
-        # 按钮区域（固定在底部）
-        # 按钮状态机：
-        #   - 安装前/安装中：back 可用，cancel 显示「退出」，retry/next 隐藏
-        #   - 安装成功：显示 next（完成），隐藏 cancel/retry
-        #   - 安装失败：显示 retry（重试），隐藏 next
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(40, 10, 40, 0)
-        button_layout.addStretch(1)
+        # ── 底部按钮栏 ──────────────────────────────────────
+        # 按钮状态机:
+        #   - 安装前/安装中:back 可用,cancel 显示「退出」,retry/next 隐藏
+        #   - 安装成功:显示 next(完成),隐藏 cancel/retry
+        #   - 安装失败:显示 retry(重试),隐藏 next
+        button_bar = QFrame()
+        button_bar.setStyleSheet(
+            "QFrame { background-color: #FAFBFC; border-top: 1px solid #E2E8F0; }"
+        )
+        button_layout = QHBoxLayout(button_bar)
+        button_layout.setContentsMargins(56, 16, 56, 16)
+        button_layout.setSpacing(8)
 
         self.back_button = QPushButton("返回")
-        self.back_button.setFixedSize(100, 36)
+        self.back_button.setFixedHeight(36)
         self.back_button.clicked.connect(self.back_clicked.emit)
 
+        button_layout.addWidget(self.back_button)
+        button_layout.addStretch(1)
+
         self.cancel_button = QPushButton("退出")
-        self.cancel_button.setFixedSize(100, 36)
+        self.cancel_button.setFixedHeight(36)
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
 
         self.retry_button = QPushButton("重试")
-        self.retry_button.setFixedSize(100, 36)
+        self.retry_button.setFixedHeight(36)
         self.retry_button.clicked.connect(self.retry_clicked.emit)
         self.retry_button.hide()
 
         self.next_button = QPushButton("完成")
-        self.next_button.setFixedSize(100, 36)
+        self.next_button.setFixedHeight(36)
         self.next_button.setObjectName("primaryButton")
         self.next_button.clicked.connect(self.next_clicked.emit)
         self.next_button.setEnabled(False)
         self.next_button.hide()
 
-        button_layout.addWidget(self.back_button)
         button_layout.addWidget(self.cancel_button)
         button_layout.addWidget(self.retry_button)
         button_layout.addWidget(self.next_button)
 
-        main_layout.addLayout(button_layout)
+        main_layout.addWidget(button_bar)
 
     def _on_cancel_clicked(self) -> None:
         """处理退出/取消点击"""
@@ -181,7 +194,9 @@ class InstallingPage(QWidget):
     def start_installing(self) -> None:
         """开始安装 - 重置界面状态"""
         self.status_label.setText("正在安装...")
-        self.status_label.setStyleSheet("")
+        self.status_label.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent; border: none;"
+        )
         self.task_label.setText("准备执行安装命令...")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -228,9 +243,12 @@ class InstallingPage(QWidget):
 
     def install_success(self, result: InstallResult) -> None:
         """安装成功"""
-        self.status_label.setText("[OK] 安装成功！")
-        self.status_label.setStyleSheet("color: green;")
-        self.task_label.setText("OpenClaw 已准备就绪，点击完成开始使用")
+        self.status_label.setText("安装完成")
+        self.status_label.setStyleSheet(
+            "color: #15803D; font-size: 13px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        self.task_label.setText("OpenClaw 已准备就绪,点击「下一步」继续配置。")
         self.progress_bar.setValue(100)
 
         self._append_log(f"安装成功！耗时: {result.duration_seconds:.1f}秒")
@@ -253,8 +271,11 @@ class InstallingPage(QWidget):
         """
         from src.models.user_messages import UserMessageHelper
 
-        self.status_label.setText("[X] 安装失败")
-        self.status_label.setStyleSheet("color: red;")
+        self.status_label.setText("安装失败")
+        self.status_label.setStyleSheet(
+            "color: #B91C1C; font-size: 13px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
         self.task_label.setText(result.message)
 
         friendly_msg = ""
@@ -305,8 +326,11 @@ class InstallingPage(QWidget):
 
         if friendly_msg:
             self.hint_label.setText(friendly_msg)
+            # 浅琥珀 callout:1px 描边 + 适度 padding,不再用饱和黄底
             self.hint_label.setStyleSheet(
-                "color: #856404; background-color: #fff3cd; padding: 10px; border-radius: 5px;"
+                "color: #92400E; background-color: #FFFBEB; "
+                "border: 1px solid #FDE68A; border-radius: 6px; "
+                "padding: 10px 14px; font-size: 12px;"
             )
             self.hint_label.show()
 
@@ -321,7 +345,10 @@ class InstallingPage(QWidget):
     def install_cancelled(self) -> None:
         """安装已取消"""
         self.status_label.setText("安装已取消")
-        self.status_label.setStyleSheet("color: orange;")
+        self.status_label.setStyleSheet(
+            "color: #92400E; font-size: 13px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
         self.task_label.setText("用户取消了安装")
         self._append_log("安装已取消")
 
@@ -334,7 +361,9 @@ class InstallingPage(QWidget):
     def reset(self) -> None:
         """重置页面状态"""
         self.status_label.setText("准备安装...")
-        self.status_label.setStyleSheet("")
+        self.status_label.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent; border: none;"
+        )
         self.task_label.setText("")
         self.progress_bar.setValue(0)
         self.log_text.clear()

@@ -23,9 +23,10 @@ from src.models.env_check import (
 class CheckItemWidget(QFrame):
     """单个检测项显示组件。
 
-    职责：将「检测项名称 + 状态标签 + 详情文本」封装为一行可复用的卡片。
-    状态标签使用彩色圆角 pill 样式（绿/橙/红），让非技术用户一眼识别通过、
-    警告、失败三种结果，无需阅读英文日志。
+    职责:将「检测项名称 + 状态点 + 状态文本」封装为一行可复用的检测条目。
+    状态用 6px 圆点(green / amber / red)+ 文本,取代原来的彩色 pill 标签——
+    pill 在企业级 UI 里偏"应用商店"风格,小圆点更克制、信息密度更高,
+    且和现代 IDE/Dashboard(VSCode / Linear / Stripe)的状态指示一致。
     """
 
     def __init__(self, name: str, parent: QWidget | None = None) -> None:
@@ -34,38 +35,74 @@ class CheckItemWidget(QFrame):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
+        # 单行布局:状态点 (6×6) → 检测项名 → 弹性间距 → 状态文本
+        # 整行 1px 底边分隔,行高 36,密度高于原来的 padding 5px
+        self.setStyleSheet(
+            "QFrame { border-bottom: 1px solid #E2E8F0; }"
+            "QFrame QLabel { background: transparent; border: none; }"
+        )
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setContentsMargins(0, 10, 0, 10)
+        layout.setSpacing(12)
+
+        # 6px 圆点,默认 pending(灰)
+        self.dot = QLabel()
+        self.dot.setFixedSize(8, 8)
+        self.dot.setStyleSheet(
+            "background-color: #CBD5E1; border-radius: 4px; border: none;"
+        )
 
         self.name_label = QLabel(self.name)
-        self.name_label.setMinimumWidth(150)
+        self.name_label.setStyleSheet("color: #0F172A; font-size: 13px; font-weight: 500;")
+        self.name_label.setMinimumWidth(140)
 
-        self.status_label = QLabel("... 检测中")
-        self.status_label.setAlignment(Qt.AlignRight)
+        self.status_label = QLabel("检测中")
+        self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.status_label.setStyleSheet("color: #94A3B8; font-size: 13px;")
 
+        layout.addWidget(self.dot)
         layout.addWidget(self.name_label)
         layout.addStretch(1)
         layout.addWidget(self.status_label)
 
     def set_status(self, status: CheckStatus, message: str = "") -> None:
-        """根据检测结果更新状态标签样式与文本。"""
+        """根据检测结果更新状态点颜色和文本。
+
+        颜色用降饱和版本:
+        - OK   #16A34A(slate-green-600)
+        - WARN #D97706(amber-600)
+        - FAIL #DC2626(red-600)
+        都比 Material 默认色更克制,同时保留足够辨识度。
+        """
         if status == CheckStatus.OK:
-            tag = '<span style="background:#E8F5E9; color:#2E7D32; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">✓ OK</span>'
-            self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
+            self.dot.setStyleSheet(
+                "background-color: #16A34A; border-radius: 4px; border: none;"
+            )
+            self.status_label.setStyleSheet("color: #475569; font-size: 13px;")
+            self.status_label.setText(message or "通过")
         elif status == CheckStatus.WARNING:
-            tag = '<span style="background:#FFF8E1; color:#F57C00; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">⚠</span>'
-            self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
+            self.dot.setStyleSheet(
+                "background-color: #D97706; border-radius: 4px; border: none;"
+            )
+            self.status_label.setStyleSheet("color: #92400E; font-size: 13px;")
+            self.status_label.setText(message or "警告")
         else:
-            tag = '<span style="background:#FFEBEE; color:#C62828; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;">✗</span>'
-            self.status_label.setText(f'{tag}&nbsp;&nbsp;<span style="color:#1E293B; font-size:13px;">{message}</span>')
+            self.dot.setStyleSheet(
+                "background-color: #DC2626; border-radius: 4px; border: none;"
+            )
+            self.status_label.setStyleSheet("color: #991B1B; font-size: 13px;")
+            self.status_label.setText(message or "失败")
 
 
 class OpenClawInstalledWidget(QWidget):
-    """OpenClaw 已安装选项组件（US-02 分支场景）。
+    """OpenClaw 已安装选项组件(US-02 分支场景)。
 
-    职责：当环境检测到 OpenClaw 已安装时，代替常规的「下一步」按钮，
-    向用户提供 3 种快捷操作。该组件默认隐藏，仅在检测到已安装状态后显示。
-    三个按钮并排：快速启动、配置模型、重新下载。
+    职责:当环境检测到 OpenClaw 已安装时,代替常规的「下一步」按钮,
+    向用户提供 3 种快捷操作。该组件默认隐藏,仅在检测到已安装状态后显示。
+
+    设计调整:三个按钮并排时只有一个是主操作(快速启动),其余两个用次要按钮样式,
+    避免三个并列主按钮造成的"全部都很重要"的视觉噪声 — 这是 AI 味的典型来源。
     """
 
     quick_start_clicked = Signal()       # 用户点击「快速启动」——直接拉起已有 Gateway
@@ -77,48 +114,59 @@ class OpenClawInstalledWidget(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        # 卡片背景改为 slate-50 + 1px 描边,取代原来的浅绿底色
+        # 原浅绿 #e8f4e8 是"成功/积极"的暗示,但这里实际是中性提示(检测到状态),
+        # 不应该用情感色;改用静音的灰色卡片
         self.setObjectName("openclawInstalledWidget")
-        self.setStyleSheet("QWidget#openclawInstalledWidget { background-color: #e8f4e8; border-radius: 8px; }")
+        self.setStyleSheet(
+            "QWidget#openclawInstalledWidget { "
+            "background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; }"
+            "QWidget#openclawInstalledWidget QLabel { background: transparent; border: none; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(4)
 
         title = QLabel("检测到 OpenClaw 已安装")
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(12)
-        title.setFont(title_font)
+        title.setStyleSheet("color: #0F172A; font-size: 14px; font-weight: 600;")
 
-        desc = QLabel("请选择操作：")
+        desc = QLabel("选择以下操作之一继续:")
+        desc.setStyleSheet("color: #64748B; font-size: 12px;")
 
-        # 第一行按钮：高频正向操作，使用 primaryButton 样式突出显示
-        quick_layout = QHBoxLayout()
-        quick_layout.addStretch(1)
+        # 按钮行:三个按钮并排居中
+        # 视觉层级:快速启动(主)> 配置模型(次)> 重新下载(次)
+        # 注意:不能让 stretch 把 quick_start 孤立到右侧,否则用户视线扫左边两个按钮就停了
+        # 改用「stretch + 三按钮 + stretch」居中布局,主操作放第一位,符合首要操作打头的认知
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.setContentsMargins(0, 12, 0, 0)
 
         self.quick_start_btn = QPushButton("快速启动")
-        self.quick_start_btn.setFixedSize(140, 36)
+        self.quick_start_btn.setMinimumHeight(36)
+        self.quick_start_btn.setMinimumWidth(112)
         self.quick_start_btn.setObjectName("primaryButton")
         self.quick_start_btn.clicked.connect(self.quick_start_clicked.emit)
 
         self.provider_config_btn = QPushButton("配置模型")
-        self.provider_config_btn.setFixedSize(140, 36)
-        self.provider_config_btn.setObjectName("primaryButton")
+        self.provider_config_btn.setMinimumHeight(36)
+        self.provider_config_btn.setMinimumWidth(112)
         self.provider_config_btn.clicked.connect(self.provider_config_clicked.emit)
 
         self.reinstall_btn = QPushButton("重新下载")
-        self.reinstall_btn.setFixedSize(140, 36)
-        self.reinstall_btn.setObjectName("primaryButton")
+        self.reinstall_btn.setMinimumHeight(36)
+        self.reinstall_btn.setMinimumWidth(112)
         self.reinstall_btn.clicked.connect(self.reinstall_clicked.emit)
 
-        quick_layout.addWidget(self.quick_start_btn)
-        quick_layout.addWidget(self.provider_config_btn)
-        quick_layout.addWidget(self.reinstall_btn)
-        quick_layout.addStretch(1)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.quick_start_btn)
+        btn_row.addWidget(self.provider_config_btn)
+        btn_row.addWidget(self.reinstall_btn)
+        btn_row.addStretch(1)
 
         layout.addWidget(title)
-        layout.addSpacing(10)
         layout.addWidget(desc)
-        layout.addSpacing(15)
-        layout.addLayout(quick_layout)
+        layout.addLayout(btn_row)
 
 
 class EnvCheckPage(QWidget):
@@ -144,42 +192,60 @@ class EnvCheckPage(QWidget):
 
     def _setup_ui(self) -> None:
         from PySide6.QtWidgets import QScrollArea
-        from PySide6.QtCore import QSize
 
-        # 主布局：上部为可滚动检测内容，下部为固定按钮栏。
-        # 使用 QScrollArea 保证在笔记本小屏（1366×768）或高 DPI 缩放时
-        # 所有检测项和提示信息均可完整浏览。
+        # 主布局:上部可滚动内容区,下部固定按钮栏(底部带 1px 分割线)。
+        # 全局滚动条样式已在 installer_window 全局 QSS 中定义,这里不再单独设置。
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # 滚动条样式：滑块用灰色、轨道用浅灰，确保在白色背景上清晰可见
-        scroll_area.setStyleSheet(
-            "QScrollArea { border: none; }"
-            "QScrollBar:vertical { background: #f0f0f0; width: 8px; border-radius: 4px; }"
-            "QScrollBar::handle:vertical { background: #aaa; border-radius: 4px; min-height: 30px; }"
-            "QScrollBar::handle:vertical:hover { background: #888; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+
+        # 内容区透明:必须用 QWidget#锚定 选择器,见 show_uninstall_progress.py:39
+        content_widget = QWidget()
+        content_widget.setObjectName("envCheckContent")
+        content_widget.setStyleSheet("QWidget#envCheckContent { background-color: transparent; }")
+        layout = QVBoxLayout(content_widget)
+        # 与 welcome 页一致的 56px 阅读宽度
+        layout.setContentsMargins(56, 40, 56, 32)
+        layout.setSpacing(0)
+
+        # ── 标题区 ─────────────────────────────────────────────
+        # 大号左对齐主标题 + 静音灰副文案,与 welcome 页保持一致的视觉节奏
+        title = QLabel("环境检测")
+        title.setStyleSheet(
+            "color: #0F172A; font-size: 28px; font-weight: 700; "
+            "letter-spacing: -0.5px; background: transparent; border: none;"
         )
 
-        content_widget = QWidget()
-        layout = QVBoxLayout(content_widget)
-        layout.setSpacing(15)
-        layout.setContentsMargins(40, 20, 40, 20)
+        self.status_label = QLabel("正在检测您的系统环境...")
+        self.status_label.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent; border: none;"
+        )
+        self.status_label.setWordWrap(True)
 
-        title = QLabel("环境检测")
-        title.setAlignment(Qt.AlignCenter)
-        title_font = QFont()
-        title_font.setPointSize(18)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+        layout.addWidget(self.status_label)
+        layout.addSpacing(32)
 
-        self.status_label = QLabel("正在检测您的系统环境，请稍后...")
-        self.status_label.setAlignment(Qt.AlignCenter)
+        # ── 检测项小节 ─────────────────────────────────────────
+        section_label = QLabel("检查项")
+        section_label.setStyleSheet(
+            "color: #64748B; font-size: 11px; font-weight: 600; "
+            "letter-spacing: 1.5px; background: transparent; border: none;"
+        )
+        layout.addWidget(section_label)
+        layout.addSpacing(8)
+
+        # 顶部 1px 边,与每行的底部 1px 边形成完整的边框列表
+        top_border = QFrame()
+        top_border.setStyleSheet("background-color: #E2E8F0; max-height: 1px; min-height: 1px;")
+        layout.addWidget(top_border)
 
         self.os_item = CheckItemWidget("操作系统")
         self.disk_item = CheckItemWidget("磁盘空间")
@@ -187,74 +253,81 @@ class EnvCheckPage(QWidget):
         self.browser_item = CheckItemWidget("浏览器支持")
         self.openclaw_item = CheckItemWidget("OpenClaw 安装")
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # 设置为不确定模式，表示检测正在进行中
-        self.progress_bar.setMinimumHeight(20)
-
-        self.openclaw_widget = OpenClawInstalledWidget()
-        self.openclaw_widget.quick_start_clicked.connect(
-            self.openclaw_quick_start.emit
-        )
-        self.openclaw_widget.provider_config_clicked.connect(
-            self.openclaw_provider_config.emit
-        )
-        self.openclaw_widget.reinstall_clicked.connect(self.openclaw_reinstall.emit)
-
-        self.hint_label = QLabel("")
-        self.hint_label.setWordWrap(True)
-        self.hint_label.setStyleSheet("color: #666;")
-        self.hint_label.setAlignment(Qt.AlignCenter)
-
-        layout.addWidget(title)
-        layout.addSpacing(15)
-        layout.addWidget(self.status_label)
-        layout.addSpacing(15)
         layout.addWidget(self.os_item)
         layout.addWidget(self.disk_item)
         layout.addWidget(self.permission_item)
         layout.addWidget(self.browser_item)
         layout.addWidget(self.openclaw_item)
-        layout.addSpacing(15)
+
+        # ── 进度条 + 提示 ────────────────────────────────────
+        layout.addSpacing(20)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # 不确定模式
+        self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
-        layout.addSpacing(15)
+
+        layout.addSpacing(20)
+
+        # OpenClaw 已安装时显示的快捷操作面板
+        self.openclaw_widget = OpenClawInstalledWidget()
+        self.openclaw_widget.quick_start_clicked.connect(self.openclaw_quick_start.emit)
+        self.openclaw_widget.provider_config_clicked.connect(self.openclaw_provider_config.emit)
+        self.openclaw_widget.reinstall_clicked.connect(self.openclaw_reinstall.emit)
         layout.addWidget(self.openclaw_widget)
-        layout.addSpacing(15)
+
+        layout.addSpacing(12)
+
+        # 提示文本 — 不再用大色块,只用文字颜色区分通过/失败
+        self.hint_label = QLabel("")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet(
+            "color: #64748B; font-size: 12px; background: transparent; border: none;"
+        )
         layout.addWidget(self.hint_label)
+
         layout.addStretch(1)
 
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area, 1)
 
-        # 按钮区域（固定在底部）
-        # 状态机设计：
-        #   - 检测中：next_button 禁用，retry_button 隐藏
-        #   - 检测通过（全新安装）：next_button 启用，retry_button 隐藏
-        #   - 检测失败：next_button 禁用，retry_button 显示
-        #   - 已安装：next_button 隐藏，由 OpenClawInstalledWidget 接管操作
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(40, 10, 40, 0)
+        # ── 底部按钮栏 ──────────────────────────────────────────
+        # 状态机设计:
+        #   - 检测中:next_button 禁用,retry_button 隐藏
+        #   - 检测通过(全新安装):next_button 启用,retry_button 隐藏
+        #   - 检测失败:next_button 禁用,retry_button 显示
+        #   - 已安装:next_button 隐藏,由 OpenClawInstalledWidget 接管操作
+        button_bar = QFrame()
+        button_bar.setStyleSheet(
+            "QFrame { background-color: #FAFBFC; border-top: 1px solid #E2E8F0; }"
+        )
+
+        button_layout = QHBoxLayout(button_bar)
+        button_layout.setContentsMargins(56, 16, 56, 16)
+        button_layout.setSpacing(8)
+
+        self.back_button = QPushButton("返回")
+        self.back_button.setFixedHeight(36)
+        self.back_button.clicked.connect(self.back_clicked.emit)
+
+        button_layout.addWidget(self.back_button)
         button_layout.addStretch(1)
 
         self.retry_button = QPushButton("重试")
-        self.retry_button.setFixedSize(100, 36)
+        self.retry_button.setFixedHeight(36)
         self.retry_button.clicked.connect(self.retry_clicked.emit)
         self.retry_button.hide()
 
-        self.back_button = QPushButton("返回")
-        self.back_button.setFixedSize(100, 36)
-        self.back_button.clicked.connect(self.back_clicked.emit)
-
         self.next_button = QPushButton("下一步")
-        self.next_button.setFixedSize(100, 36)
+        self.next_button.setFixedHeight(36)
         self.next_button.setObjectName("primaryButton")
         self.next_button.clicked.connect(self.next_clicked.emit)
         self.next_button.setEnabled(False)
 
         button_layout.addWidget(self.retry_button)
-        button_layout.addWidget(self.back_button)
         button_layout.addWidget(self.next_button)
 
-        main_layout.addLayout(button_layout)
+        main_layout.addWidget(button_bar)
 
     def _hide_openclaw_widget(self) -> None:
         self.openclaw_widget.hide()
@@ -323,14 +396,19 @@ class EnvCheckPage(QWidget):
         if is_ready:
             self.next_button.setEnabled(True)
             self.retry_button.hide()
-            # 添加友好的提示
-            self.hint_label.setText("[OK] 您的系统环境符合要求，可以继续安装")
-            self.hint_label.setStyleSheet("color: green;")
+            # 通过提示:仅文字 + 静音灰,不用大色块或 emoji
+            self.hint_label.setText("系统环境符合要求,可以继续。")
+            self.hint_label.setStyleSheet(
+                "color: #475569; font-size: 12px; background: transparent; border: none;"
+            )
         else:
             self.next_button.setEnabled(False)
             self.retry_button.show()
-            self.hint_label.setText("[X] 环境检测未通过，请根据上方提示解决问题后重试")
-            self.hint_label.setStyleSheet("color: red;")
+            # 失败提示:降饱和红文字,无 emoji,无背景色
+            self.hint_label.setText("环境检测未通过,请根据上方提示处理后重试。")
+            self.hint_label.setStyleSheet(
+                "color: #B91C1C; font-size: 12px; background: transparent; border: none;"
+            )
 
     def reset(self) -> None:
         self.progress_bar.setRange(0, 0)

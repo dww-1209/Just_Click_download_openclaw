@@ -35,120 +35,144 @@ class UninstallWelcomePage(QWidget):
         self.check_installation()
 
     def _setup_ui(self) -> None:
-        # 主布局：上部为可滚动内容区，下部为固定按钮栏。
-        # 使用 QScrollArea 保证在小屏设备上警告清单不会被截断。
+        # 卸载工具:同样套用 welcome 页的视觉系统(左对齐、56px 阅读边距、底部按钮栏)
+        # 但语义偏向"破坏性确认",因此用红色 dot 和降饱和红 dangerButton
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
 
+        # 内容区透明:必须用 QWidget#锚定 选择器,见 show_uninstall_progress.py:39
         content = QWidget()
+        content.setObjectName("uninstWelcomeContent")
+        content.setStyleSheet("QWidget#uninstWelcomeContent { background-color: transparent; }")
         layout = QVBoxLayout(content)
-        layout.setSpacing(15)
-        layout.setContentsMargins(40, 20, 40, 20)
+        layout.setContentsMargins(56, 48, 56, 32)
+        layout.setSpacing(0)
 
-        # 标题
-        title = QLabel("OpenClaw 卸载工具")
-        title.setAlignment(Qt.AlignCenter)
-        tf = QFont()
-        tf.setPointSize(20)
-        tf.setBold(True)
-        title.setFont(tf)
+        # ── 标题 ───────────────────────────────────────────────
+        title = QLabel("卸载 OpenClaw")
+        title.setStyleSheet(
+            "color: #0F172A; font-size: 32px; font-weight: 700; "
+            "letter-spacing: -1px; background: transparent; border: none;"
+        )
+        layout.addWidget(title)
 
-        # 状态区域：动态展示检测中 / 已安装 / 未安装三种状态
-        # 使用浅灰背景卡片，与页面底色形成层次对比
+        layout.addSpacing(8)
+        subtitle = QLabel("将系统恢复到安装 OpenClaw 之前的状态。")
+        subtitle.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent; border: none;"
+        )
+        layout.addWidget(subtitle)
+
+        # ── 状态卡片(检测中/已安装/未安装) ──────────────────
+        # 用 6×6 状态点 + 标题 + 说明 替代原来的大 emoji + 居中文字
         self.status_frame = QFrame()
         self.status_frame.setStyleSheet(
-            "QFrame { background-color: #f8f9fa; border-radius: 8px; }"
-            "QFrame QLabel { background: transparent; border: none; }"
+            "QFrame#uninstStatus { background-color: white; border: 1px solid #E2E8F0; "
+            "border-radius: 8px; }"
+            "QFrame#uninstStatus QLabel { background: transparent; border: none; }"
         )
-        sf_layout = QVBoxLayout(self.status_frame)
-        sf_layout.setContentsMargins(20, 16, 20, 16)
-        sf_layout.setSpacing(8)
+        self.status_frame.setObjectName("uninstStatus")
 
-        self.status_icon = QLabel("🔍")
-        self.status_icon.setAlignment(Qt.AlignCenter)
-        self.status_icon.setStyleSheet("font-size: 32px; background: transparent; border: none;")
+        sf_layout = QVBoxLayout(self.status_frame)
+        sf_layout.setContentsMargins(20, 18, 20, 18)
+        sf_layout.setSpacing(0)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        status_row.setContentsMargins(0, 0, 0, 0)
+
+        self.status_dot = QLabel()
+        self.status_dot.setFixedSize(8, 8)
+        self.status_dot.setStyleSheet("background-color: #94A3B8; border-radius: 4px;")
 
         self.status_title = QLabel("正在检测...")
-        self.status_title.setAlignment(Qt.AlignCenter)
-        stf = QFont()
-        stf.setPointSize(14)
-        stf.setBold(True)
-        self.status_title.setFont(stf)
+        self.status_title.setStyleSheet(
+            "color: #0F172A; font-size: 14px; font-weight: 600;"
+        )
+
+        status_row.addWidget(self.status_dot, alignment=Qt.AlignVCenter)
+        status_row.addWidget(self.status_title)
+        status_row.addStretch(1)
 
         self.status_detail = QLabel("")
-        self.status_detail.setAlignment(Qt.AlignCenter)
         self.status_detail.setWordWrap(True)
-        self.status_detail.setStyleSheet("color: #666; font-size: 12px;")
+        self.status_detail.setStyleSheet("color: #64748B; font-size: 12px; padding-left: 18px;")
 
-        sf_layout.addWidget(self.status_icon)
-        sf_layout.addWidget(self.status_title)
+        sf_layout.addLayout(status_row)
+        sf_layout.addSpacing(4)
         sf_layout.addWidget(self.status_detail)
 
-        # 警告区域（仅已安装时显示）
-        # 使用红色背景卡片，明确告知用户卸载的不可逆后果，
-        # 尤其强调 API Key 等敏感配置的删除，避免用户事后追责。
+        layout.addSpacing(28)
+        layout.addWidget(self.status_frame)
+
+        # ── 警告清单(仅已安装时显示) ────────────────────────
         self.warning_frame = QFrame()
+        self.warning_frame.setObjectName("uninstWarning")
         self.warning_frame.setStyleSheet(
-            "QFrame { background-color: #fff3f3; border-radius: 8px; }"
-            "QFrame QLabel { background: transparent; border: none; }"
+            "QFrame#uninstWarning { background-color: #FEF2F2; border: 1px solid #FECACA; "
+            "border-radius: 8px; }"
+            "QFrame#uninstWarning QLabel { background: transparent; border: none; }"
         )
         wf_layout = QVBoxLayout(self.warning_frame)
-        wf_layout.setContentsMargins(16, 12, 16, 12)
-        wf_layout.setSpacing(6)
+        wf_layout.setContentsMargins(20, 16, 20, 16)
+        wf_layout.setSpacing(8)
 
-        warn_title = QLabel("⚠️  卸载将永久删除以下内容")
-        warn_title.setStyleSheet("color: #c62828; font-weight: bold; font-size: 13px;")
+        warn_title = QLabel("将永久删除以下内容")
+        warn_title.setStyleSheet("color: #991B1B; font-size: 13px; font-weight: 600;")
 
         warn_list = QLabel(
-            "• OpenClaw 程序文件（~/openclaw-cn）\n"
-            "• 所有配置文件（~/.openclaw，含 API Key）\n"
-            "• 命令行工具（openclaw / openclaw-cn）\n"
-            "• Gateway 服务进程"
+            "OpenClaw 程序文件 (~/openclaw-cn)\n"
+            "所有配置文件 (~/.openclaw,含 API Key)\n"
+            "命令行工具 (openclaw / openclaw-cn)\n"
+            "Gateway 服务进程"
         )
-        warn_list.setStyleSheet("color: #b71c1c; font-size: 12px; line-height: 1.6;")
+        warn_list.setStyleSheet("color: #7F1D1D; font-size: 12px; line-height: 1.7;")
 
         wf_layout.addWidget(warn_title)
         wf_layout.addWidget(warn_list)
         self.warning_frame.hide()
 
-        layout.addWidget(title)
-        layout.addSpacing(10)
-        layout.addWidget(self.status_frame)
+        layout.addSpacing(12)
         layout.addWidget(self.warning_frame)
         layout.addStretch(1)
 
         scroll.setWidget(content)
         main_layout.addWidget(scroll, 1)
 
-        # 按钮区域
-        # 按钮状态机：
-        #   - 检测中 / 未安装：仅显示「退出」
-        #   - 已安装：显示「取消」+「确认卸载」（dangerButton 样式）
-        btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(40, 10, 40, 0)
+        # ── 底部按钮栏 ─────────────────────────────────────
+        # 按钮状态机:
+        #   - 检测中 / 未安装:仅显示「退出」
+        #   - 已安装:显示「取消」+「确认卸载」(dangerButton 样式)
+        button_bar = QFrame()
+        button_bar.setStyleSheet(
+            "QFrame { background-color: #FAFBFC; border-top: 1px solid #E2E8F0; }"
+        )
+        btn_layout = QHBoxLayout(button_bar)
+        btn_layout.setContentsMargins(56, 16, 56, 16)
+        btn_layout.setSpacing(8)
         btn_layout.addStretch(1)
 
         self.cancel_btn = QPushButton("取消")
-        self.cancel_btn.setFixedSize(100, 36)
+        self.cancel_btn.setFixedHeight(36)
         self.cancel_btn.clicked.connect(self.cancel_clicked.emit)
 
         self.confirm_btn = QPushButton("确认卸载")
-        self.confirm_btn.setFixedSize(120, 36)
+        self.confirm_btn.setFixedHeight(36)
         self.confirm_btn.setObjectName("dangerButton")
         self.confirm_btn.clicked.connect(self.confirm_clicked.emit)
         self.confirm_btn.hide()
 
         btn_layout.addWidget(self.cancel_btn)
         btn_layout.addWidget(self.confirm_btn)
-        btn_layout.addStretch(1)
 
-        main_layout.addLayout(btn_layout)
+        main_layout.addWidget(button_bar)
 
     def check_installation(self) -> None:
         """检测用户主目录下是否存在 OpenClaw 程序与配置目录，并据此刷新 UI 状态。"""
@@ -158,9 +182,9 @@ class UninstallWelcomePage(QWidget):
 
         if installed:
             self.installed = True
-            self.status_icon.setText("🔴")
+            self.status_dot.setStyleSheet("background-color: #DC2626; border-radius: 4px;")
             self.status_title.setText("检测到 OpenClaw 已安装")
-            self.status_title.setStyleSheet("color: #c62828;")
+            self.status_title.setStyleSheet("color: #991B1B; font-size: 14px; font-weight: 600;")
             self.status_detail.setText("\n".join(details))
 
             self.warning_frame.show()
@@ -168,10 +192,10 @@ class UninstallWelcomePage(QWidget):
             self.cancel_btn.setText("取消")
         else:
             self.installed = False
-            self.status_icon.setText("✅")
+            self.status_dot.setStyleSheet("background-color: #16A34A; border-radius: 4px;")
             self.status_title.setText("未检测到 OpenClaw")
-            self.status_title.setStyleSheet("color: #2e7d32; background: transparent; border: none;")
-            self.status_detail.setText("您的系统中没有 OpenClaw 安装记录，无需卸载。")
+            self.status_title.setStyleSheet("color: #15803D; font-size: 14px; font-weight: 600;")
+            self.status_detail.setText("您的系统中没有 OpenClaw 安装记录,无需卸载。")
             self.cancel_btn.setText("退出")
             self.warning_frame.hide()
             self.confirm_btn.hide()

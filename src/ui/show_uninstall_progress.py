@@ -30,39 +30,53 @@ class UninstallProgressPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        # 主布局：垂直排列标题、进度条、状态文本、日志区域和底部按钮。
-        # 日志区域使用深色背景卡片，与安装/配置页保持一致的视觉风格。
+        # 卸载进度页:与安装进度页一致的版式,但用 dangerProgressBar 暗示破坏性
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(24, 24, 24, 24)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 标题
-        title = QLabel("正在卸载 OpenClaw")
-        title.setAlignment(Qt.AlignCenter)
-        tf = QFont()
-        tf.setPointSize(18)
-        tf.setBold(True)
-        title.setFont(tf)
+        # 内容区透明:必须用 QWidget#锚定 选择器,否则裸 setStyleSheet 会被 Qt
+        # 当作 * 选择器向下递归注入,把全局 #logArea 的深色背景冲掉,导致日志区
+        # 浅色背景 + 浅灰文字双浅看不清(2026-05-20 修)
+        content = QWidget()
+        content.setObjectName("uninstProgressContent")
+        content.setStyleSheet("QWidget#uninstProgressContent { background-color: transparent; }")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(56, 40, 56, 32)
+        layout.setSpacing(0)
 
-        # 进度条：范围 0-100，使用 dangerProgressBar 样式（红色主题），
-        # 与安装页的 green 主题形成视觉反差，暗示操作的破坏性。
+        title = QLabel("正在卸载")
+        title.setStyleSheet(
+            "color: #0F172A; font-size: 28px; font-weight: 700; "
+            "letter-spacing: -0.5px; background: transparent; border: none;"
+        )
+        layout.addWidget(title)
+
+        self.progress_label = QLabel("准备卸载...")
+        self.progress_label.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent; border: none;"
+        )
+        layout.addSpacing(8)
+        layout.addWidget(self.progress_label)
+
+        # 进度条:dangerProgressBar 样式(降饱和红),已在全局 QSS 中定义
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setMinimumHeight(20)
+        self.progress_bar.setTextVisible(False)
         self.progress_bar.setObjectName("dangerProgressBar")
+        layout.addSpacing(20)
+        layout.addWidget(self.progress_bar)
 
-        self.progress_label = QLabel("准备卸载...")
-        self.progress_label.setAlignment(Qt.AlignCenter)
-        self.progress_label.setStyleSheet("color: #666; font-size: 12px; background: transparent; border: none;")
-
-        # 日志区域：只读文本框，深色背景，最小高度 200px，确保足够空间展示删除命令的输出。
-        log_frame = QFrame()
-        log_frame.setStyleSheet(
-            "QFrame { background-color: #1e1e1e; border-radius: 6px; }"
+        # 日志小节标签 + 黑色日志框(全局 QSS #logArea)
+        log_section_label = QLabel("卸载日志")
+        log_section_label.setStyleSheet(
+            "color: #64748B; font-size: 11px; font-weight: 600; "
+            "letter-spacing: 1.5px; background: transparent; border: none;"
         )
-        log_layout = QVBoxLayout(log_frame)
-        log_layout.setContentsMargins(10, 10, 10, 10)
+        layout.addSpacing(28)
+        layout.addWidget(log_section_label)
+        layout.addSpacing(8)
 
         # 用 QPlainTextEdit + setMaximumBlockCount 而不是 QTextEdit:
         # QTextEdit.append 是富文本路径,每次插入都重做 HTML 解析+完整 layout。
@@ -74,32 +88,27 @@ class UninstallProgressPage(QWidget):
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumBlockCount(200)
         self.log_edit.setObjectName("logArea")
-        self.log_edit.setMinimumHeight(200)
-        self.log_edit.setStyleSheet("color: #e0e0e0; background-color: transparent; border: none;")
+        self.log_edit.setMinimumHeight(220)
+        layout.addWidget(self.log_edit, 1)
 
-        log_layout.addWidget(self.log_edit)
+        main_layout.addWidget(content, 1)
 
-        main_layout.addWidget(title)
-        main_layout.addSpacing(10)
-        main_layout.addWidget(self.progress_bar)
-        main_layout.addWidget(self.progress_label)
-        main_layout.addSpacing(10)
-        main_layout.addWidget(log_frame, 1)
-
-        # 按钮区域：仅提供「取消」按钮，卸载开始后禁用并改为「卸载中...」文本，
-        # 避免用户误以为可以中断已提交的删除操作。
-        btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(40, 10, 40, 0)
+        # 按钮栏:仅「取消」,卸载开始后禁用
+        button_bar = QFrame()
+        button_bar.setStyleSheet(
+            "QFrame { background-color: #FAFBFC; border-top: 1px solid #E2E8F0; }"
+        )
+        btn_layout = QHBoxLayout(button_bar)
+        btn_layout.setContentsMargins(56, 16, 56, 16)
         btn_layout.addStretch(1)
 
         self.cancel_btn = QPushButton("取消")
-        self.cancel_btn.setFixedSize(100, 36)
+        self.cancel_btn.setFixedHeight(36)
         self.cancel_btn.clicked.connect(self.cancel_clicked.emit)
 
         btn_layout.addWidget(self.cancel_btn)
-        btn_layout.addStretch(1)
 
-        main_layout.addLayout(btn_layout)
+        main_layout.addWidget(button_bar)
 
     def reset(self) -> None:
         """重置页面状态，恢复到初始值。"""

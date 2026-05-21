@@ -190,39 +190,49 @@ class VendorRow(QFrame):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 标题行（可点击展开/折叠）
-        # 使用浅灰背景 + 圆角边框，与白色内容区形成层次对比
+        # 标题行(可点击展开/折叠)
+        # 白色背景 + 1px 描边,与企业级 list-item 风格一致;
+        # 不保留 vendor.icon emoji(emoji 在 Win/Mac 渲染差异大且偏卡通)
         self.header = QFrame()
+        self.header.setObjectName("vendorHeader")
         self.header.setStyleSheet(
-            "QFrame { background-color: #f8f9fa; border-radius: 6px; "
-            "border: 1px solid #e9ecef; }"
+            "QFrame#vendorHeader { background-color: white; border-radius: 6px; "
+            "border: 1px solid #E2E8F0; }"
+            "QFrame#vendorHeader:hover { border-color: #CBD5E1; background-color: #F8FAFC; }"
+            "QFrame#vendorHeader QLabel { background: transparent; border: none; }"
         )
         self.header.setCursor(Qt.PointingHandCursor)
         self.header.mousePressEvent = lambda e: self._toggle()
 
         header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setContentsMargins(14, 12, 14, 12)
+        header_layout.setSpacing(10)
 
-        self.title_label = QLabel(f"{self.vendor.icon} {self.vendor.name}")
-        title_font = QFont()
-        title_font.setPointSize(13)
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
-        self.title_label.setStyleSheet("color: #333;")
+        # vendor 名称作为标题,不带 emoji
+        self.title_label = QLabel(self.vendor.name)
+        self.title_label.setStyleSheet(
+            "color: #0F172A; font-size: 13px; font-weight: 600;"
+        )
 
-        self.arrow_label = QLabel("▶")
-        self.arrow_label.setStyleSheet("color: #888; font-size: 14px;")
+        # 展开箭头:用 chevron 字符,小巧静音
+        self.arrow_label = QLabel("›")
+        self.arrow_label.setStyleSheet(
+            "color: #94A3B8; font-size: 16px; font-weight: 400;"
+        )
+        self.arrow_label.setFixedWidth(12)
+        self.arrow_label.setAlignment(Qt.AlignCenter)
 
         header_layout.addWidget(self.title_label)
         header_layout.addStretch(1)
         header_layout.addWidget(self.arrow_label)
 
-        # 内容区域（默认折叠）
-        # 白色背景 + 略深的边框，视觉上从标题行「下沉」一层
+        # 内容区域(默认折叠)
         self.content = QFrame()
+        self.content.setObjectName("vendorContent")
         self.content.setStyleSheet(
-            "QFrame { background-color: #ffffff; border-radius: 6px; "
-            "border: 1px solid #e0e0e0; margin-top: 4px; }"
+            "QFrame#vendorContent { background-color: #FAFBFC; border-radius: 6px; "
+            "border: 1px solid #E2E8F0; margin-top: 4px; }"
+            "QFrame#vendorContent QLabel { background: transparent; border: none; }"
         )
         content_layout = QVBoxLayout(self.content)
         content_layout.setContentsMargins(14, 14, 14, 14)
@@ -295,13 +305,14 @@ class VendorRow(QFrame):
     def _toggle(self) -> None:
         self.is_expanded = not self.is_expanded
         self.content.setVisible(self.is_expanded)
-        self.arrow_label.setText("▼" if self.is_expanded else "▶")
+        # chevron 朝向:折叠时朝右(›),展开时朝下(⌄)
+        self.arrow_label.setText("⌄" if self.is_expanded else "›")
         self.toggled.emit(self.vendor.id)
 
     def collapse(self) -> None:
         self.is_expanded = False
         self.content.hide()
-        self.arrow_label.setText("▶")
+        self.arrow_label.setText("›")
 
     def _on_key_type_changed(self, index: int) -> None:
         self._save_current_state()
@@ -533,35 +544,43 @@ class CustomVendorRow(QFrame):
 
         # 标题行(可点击展开/折叠),配色与 VendorRow 一致
         self.header = QFrame()
+        self.header.setObjectName("vendorHeader")
         self.header.setStyleSheet(
-            "QFrame { background-color: #f8f9fa; border-radius: 6px; "
-            "border: 1px solid #e9ecef; }"
+            "QFrame#vendorHeader { background-color: white; border-radius: 6px; "
+            "border: 1px solid #E2E8F0; }"
+            "QFrame#vendorHeader:hover { border-color: #CBD5E1; background-color: #F8FAFC; }"
+            "QFrame#vendorHeader QLabel { background: transparent; border: none; }"
         )
         self.header.setCursor(Qt.PointingHandCursor)
         self.header.mousePressEvent = lambda e: self._toggle()
 
         header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setContentsMargins(14, 12, 14, 12)
+        header_layout.setSpacing(10)
 
-        self.title_label = QLabel("⚙ 自定义 Provider")
-        title_font = QFont()
-        title_font.setPointSize(13)
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
-        self.title_label.setStyleSheet("color: #333;")
+        self.title_label = QLabel("自定义 Provider")
+        self.title_label.setStyleSheet(
+            "color: #0F172A; font-size: 13px; font-weight: 600;"
+        )
 
-        self.arrow_label = QLabel("▶")
-        self.arrow_label.setStyleSheet("color: #888; font-size: 14px;")
+        self.arrow_label = QLabel("›")
+        self.arrow_label.setStyleSheet(
+            "color: #94A3B8; font-size: 16px; font-weight: 400;"
+        )
+        self.arrow_label.setFixedWidth(12)
+        self.arrow_label.setAlignment(Qt.AlignCenter)
 
         header_layout.addWidget(self.title_label)
         header_layout.addStretch(1)
         header_layout.addWidget(self.arrow_label)
 
-        # 内容区
+        # 内容区(与 VendorRow 一致的浅灰背景)
         self.content = QFrame()
+        self.content.setObjectName("vendorContent")
         self.content.setStyleSheet(
-            "QFrame { background-color: #ffffff; border-radius: 6px; "
-            "border: 1px solid #e0e0e0; margin-top: 4px; }"
+            "QFrame#vendorContent { background-color: #FAFBFC; border-radius: 6px; "
+            "border: 1px solid #E2E8F0; margin-top: 4px; }"
+            "QFrame#vendorContent QLabel { background: transparent; border: none; }"
         )
         content_layout = QVBoxLayout(self.content)
         content_layout.setContentsMargins(14, 14, 14, 14)
@@ -1098,43 +1117,50 @@ class ProviderConfigPage(QWidget):
 
         # 汇总区域：蓝色卡片，展示所有供应商已选模型的汇总列表，
         # 并提供全局默认模型下拉框。fallback 模型自动从非默认已选模型中推导。
+        # 汇总卡片:从蓝色饱和卡片改为中性白色 + 1px 描边,
+        # 与 startup 页的成功卡片一致,降低饱和噪声
         self.summary_frame = QFrame()
+        self.summary_frame.setObjectName("summaryFrame")
         self.summary_frame.setStyleSheet(
-            "QFrame { background-color: #f3f8ff; border-radius: 8px; border: 1px solid #c5d8f0; }"
+            "QFrame#summaryFrame { background-color: white; border-radius: 8px; "
+            "border: 1px solid #E2E8F0; }"
+            "QFrame#summaryFrame QLabel { background: transparent; border: none; }"
         )
-        sum_shadow = QGraphicsDropShadowEffect(self.summary_frame)
-        sum_shadow.setBlurRadius(12)
-        sum_shadow.setColor(QColor(21, 101, 192, 15))
-        sum_shadow.setOffset(0, 2)
-        self.summary_frame.setGraphicsEffect(sum_shadow)
         summary_layout = QVBoxLayout(self.summary_frame)
         summary_layout.setSpacing(8)
-        summary_layout.setContentsMargins(14, 12, 14, 12)
+        summary_layout.setContentsMargins(20, 16, 20, 16)
 
         summary_title = QLabel("已选模型汇总")
-        summary_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #1565c0; margin-bottom: 4px;")
+        summary_title.setStyleSheet(
+            "color: #0F172A; font-size: 13px; font-weight: 600;"
+        )
 
         self.summary_content = QLabel("请先配置 Provider 并选择模型")
-        self.summary_content.setStyleSheet("color: #424242; font-size: 12px; line-height: 1.6;")
+        self.summary_content.setStyleSheet(
+            "color: #475569; font-size: 12px; line-height: 1.7;"
+        )
         self.summary_content.setWordWrap(True)
 
         default_layout = QHBoxLayout()
-        default_layout.setSpacing(8)
+        default_layout.setSpacing(10)
+        default_layout.setContentsMargins(0, 4, 0, 0)
 
-        default_label = QLabel("全局默认模型:")
-        default_label.setStyleSheet("font-weight: bold; color: #0d47a1; font-size: 12px;")
+        default_label = QLabel("全局默认模型")
+        default_label.setStyleSheet(
+            "color: #475569; font-size: 12px; font-weight: 500;"
+        )
 
         self.default_model_combo = QComboBox()
         self.default_model_combo.setMinimumWidth(280)
         self.default_model_combo.setEnabled(False)
-        self.default_model_combo.addItem("（请先配置并选择模型）", None)
+        self.default_model_combo.addItem("(请先配置并选择模型)", None)
 
         default_layout.addWidget(default_label)
         default_layout.addWidget(self.default_model_combo)
         default_layout.addStretch(1)
 
-        fallback_hint = QLabel("其余已选模型将自动作为 fallback 备用")
-        fallback_hint.setStyleSheet("color: #888; font-size: 11px;")
+        fallback_hint = QLabel("其余已选模型将自动作为 fallback 备用。")
+        fallback_hint.setStyleSheet("color: #94A3B8; font-size: 11px;")
 
         summary_layout.addWidget(summary_title)
         summary_layout.addWidget(self.summary_content)

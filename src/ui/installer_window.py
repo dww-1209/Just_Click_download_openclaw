@@ -24,6 +24,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget, QLabel
 from PySide6.QtCore import Qt, QTimer
 
+from src.ui._theme import GLOBAL_QSS
 from src.ui.show_welcome import WelcomePage
 from src.ui.show_envcheck import EnvCheckPage
 from src.ui.show_install_progress import InstallingPage
@@ -55,47 +56,37 @@ class StepIndicator(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
+        # 顶栏步骤条:不用色块 pill,改为"步骤序号 + 步骤名 + 细线分隔"的极简排版
+        # 设计意图:与企业级桌面工具(Linear / Stripe Dashboard)一致的克制风格,
+        # 信息密度更高,视觉噪声更低,且不会和正文内容争夺注意力。
         from PySide6.QtWidgets import QHBoxLayout
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 10, 24, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(40, 14, 40, 14)
+        layout.setSpacing(0)
 
         for i, name in enumerate(self.steps):
             label = QLabel(name)
             label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("padding: 5px 14px; border-radius: 16px; font-size: 12px;")
+            label.setObjectName("stepIndicatorItem")
+            label.setProperty("state", "pending")
             self.labels.append(label)
             layout.addWidget(label)
-
-            if i < len(self.steps) - 1:
-                arrow = QLabel("›")
-                arrow.setAlignment(Qt.AlignCenter)
-                arrow.setStyleSheet("color: #CBD5E1; font-size: 18px; font-weight: bold;")
-                arrow.setFixedWidth(16)
-                layout.addWidget(arrow)
-
-        layout.addStretch(1)
+            layout.addStretch(1)
 
     def set_current_step(self, index) -> None:
         for i, label in enumerate(self.labels):
             if i < index:
-                label.setStyleSheet(
-                    "background-color: #E8F5E9; color: #2E7D32; padding: 5px 14px; "
-                    "border-radius: 16px; font-size: 12px; font-weight: bold;"
-                )
-                label.setText("✓ " + self.steps[i])
+                label.setProperty("state", "done")
+                label.setText(self.steps[i])
             elif i == index:
-                label.setStyleSheet(
-                    "background-color: #4CAF50; color: white; padding: 5px 14px; "
-                    "border-radius: 16px; font-size: 12px; font-weight: bold;"
-                )
+                label.setProperty("state", "active")
                 label.setText(self.steps[i])
             else:
-                label.setStyleSheet(
-                    "background-color: #F1F5F9; color: #94A3B8; padding: 5px 14px; "
-                    "border-radius: 16px; font-size: 12px;"
-                )
+                label.setProperty("state", "pending")
                 label.setText(self.steps[i])
+            # property 变化后必须 unpolish + polish 触发 QSS 重绘,setStyleSheet 不需要这步
+            label.style().unpolish(label)
+            label.style().polish(label)
 
 
 class InstallerWindow:
@@ -120,7 +111,7 @@ class InstallerWindow:
     ) -> None:
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("OpenClaw Installer")
-        self.app.setStyleSheet(self._global_qss())
+        self.app.setStyleSheet(GLOBAL_QSS)
         self.current_stage = "welcome"
 
         # 注入的工厂函数与服务实例
@@ -144,165 +135,6 @@ class InstallerWindow:
         if self._openclaw_manager is None:
             self._openclaw_manager = self._manager_factory()
         return self._openclaw_manager
-
-    @staticmethod
-    def _global_qss() -> str:
-        return """
-        /* 全局背景和字体 */
-        QWidget {
-            background-color: #F8F9FC;
-            font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-        }
-
-        /* macOS 原生边框修复 */
-        QLabel {
-            background: transparent;
-            border: none;
-        }
-
-        /* 主按钮 */
-        QPushButton#primaryButton {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 10px 24px;
-            font-weight: bold;
-            font-size: 14px;
-            min-width: 100px;
-        }
-        QPushButton#primaryButton:hover {
-            background-color: #45a049;
-        }
-        QPushButton#primaryButton:pressed {
-            background-color: #388E3C;
-        }
-        QPushButton#primaryButton:disabled {
-            background-color: #cccccc;
-            color: #888888;
-        }
-
-        /* 次要按钮 */
-        QPushButton {
-            background-color: transparent;
-            color: #1E293B;
-            border: 1px solid #CBD5E1;
-            border-radius: 8px;
-            padding: 8px 20px;
-            font-size: 13px;
-            min-width: 80px;
-        }
-        QPushButton:hover {
-            background-color: #F1F5F9;
-            border-color: #94A3B8;
-        }
-        QPushButton:pressed {
-            background-color: #E2E8F0;
-        }
-        QPushButton:disabled {
-            color: #94A3B8;
-            border-color: #E2E8F0;
-        }
-
-        /* 危险按钮(卸载确认等) */
-        QPushButton#dangerButton {
-            background-color: #DC3545;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 10px 24px;
-            font-weight: bold;
-            font-size: 14px;
-            min-width: 100px;
-        }
-        QPushButton#dangerButton:hover {
-            background-color: #C82333;
-        }
-        QPushButton#dangerButton:pressed {
-            background-color: #BD2130;
-        }
-        QPushButton#dangerButton:disabled {
-            background-color: #cccccc;
-            color: #888888;
-        }
-
-        /* 日志区 */
-        QPlainTextEdit#logArea, QTextEdit#logArea {
-            background-color: #1E293B;
-            color: #E2E8F0;
-            font-family: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
-            font-size: 12px;
-            border-radius: 12px;
-            padding: 12px;
-            border: none;
-        }
-        QPlainTextEdit#logArea:focus, QTextEdit#logArea:focus {
-            border: none;
-            outline: none;
-        }
-
-        /* 进度条 */
-        QProgressBar {
-            border: none;
-            background-color: #E2E8F0;
-            border-radius: 10px;
-            height: 8px;
-            text-align: center;
-        }
-        QProgressBar::chunk {
-            background-color: #4CAF50;
-            border-radius: 10px;
-        }
-
-        /* 危险进度条(卸载) */
-        QProgressBar#dangerProgressBar {
-            border: none;
-            background-color: #E2E8F0;
-            border-radius: 10px;
-            height: 8px;
-            text-align: center;
-        }
-        QProgressBar#dangerProgressBar::chunk {
-            background-color: #DC3545;
-            border-radius: 10px;
-        }
-
-        /* 输入框 */
-        QLineEdit {
-            background-color: white;
-            border: 1px solid #CBD5E1;
-            border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 13px;
-            color: #1E293B;
-        }
-        QLineEdit:focus {
-            border: 1px solid #4CAF50;
-        }
-
-        /* 下拉框 */
-        QComboBox {
-            background-color: white;
-            border: 1px solid #CBD5E1;
-            border-radius: 6px;
-            padding: 6px 10px;
-            font-size: 13px;
-            color: #1E293B;
-        }
-        QComboBox:focus {
-            border: 1px solid #4CAF50;
-        }
-        QComboBox::drop-down {
-            border: none;
-            width: 24px;
-        }
-        QComboBox QAbstractItemView {
-            background-color: white;
-            border: 1px solid #CBD5E1;
-            border-radius: 6px;
-            selection-background-color: #E8F5E9;
-        }
-        """
 
     def _setup_window(self) -> None:
         """初始化主窗口 UI
