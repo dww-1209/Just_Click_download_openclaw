@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
+from src.models.constants import is_windows
+
 
 class UninstallDonePage(QWidget):
     """卸载完成页面 —— 展示卸载结果并提供退出或重新检测的入口。
@@ -134,12 +136,7 @@ class UninstallDonePage(QWidget):
         self.status_dot.setStyleSheet("background-color: #16A34A; border-radius: 4px;")
         self.status_desc.setText("您的系统已恢复到安装前状态。")
         self.status_desc.setStyleSheet("color: #475569; font-size: 13px;")
-        self.checklist_label.setText(
-            "OpenClaw 程序文件 — 已删除\n"
-            "配置文件 (含 API Key) — 已删除\n"
-            "命令行工具 — 已删除\n"
-            "Gateway 服务 — 已停止"
-        )
+        self.checklist_label.setText(self._build_checklist_text())
         self.checklist_label.setStyleSheet(
             "color: #475569; font-size: 13px; line-height: 1.7;"
         )
@@ -156,12 +153,7 @@ class UninstallDonePage(QWidget):
         self.status_desc.setStyleSheet("color: #92400E; font-size: 13px;")
 
         # 用 HTML 富文本对失败项染红,QLabel 默认支持
-        lines: list[str] = [
-            "OpenClaw 程序文件 — 已删除",
-            "配置文件 (含 API Key) — 已删除",
-            "命令行工具 — 已删除",
-            "Gateway 服务 — 已停止",
-        ]
+        lines: list[str] = self._build_checklist_lines()
         success_part = "<br>".join(
             f'<span style="color:#475569;">{ln}</span>' for ln in lines
         )
@@ -174,3 +166,24 @@ class UninstallDonePage(QWidget):
             self.checklist_label.setText(success_part)
         self.checklist_label.setStyleSheet("font-size: 13px; line-height: 1.7;")
         self.checklist_label.setTextFormat(Qt.RichText)
+
+    def _build_checklist_lines(self) -> list[str]:
+        """构造卸载清单的行列表。
+
+        Windows 上多两行(桌面快捷方式 + 开始菜单项),Mac 上保持原样。
+        位置:在"命令行工具"之后、"Gateway 服务"之前。
+        """
+        lines = [
+            "OpenClaw 程序文件 — 已删除",
+            "配置文件 (含 API Key) — 已删除",
+            "命令行工具 — 已删除",
+        ]
+        if is_windows():
+            lines.append("桌面快捷方式 — 已删除")
+            lines.append("开始菜单项 — 已删除")
+        lines.append("Gateway 服务 — 已停止")
+        return lines
+
+    def _build_checklist_text(self) -> str:
+        """构造卸载清单的纯文本(给 set_success 用,不带 HTML)。"""
+        return "\n".join(self._build_checklist_lines())
