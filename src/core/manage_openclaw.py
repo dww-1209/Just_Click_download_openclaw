@@ -1666,7 +1666,32 @@ class OpenClawManager(BaseOpenClawManager):
                         on_log(f"删除 {wpath} 失败: {e}")
                     all_ok = False
 
-        # 5. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目
+        # 5. 删除桌面 + 开始菜单快捷方式(仅 Windows 实际执行)
+        # 即使删除失败也不影响 all_ok——快捷方式不是核心数据,只是入口。
+        # 用户看到"OpenClaw 已卸载"足矣,不需要因为一个 .lnk 文件失败就报"部分完成"。
+        if cancel_event and cancel_event():
+            if on_log:
+                on_log("卸载已取消")
+            return False
+        try:
+            from src.adapters.manage_shortcuts import remove_shortcuts
+            sc_result = remove_shortcuts()
+            if is_windows() and on_log:
+                if sc_result.desktop_ok:
+                    on_log("已删除桌面快捷方式")
+                else:
+                    on_log("删除桌面快捷方式失败(忽略,继续)")
+                if sc_result.start_menu_ok:
+                    on_log("已删除开始菜单项")
+                else:
+                    on_log("删除开始菜单项失败(忽略,继续)")
+                for err in sc_result.errors:
+                    on_log(f"  详情: {err}")
+        except Exception as e:
+            if on_log:
+                on_log(f"快捷方式清理出错(忽略,继续): {e}")
+
+        # 6. 清理 shell 配置中的 OpenClaw 添加的 PATH 条目
         if not is_windows():
             for rc_file in [".bashrc", ".zshrc", ".profile"]:
                 rc_path = os.path.join(home, rc_file)
