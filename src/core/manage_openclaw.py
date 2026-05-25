@@ -423,8 +423,13 @@ class OpenClawManager(BaseOpenClawManager):
             self._log(f"Browser config: failed to read existing config: {e}")
             config = {}
 
+        # headless=true：浏览器自动化在后台跑,不弹可见窗口。
+        # 用户体感:agent 查资料时不会突然弹一堆 Chrome 窗口打断当前工作。
+        # 注意:headless 模式下登录态/验证码这类强交互场景会失败,
+        # 高级用户需要时可手改 ~/.openclaw/openclaw.json 把 headless 关掉。
         config["browser"] = {
             "enabled": True,
+            "headless": True,
             "defaultProfile": "openclaw",
         }
 
