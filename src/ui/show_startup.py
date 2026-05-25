@@ -323,17 +323,10 @@ class US06StartupPage(QWidget):
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #92400E; font-size: 12px;")
-        self.error_detail_label = QLabel("")
-        self.error_detail_label.setWordWrap(True)
-        self.error_detail_label.setStyleSheet(
-            "color: #78350F; font-family: \"JetBrains Mono\", \"SF Mono\", monospace; "
-            "font-size: 11px; background-color: rgba(255,255,255,0.6); "
-            "border: 1px solid #FDE68A; border-radius: 4px; padding: 8px;"
-        )
-        self.error_detail_label.hide()
+        # 之前这里还有一个 error_detail_label,展示 result.log_lines[-20:],
+        # 跟下方"详细日志"面板内容完全重复。已去掉,保留单一详细日志来源。
         error_layout.addWidget(self.error_title)
         error_layout.addWidget(self.error_label)
-        error_layout.addWidget(self.error_detail_label)
         layout.addWidget(self.error_frame)
 
         # ── 详细日志(可折叠) ────────────────────────────
@@ -471,7 +464,6 @@ class US06StartupPage(QWidget):
 
         self.success_frame.hide()
         self.error_frame.hide()
-        self.error_detail_label.hide()
 
         self.back_button.show()
         self.retry_button.hide()
@@ -550,10 +542,10 @@ class US06StartupPage(QWidget):
         error_text = result.error_message or "服务启动失败"
         self.error_label.setText(error_text)
 
+        # 失败时直接展开下方详细日志,免去用户多点一次"显示详细日志"
         if result.log_lines:
-            detail = "\n".join(result.log_lines[-20:])
-            self.error_detail_label.setText(detail)
-            self.error_detail_label.show()
+            self.log_frame.show()
+            self.toggle_log_btn.setText("隐藏详细日志 ▲")
 
         self.error_frame.show()
         self.success_frame.hide()
@@ -606,7 +598,6 @@ class US06StartupPage(QWidget):
 
         self.success_frame.hide()
         self.error_frame.hide()
-        self.error_detail_label.hide()
 
         # 重置倒计时状态
         if hasattr(self, '_countdown_timer') and self._countdown_timer:
