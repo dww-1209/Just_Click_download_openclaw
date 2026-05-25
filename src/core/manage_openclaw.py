@@ -511,6 +511,21 @@ class OpenClawManager(BaseOpenClawManager):
         for d in (node_bin_dir, wrapper_dir):
             if d not in path_parts:
                 path_parts.insert(0, d)
+
+        # 兜底:解析 pnpm 实际位置,把它的同目录也塞进 PATH。
+        # 开发机场景(nvm/homebrew/volta 装的 pnpm)走 resolve_pnpm_cmd 的兜底
+        # 路径 2/3,pnpm 不在 ~/.openclaw-node/bin 下;此时 pnpm 内部 spawn 的
+        # node 也在同一目录,如果不把这个目录加进 PATH,pnpm 子进程会以 rc=127
+        # 退出(node not found)。
+        # 普通用户场景走主路径,resolved 就是 ~/.openclaw-node/bin/pnpm,这里
+        # 加进去的是同一个目录,等于 no-op。
+        from src.models.utils import resolve_pnpm_cmd
+        resolved_pnpm = resolve_pnpm_cmd(clean_env)
+        if os.path.isabs(resolved_pnpm):
+            pnpm_dir = os.path.dirname(resolved_pnpm)
+            if pnpm_dir and pnpm_dir not in path_parts:
+                path_parts.insert(0, pnpm_dir)
+
         clean_env["PATH"] = sep.join(path_parts)
         return clean_env
 

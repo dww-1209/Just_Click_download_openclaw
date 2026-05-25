@@ -629,19 +629,25 @@ def resolve_pnpm_cmd(env: Optional[dict] = None) -> str:
        这是 install_openclaw.py 自己解压的位置, 是个强 invariant。安装器走完
        一定有, 路径写死即可零猜测。
     2. shutil.which("pnpm", path=env["PATH"]) —— 兜底场景: 用户手动 brew/npm
-       装了 pnpm 且不在我们的 .openclaw-node 下。
+       装了 pnpm 且 PATH 已经包含。
+    3. 仅 macOS: 调用 `bash -lc 'command -v pnpm'` 让用户 shell 加载 .zshrc/
+       .bash_profile, 拿到 nvm/volta/brew 装的 pnpm 真实路径。
+       Mac GUI 启动(.app/.command/launchd)拿到的 PATH 是 launchd 注入的最小集,
+       不读 shell rc 文件,前两条都会失败。这条路径模拟"用户在终端能跑 pnpm"
+       的环境,适用于开发机/已自己装过 pnpm 的高级用户场景。
+       Windows 不需要这条:Windows 的 PATH 来自注册表,GUI 子进程能完整继承,
+       Win 用户用 npm/scoop 装的 pnpm 走第 2 条就能命中。
 
-    为什么不再扩大候选目录(~/Library/pnpm 等):
+    为什么不直接硬编码 ~/Library/pnpm 等候选目录:
     - 由我们的安装器装的 pnpm 一定在 .openclaw-node 下, 命中路径 1。
-    - 用户用其他方式装的, shell PATH 里通常已经有, shutil.which 能找到。
-    - 硬编码 corepack/volta/asdf 路径是赌博,用户可能根本没装那些工具,
-      反而引入误判风险。
+    - 硬编码 corepack/volta/asdf 路径是赌博——用户可能根本没装那些工具,
+      反而增加误判风险。借用 shell 的查找逻辑比手写一堆候选可靠得多。
 
     Args:
         env: 可选环境变量字典。仅 PATH 这一项会被使用,用于 shutil.which 兜底。
 
     Returns:
-        pnpm 可执行文件的绝对路径。两条路径都失败时返回裸名 "pnpm",
+        pnpm 可执行文件的绝对路径。三条路径都失败时返回裸名 "pnpm",
         让上层 subprocess.Popen 自己抛 FileNotFoundError —— 这是用户手动
         删除 .openclaw-node/bin/pnpm 等极端情况, 不应静默兜底。
     """
@@ -658,6 +664,45 @@ def resolve_pnpm_cmd(env: Optional[dict] = None) -> str:
     resolved = shutil.which("pnpm", path=path_env)
     if resolved:
         return resolved
+
+    # 兜底路径 3 (仅 macOS): 借用用户的 shell 加载 rc 文件后的 PATH 查找。
+    # 关键陷阱:
+    # - launchd 启动的 GUI 子进程拿到的 env 不含 $SHELL,要用 pwd.getpwuid 拿
+    #   用户在系统设置里配的默认 shell。
+    # - 必须用 `-lic` (login + interactive) 才能加载 ~/.zshrc。zsh 的 nvm/volta
+    #   钩子绝大多数装在 .zshrc 里, 仅 -lc (login,非交互) 不会加载。bash 同理:
+    #   仅 .bash_profile 会被 -lc 加载, .bashrc 要 -i 才行。
+    # - 3 秒超时:oh-my-zsh / starship 之类启动慢,但也不能等太久阻塞 GUI。
+    # - 候选 shell 顺序:用户默认 shell → zsh → bash。macOS 11+ 默认 zsh,
+    #   开发者机器多半 nvm 写在 .zshrc;少数还在用 bash 的也兜得住。
+    if not is_windows():
+        candidate_shells: list[str] = []
+        try:
+            import pwd
+            user_shell = pwd.getpwuid(os.getuid()).pw_shell
+            if user_shell and os.path.isfile(user_shell):
+                candidate_shells.append(user_shell)
+        except (KeyError, OSError, ImportError):
+            pass
+        for shell_path in ("/bin/zsh", "/bin/bash"):
+            if shell_path not in candidate_shells and os.path.isfile(shell_path):
+                candidate_shells.append(shell_path)
+
+        for shell_path in candidate_shells:
+            try:
+                result = subprocess.run(
+                    [shell_path, "-lic", "command -v pnpm"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            # 取 stdout 最后一行非空内容(rc 文件可能打印 banner 在前)
+            for line in reversed(result.stdout.splitlines()):
+                line = line.strip()
+                if line and os.path.isfile(line):
+                    return line
 
     return "pnpm"
 
