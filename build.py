@@ -66,19 +66,37 @@ def get_pyinstaller_cmd() -> list:
 def clean_build():
     """清理之前的构建文件
 
-    删除 build/、dist/、所有 __pycache__ 目录以及 .spec 文件，
-    确保下次构建从干净状态开始。
+    删除 dist/、所有 __pycache__ 目录以及 .spec 文件,
+    并清理 build/ 下除 build/icons/ 之外的所有内容。
+    确保下次构建从干净状态开始,但保留图标——图标由 generate_icons.py 单独生成,
+    每次 build 都重新跑生成会浪费时间,且源 logo PNG 不在仓库,
+    跨机器误删后 Win 同事再 build 就会丢图标。
+
     使用 force_rmtree 而非 shutil.rmtree: dist/ 里可能有 openclaw-cn/.git
     的 packfile 被锁住,原生 shutil.rmtree 遇到锁文件就跪(PermissionError)。
     """
     # 延迟导入,避免 build.py 顶层 import 时触发 src 模块加载
     from src.models.utils import force_rmtree
 
-    dirs_to_remove = ['build', 'dist']
-    for dir_name in dirs_to_remove:
-        if os.path.exists(dir_name):
-            print(f"清理 {dir_name}/...")
-            force_rmtree(dir_name)
+    # dist/ 整个删
+    if os.path.exists('dist'):
+        print("清理 dist/...")
+        force_rmtree('dist')
+
+    # build/ 下逐项处理:跳过 icons/(由 generate_icons.py 单独维护)
+    if os.path.exists('build'):
+        print("清理 build/(保留 build/icons/)...")
+        for entry in os.listdir('build'):
+            if entry == 'icons':
+                continue
+            entry_path = os.path.join('build', entry)
+            if os.path.isdir(entry_path):
+                force_rmtree(entry_path)
+            else:
+                try:
+                    os.remove(entry_path)
+                except OSError:
+                    pass
 
     # 清理 __pycache__
     for pycache in Path('.').rglob('__pycache__'):
@@ -128,6 +146,19 @@ def _build_single(
         "--noconfirm",
         "--distpath", output_dir,
     ]
+
+    # 应用图标(可选)
+    # build/icons/ 是 generate_icons.py 的产物,build/ 已 gitignored,
+    # logo 源 PNG 不入仓库,新机器需要先跑 generate_icons.py 生成。
+    # 找不到图标文件时静默降级——不阻塞构建,只是少个图标。
+    icon_filename = "openclaw.ico" if is_windows() else "openclaw.icns"
+    icon_path = os.path.join("build", "icons", icon_filename)
+    if os.path.exists(icon_path):
+        args.extend(["--icon", icon_path])
+        print(f"  使用图标: {icon_path}")
+    else:
+        print(f"  未找到图标 {icon_path},打包后将使用默认图标。"
+              f"提示: uv run python generate_icons.py 可从 logo PNG 生成。")
 
     # 离线资源打包
     if add_data:

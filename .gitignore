@@ -58,5 +58,8 @@ resources/**/*.zip
 resources/**/*.tgz
 !resources/**/.gitkeep
 
+# Source logo (设计稿,不入仓库,跨机器各自准备 resources/logo.png 后跑 generate_icons.py)
+resources/logo.png
+
 # Claude Code local state
 .claude/
