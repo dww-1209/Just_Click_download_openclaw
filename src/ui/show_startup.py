@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from src.models.config import ConfigStatus, ConfigProgress, ConfigResult
 from src.models.constants import is_windows
@@ -306,10 +306,12 @@ class US06StartupPage(QWidget):
         layout.addSpacing(20)
         layout.addWidget(self.success_frame)
 
-        # ── 错误卡片(浅琥珀描边) ─────────────────────────
+        # ── 错误卡片(浅红描边) ─────────────────────────
+        # "启动失败"是 error 语义,色板与全局 dangerButton (#B91C1C) 对齐;
+        # 琥珀色保留给 warning(防火墙/SmartScreen 提示)。
         self.error_frame = QFrame()
         self.error_frame.setStyleSheet(
-            "QFrame { background-color: #FFFBEB; border: 1px solid #FDE68A; "
+            "QFrame { background-color: #FEF2F2; border: 1px solid #FECACA; "
             "border-radius: 6px; }"
             "QFrame QLabel { background: transparent; border: none; }"
         )
@@ -319,10 +321,10 @@ class US06StartupPage(QWidget):
         error_layout.setContentsMargins(14, 12, 14, 12)
         error_layout.setSpacing(4)
         self.error_title = QLabel("启动失败")
-        self.error_title.setStyleSheet("color: #92400E; font-size: 13px; font-weight: 600;")
+        self.error_title.setStyleSheet("color: #B91C1C; font-size: 13px; font-weight: 600;")
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #92400E; font-size: 12px;")
+        self.error_label.setStyleSheet("color: #B91C1C; font-size: 12px;")
         # 之前这里还有一个 error_detail_label,展示 result.log_lines[-20:],
         # 跟下方"详细日志"面板内容完全重复。已去掉,保留单一详细日志来源。
         error_layout.addWidget(self.error_title)
@@ -414,6 +416,23 @@ class US06StartupPage(QWidget):
         button_layout.addWidget(self.finish_button)
 
         main_layout.addWidget(button_bar)
+
+        # 回车推进:成功页打开 WebChat,失败页重试,启动中(任何主按钮都不可见)无操作。
+        # 注意 open_webchat_btn 启动后有 8 秒倒计时禁用,期间回车不会误触发。
+        for seq in (QKeySequence(Qt.Key_Return), QKeySequence(Qt.Key_Enter)):
+            sc = QShortcut(seq, self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._on_enter_pressed)
+
+    def _on_enter_pressed(self) -> None:
+        for btn in (
+            self.open_webchat_btn,
+            self.retry_button,
+            self.finish_button,
+        ):
+            if btn.isEnabled() and btn.isVisible():
+                btn.click()
+                return
 
     def _toggle_log(self) -> None:
         if self.log_frame.isVisible():

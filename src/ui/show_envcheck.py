@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from src.models.env_check import (
     CheckStatus,
@@ -328,6 +328,26 @@ class EnvCheckPage(QWidget):
         button_layout.addWidget(self.next_button)
 
         main_layout.addWidget(button_bar)
+
+        # 回车推进:优先级 next_button > retry_button > quick_start_btn
+        # 检测中两者都禁用,回车不会误触发。WidgetWithChildrenShortcut
+        # 限定快捷键只在本页激活时生效。
+        for seq in (QKeySequence(Qt.Key_Return), QKeySequence(Qt.Key_Enter)):
+            sc = QShortcut(seq, self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._on_enter_pressed)
+
+    def _on_enter_pressed(self) -> None:
+        """按钮可见性按当前页状态变化,这里依次尝试,首个可点的就触发。
+        已安装分支的「快速启动」在 self.openclaw_widget 子组件里,需要通过
+        组件引用访问;next/retry 在本类持有。"""
+        candidates = [self.next_button, self.retry_button]
+        if self.openclaw_widget.isVisible():
+            candidates.append(self.openclaw_widget.quick_start_btn)
+        for btn in candidates:
+            if btn.isEnabled() and btn.isVisible():
+                btn.click()
+                return
 
     def _hide_openclaw_widget(self) -> None:
         self.openclaw_widget.hide()

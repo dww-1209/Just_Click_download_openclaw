@@ -23,8 +23,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget, QLabel
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon
 
 from src.ui._theme import GLOBAL_QSS
+from src.models.utils import find_app_icon_path
 from src.ui.show_welcome import WelcomePage
 from src.ui.show_envcheck import EnvCheckPage
 from src.ui.show_install_progress import InstallingPage
@@ -112,6 +114,13 @@ class InstallerWindow:
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("OpenClaw Installer")
         self.app.setStyleSheet(GLOBAL_QSS)
+
+        # 设置应用图标:dock / 任务栏 / Cmd+Tab 切窗器 / Alt+Tab 都用这个。
+        # PyInstaller --icon 只影响最终二进制的"文件图标",运行时窗口图标必须
+        # 显式 setWindowIcon。开发模式从 build/icons/ 读,打包后从 _MEIPASS 读。
+        icon_path = find_app_icon_path()
+        if icon_path:
+            self.app.setWindowIcon(QIcon(icon_path))
         self.current_stage = "welcome"
 
         # 注入的工厂函数与服务实例

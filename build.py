@@ -322,7 +322,16 @@ def build(
     # 多镜像源 + 重试在 pnpm install 阶段下载，详见 install_openclaw.py 的
     # _step5_pnpm_install_deps 与 GITHUB_PROXY_MIRRORS。
     sep = ";" if is_windows() else ":"
-    add_data_online = []
+
+    # 共享:运行时窗口图标(dock / 任务栏 / Cmd+Tab),三个产物都打包
+    # PyInstaller --icon 只影响二进制文件的"文件图标",运行时窗口图标必须
+    # 把 build/icons/ 也打到 _MEIPASS 里,find_app_icon_path() 才能解析
+    common_data = []
+    icons_dir = Path("build/icons")
+    if icons_dir.is_dir():
+        common_data.append(f"{icons_dir}{sep}build/icons")
+
+    add_data_online = list(common_data)
 
     # macOS 在线版自带 git，避免 Xcode CLT 弹窗
     # Node.js 由在线安装器从网络镜像下载，不打包以减小体积
@@ -343,7 +352,7 @@ def build(
     # 2. 打包离线版安装器（资源存在时额外构建）
     ok_offline = True
     if offline and resources_dir and os.path.isdir(resources_dir):
-        add_data_offline = []
+        add_data_offline = list(common_data)
         # 保持 resources/{platform} 的目录结构，与 _resolve_resource_dir 期望一致
         platform_name = os.path.basename(resources_dir)
         add_data_offline.append(f"{resources_dir}{sep}resources/{platform_name}")
@@ -375,6 +384,7 @@ def build(
         bundle_id="com.openclaw.uninstaller",
         launcher_script_name=f"双击运行-OpenClaw卸载工具{arch_suffix}",
         launcher_display_name="OpenClaw 卸载工具",
+        add_data=common_data,
     )
 
     print()

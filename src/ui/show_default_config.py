@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from src.models.config import ConfigStatus, ConfigProgress, ConfigResult
 
@@ -200,10 +200,12 @@ class US05ConfigPage(QWidget):
         success_layout.addWidget(success_title)
         success_layout.addWidget(success_desc)
 
-        # ── 错误提示卡片(浅琥珀描边) ──────────────────────
+        # ── 错误提示卡片(浅红描边) ──────────────────────
+        # "配置失败"是 error 语义,色板与全局 dangerButton (#B91C1C) 对齐;
+        # 琥珀色保留给 warning(防火墙/SmartScreen 提示)。
         self.error_frame = QFrame()
         self.error_frame.setStyleSheet(
-            "QFrame { background-color: #FFFBEB; border: 1px solid #FDE68A; "
+            "QFrame { background-color: #FEF2F2; border: 1px solid #FECACA; "
             "border-radius: 6px; }"
             "QFrame QLabel { background: transparent; border: none; }"
         )
@@ -213,10 +215,10 @@ class US05ConfigPage(QWidget):
         error_layout.setSpacing(4)
 
         self.error_title = QLabel("配置失败")
-        self.error_title.setStyleSheet("color: #92400E; font-size: 13px; font-weight: 600;")
+        self.error_title.setStyleSheet("color: #B91C1C; font-size: 13px; font-weight: 600;")
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #92400E; font-size: 12px;")
+        self.error_label.setStyleSheet("color: #B91C1C; font-size: 12px;")
         error_layout.addWidget(self.error_title)
         error_layout.addWidget(self.error_label)
 
@@ -301,6 +303,18 @@ class US05ConfigPage(QWidget):
         button_layout.addWidget(self.next_button)
 
         main_layout.addWidget(button_bar)
+
+        # 回车推进:next > retry,manual_config 不进回车序列(用户必须显式点)
+        for seq in (QKeySequence(Qt.Key_Return), QKeySequence(Qt.Key_Enter)):
+            sc = QShortcut(seq, self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._on_enter_pressed)
+
+    def _on_enter_pressed(self) -> None:
+        for btn in (self.next_button, self.retry_button):
+            if btn.isEnabled() and btn.isVisible():
+                btn.click()
+                return
 
     def _toggle_log(self) -> None:
         """切换日志显示"""
