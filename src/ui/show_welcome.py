@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 
 # 局部样式表(只作用于本页元素,不污染全局 QSS)
@@ -87,6 +87,12 @@ QLabel#stepLabel {
     font-weight: 500;
 }
 
+QLabel#stepDuration {
+    color: #94A3B8;
+    font-size: 12px;
+    font-weight: 500;
+}
+
 QFrame#stepDivider {
     background-color: #E2E8F0;
     max-height: 1px;
@@ -118,11 +124,13 @@ def _make_brand_mark() -> QFrame:
     return mark
 
 
-def _make_step_row(number: str, label: str) -> QWidget:
-    """单条流程预览 — 数字编号 + 步骤名,无色块、无图标。
+def _make_step_row(number: str, label: str, duration: str = "") -> QWidget:
+    """单条流程预览 — 数字编号 + 步骤名 + 预估耗时,无色块、无图标。
 
     用纯排版构建层级:数字用静音灰小字(辅助信息),步骤名用 slate-800
-    中等字重(主信息)。整行左对齐,8pt 垂直节奏。
+    中等字重(主信息),耗时右对齐用静音灰。整行左对齐,8pt 垂直节奏。
+    给用户量化锚点("现在卡在哪一步、还要多久"),避免在 pnpm install
+    阶段误以为程序卡死。
     """
     row = QWidget()
     layout = QHBoxLayout(row)
@@ -139,6 +147,11 @@ def _make_step_row(number: str, label: str) -> QWidget:
     layout.addWidget(num)
     layout.addWidget(name)
     layout.addStretch(1)
+
+    if duration:
+        dur = QLabel(duration)
+        dur.setObjectName("stepDuration")
+        layout.addWidget(dur)
     return row
 
 
@@ -249,9 +262,18 @@ class WelcomePage(QWidget):
         content_layout.addWidget(section_label)
         content_layout.addSpacing(8)
 
-        steps = ["环境检测", "下载安装", "自动配置", "启动服务"]
-        for i, name in enumerate(steps):
-            content_layout.addWidget(_make_step_row(f"{i + 1:02d}", name))
+        # 耗时锚点:基于实测,网络好时各阶段大致区间。
+        # 下载安装受 pnpm 镜像速度影响最大,给个上限让用户有心理预期。
+        steps = [
+            ("环境检测", "约 30 秒"),
+            ("下载安装", "5–10 分钟"),
+            ("自动配置", "约 1 分钟"),
+            ("启动服务", "约 30 秒"),
+        ]
+        for i, (name, duration) in enumerate(steps):
+            content_layout.addWidget(
+                _make_step_row(f"{i + 1:02d}", name, duration)
+            )
             if i < len(steps) - 1:
                 content_layout.addWidget(_make_divider())
 
@@ -273,8 +295,18 @@ class WelcomePage(QWidget):
         button_layout.setSpacing(8)
         button_layout.addStretch(1)
 
+        # "退出"降级为文字链接:消除与主 CTA 的视觉权重对等问题。
+        # 用户随时能从右上角×退出,这里只保留一个静音灰的兜底入口。
         self.exit_button = QPushButton("退出")
         self.exit_button.setFixedHeight(36)
+        self.exit_button.setCursor(Qt.PointingHandCursor)
+        self.exit_button.setStyleSheet(
+            "QPushButton { color: #94A3B8; background: transparent; "
+            "border: none; padding: 7px 12px; font-size: 13px; "
+            "font-weight: 500; min-width: 0; }"
+            "QPushButton:hover { color: #475569; }"
+            "QPushButton:pressed { color: #0F172A; }"
+        )
         self.exit_button.clicked.connect(self.exit_clicked.emit)
 
         self.next_button = QPushButton("开始安装")
@@ -286,3 +318,16 @@ class WelcomePage(QWidget):
         button_layout.addWidget(self.next_button)
 
         main_layout.addWidget(button_bar)
+
+        # 回车键直接触发主 CTA。QStackedWidget 里子页面 setDefault 不生效
+        # (要 QDialog 父级),所以走 QShortcut。Qt.WidgetWithChildrenShortcut
+        # 限定快捷键只在本页激活时响应,避免跨页串台。
+        for seq in (QKeySequence(Qt.Key_Return), QKeySequence(Qt.Key_Enter)):
+            sc = QShortcut(seq, self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._on_enter_pressed)
+
+    def _on_enter_pressed(self) -> None:
+        """回车推进主 CTA,前提是按钮启用且未隐藏。"""
+        if self.next_button.isEnabled() and self.next_button.isVisible():
+            self.next_button.click()

@@ -25,8 +25,10 @@ if sys.platform not in ("win32", "darwin"):
 
 from PySide6.QtWidgets import QApplication, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 
 from src.ui._theme import GLOBAL_QSS
+from src.models.utils import find_app_icon_path
 from src.ui.show_uninstall_welcome import UninstallWelcomePage
 from src.ui.show_uninstall_progress import UninstallProgressPage
 from src.ui.show_uninstall_done import UninstallDonePage
@@ -47,6 +49,11 @@ class UninstallerWindow:
         # 应用与安装器相同的全局视觉系统(slate 配色 + 极简版式)
         # 卸载器与安装器是同一产品的两个入口,视觉风格必须保持一致
         self.app.setStyleSheet(GLOBAL_QSS)
+
+        # 设置应用图标:dock / 任务栏 / Cmd+Tab 都用这个,避免显示默认 Python 图标
+        icon_path = find_app_icon_path()
+        if icon_path:
+            self.app.setWindowIcon(QIcon(icon_path))
         self.openclaw_manager = OpenClawManager()
         self._setup_window()
 

@@ -326,10 +326,12 @@ class InstallingPage(QWidget):
 
         if friendly_msg:
             self.hint_label.setText(friendly_msg)
-            # 浅琥珀 callout:1px 描边 + 适度 padding,不再用饱和黄底
+            # 浅红 callout:1px 描边 + 适度 padding。
+            # "安装失败"是 error 语义,色板与全局 dangerButton (#B91C1C) 对齐;
+            # 琥珀色保留给 warning(取消、防火墙/SmartScreen 提示)。
             self.hint_label.setStyleSheet(
-                "color: #92400E; background-color: #FFFBEB; "
-                "border: 1px solid #FDE68A; border-radius: 6px; "
+                "color: #B91C1C; background-color: #FEF2F2; "
+                "border: 1px solid #FECACA; border-radius: 6px; "
                 "padding: 10px 14px; font-size: 12px;"
             )
             self.hint_label.show()

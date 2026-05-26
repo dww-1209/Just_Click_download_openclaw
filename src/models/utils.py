@@ -1080,6 +1080,44 @@ def safe_tar_extract(
             on_log(f"目录链接全部还原完成 ({total}/{total})")
 
 
+def find_app_icon_path() -> Optional[str]:
+    """返回当前平台合适的应用图标文件绝对路径,找不到返回 None。
+
+    优先级:
+    1. PyInstaller 打包后的 _MEIPASS/build/icons/
+    2. 开发模式下项目根 build/icons/(generate_icons.py 的产物)
+    3. 兜底用 resources/logo.png(原图,Qt 也能识别 PNG)
+
+    用途:三个入口窗口(InstallerWindow / UninstallerWindow)都通过这个找图标,
+    避免重复硬编码路径,也保证 PyInstaller 打包后能正确解析。
+    """
+    # macOS .icns 给 Finder/Dock 看,运行时窗口图标用 PNG 反而更通用;
+    # Windows .ico 是窗口图标的天然格式,直接用。
+    icon_filename = "openclaw.ico" if is_windows() else "openclaw.icns"
+
+    candidates = []
+    # 1. PyInstaller 打包路径
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, "build", "icons", icon_filename))
+        candidates.append(os.path.join(sys._MEIPASS, "build", "icons", "openclaw.icns"))
+        candidates.append(os.path.join(sys._MEIPASS, "build", "icons", "openclaw.ico"))
+        candidates.append(os.path.join(sys._MEIPASS, "resources", "logo.png"))
+
+    # 2. 开发模式
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    candidates.extend([
+        str(project_root / "build" / "icons" / icon_filename),
+        str(project_root / "build" / "icons" / "openclaw.icns"),
+        str(project_root / "build" / "icons" / "openclaw.ico"),
+        str(project_root / "resources" / "logo.png"),
+    ])
+
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
 def _find_7z_exe() -> Optional[str]:
     """找 Windows 上的 7z.exe 可执行文件路径,按优先级:
     1. 项目内置 resources/windows/7z.exe(便于离线版自包含)
