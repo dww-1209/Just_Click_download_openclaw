@@ -387,20 +387,40 @@ def build(
         add_data=common_data,
     )
 
+    # 4. 打包启动器（仅含图标，不打包 git/node/离线资源，保持轻量 ~15-20MB）
+    ok_launcher = _build_single(
+        output_dir=output_dir,
+        entry_file="launch_launcher.py",
+        app_name=f"OpenClaw启动器{arch_suffix}",
+        bundle_id="com.openclaw.launcher",
+        launcher_script_name=f"双击运行-OpenClaw启动器{arch_suffix}",
+        launcher_display_name="OpenClaw 启动器",
+        add_data=common_data,
+    )
+
     print()
     print("=" * 50)
     results = []
+    attempted = ["在线安装器"]
     if ok_online:
         results.append("在线安装器")
-    if ok_offline:
-        results.append("离线安装器")
+    if offline and resources_dir and os.path.isdir(resources_dir):
+        attempted.append("离线安装器")
+        if ok_offline:
+            results.append("离线安装器")
+    attempted.append("卸载工具")
     if ok_uninstall:
         results.append("卸载工具")
+    attempted.append("启动器")
+    if ok_launcher:
+        results.append("启动器")
 
-    if len(results) == 3:
+    if len(results) == len(attempted):
         print("全部打包成功！")
     elif results:
         print(f"部分打包成功: {', '.join(results)}")
+        failed = [a for a in attempted if a not in results]
+        print(f"  失败: {', '.join(failed)}")
     else:
         print("打包失败")
         sys.exit(1)
@@ -412,6 +432,7 @@ def build(
     if offline and resources_dir and os.path.isdir(resources_dir):
         app_names.append(f"OpenClaw离线安装器{arch_suffix}")
     app_names.append(f"OpenClaw卸载工具{arch_suffix}")
+    app_names.append(f"OpenClaw启动器{arch_suffix}")
     for app_name in app_names:
         if is_macos():
             exe_path = os.path.join(output_dir, f"{app_name}.app")
