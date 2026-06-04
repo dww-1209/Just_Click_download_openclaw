@@ -28,7 +28,7 @@ from src.models.constants import is_windows
 _LNK_FILENAME = "OpenClaw.lnk"
 
 # 快捷方式悬浮提示
-_SHORTCUT_DESCRIPTION = "OpenClaw 一键安装与启动"
+_SHORTCUT_DESCRIPTION = "OpenClaw AI 助手启动器"
 
 
 @dataclass
@@ -46,12 +46,16 @@ class ShortcutResult:
     errors: list[str] = field(default_factory=list)
 
 
-def create_shortcuts(desktop: bool, start_menu: bool) -> ShortcutResult:
+def create_shortcuts(desktop: bool, start_menu: bool, target: str | None = None) -> ShortcutResult:
     """创建桌面 + 开始菜单快捷方式。
 
     Args:
         desktop: 是否创建桌面快捷方式
         start_menu: 是否创建开始菜单快捷方式
+        target: 快捷方式指向的可执行文件路径。
+                None 时默认指向 sys.executable(当前运行的 exe)。
+                安装器调用时应传入启动器 exe 路径,这样快捷方式指向的是
+                Launcher 而非安装器(安装器装完即可删除)。
 
     Returns:
         ShortcutResult,失败的项目记入 errors,永不抛异常给调用方。
@@ -68,7 +72,7 @@ def create_shortcuts(desktop: bool, start_menu: bool) -> ShortcutResult:
         return result
 
     shell = Dispatch("WScript.Shell")
-    target = sys.executable
+    target = target or sys.executable
     working_dir = str(Path(target).parent)
 
     if desktop:
