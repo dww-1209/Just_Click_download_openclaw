@@ -243,23 +243,10 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;
 }
 
-/* ── 复选框 ──────────────────────────────────────────── */
+/* ── 复选框：只设字体颜色和间距,indicator 交给 Windows 原生渲染(白底方框内黑色对勾) ── */
 QCheckBox {
     color: #0F172A;
     spacing: 8px;
     font-size: 13px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #CBD5E1;
-    border-radius: 3px;
-    background-color: white;
-}
-QCheckBox::indicator:hover { border-color: #94A3B8; }
-QCheckBox::indicator:checked {
-    background-color: #0F172A;
-    border-color: #0F172A;
-    image: none;
 }
 """

@@ -15,7 +15,6 @@ from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from src.models.config import ConfigStatus, ConfigProgress, ConfigResult
 from src.models.constants import is_windows
-from src.adapters.manage_shortcuts import create_shortcuts
 
 
 class StartupStepWidget(QFrame):
@@ -366,26 +365,6 @@ class US06StartupPage(QWidget):
         self.scroll_area.setWidget(content_widget)
         main_layout.addWidget(self.scroll_area, 1)
 
-        # ── 桌面快捷方式选项(仅 Windows) ─────────────────
-        # Mac 用户的心智路径是 Spotlight/Launchpad,桌面图标显得 Windows 味重,
-        # 所以这两个 checkbox 在 Mac 上根本不创建(不是 hide,是不存在)。
-        self._chk_desktop: QCheckBox | None = None
-        self._chk_start_menu: QCheckBox | None = None
-        if is_windows():
-            shortcut_frame = QFrame()
-            shortcut_layout = QVBoxLayout(shortcut_frame)
-            shortcut_layout.setContentsMargins(56, 8, 56, 8)
-            shortcut_layout.setSpacing(4)
-
-            self._chk_desktop = QCheckBox("在桌面创建快捷方式")
-            self._chk_desktop.setChecked(True)
-            self._chk_start_menu = QCheckBox("在开始菜单创建快捷方式")
-            self._chk_start_menu.setChecked(True)
-
-            shortcut_layout.addWidget(self._chk_desktop)
-            shortcut_layout.addWidget(self._chk_start_menu)
-            main_layout.addWidget(shortcut_frame)
-
         # ── 底部按钮栏 ────────────────────────────────────
         button_bar = QFrame()
         button_bar.setStyleSheet(
@@ -629,21 +608,9 @@ class US06StartupPage(QWidget):
         self.finish_button.hide()
 
     def _on_finish_clicked(self) -> None:
-        """完成按钮点击槽。
+        """完成按钮点击槽：直接发射信号退出。
 
-        在 emit finish_clicked 之前,先根据 checkbox 状态创建桌面/开始菜单快捷方式。
-        失败不阻塞退出——快捷方式不是核心功能,失败仅记录日志,用户始终能正常关闭。
-        Mac 上 checkbox 未创建,直接 emit。
+        快捷方式创建职责已由安装器的 InstallDonePage 承担，
+        启动器只负责日常启动和模型配置。
         """
-        if is_windows() and self._chk_desktop is not None and self._chk_start_menu is not None:
-            desktop = self._chk_desktop.isChecked()
-            start_menu = self._chk_start_menu.isChecked()
-            if desktop or start_menu:
-                result = create_shortcuts(desktop, start_menu)
-                if desktop and not result.desktop_ok:
-                    self.add_log_line("桌面快捷方式创建失败")
-                if start_menu and not result.start_menu_ok:
-                    self.add_log_line("开始菜单项创建失败")
-                for err in result.errors:
-                    self.add_log_line(f"  详情: {err}")
         self.finish_clicked.emit()

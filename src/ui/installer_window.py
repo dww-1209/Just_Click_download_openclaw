@@ -31,8 +31,7 @@ from src.models.utils import find_app_icon_path
 from src.ui.show_welcome import WelcomePage
 from src.ui.show_envcheck import EnvCheckPage
 from src.ui.show_install_progress import InstallingPage
-from src.ui.show_default_config import US05ConfigPage
-from src.ui.show_install_done import InstallDonePage
+from src.ui.show_default_config import US05ConfigPage, InstallDonePage
 from src.services.check_environment import EnvCheckService
 from src.services.perform_install import InstallService, ReinstallWorker
 from src.contracts import IEnvChecker, IInstaller, IOpenClawManager, ISystemLauncher

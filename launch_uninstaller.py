@@ -49,11 +49,10 @@ class UninstallerWindow:
         # 应用与安装器相同的全局视觉系统(slate 配色 + 极简版式)
         # 卸载器与安装器是同一产品的两个入口,视觉风格必须保持一致
         self.app.setStyleSheet(GLOBAL_QSS)
-
-        # 设置应用图标:dock / 任务栏 / Cmd+Tab 都用这个,避免显示默认 Python 图标
-        icon_path = find_app_icon_path()
-        if icon_path:
-            self.app.setWindowIcon(QIcon(icon_path))
+        # 应用图标:任务栏 / Alt-Tab / 窗口标题栏统一显示 OpenClaw logo
+        _icon_path = find_app_icon_path()
+        if _icon_path:
+            self.app.setWindowIcon(QIcon(_icon_path))
         self.openclaw_manager = OpenClawManager()
         self._setup_window()
 
@@ -63,6 +62,10 @@ class UninstallerWindow:
 
         self.stacked_widget = QStackedWidget()
         self.stacked_widget.setWindowTitle("OpenClaw Uninstaller")
+        # 同时设给顶层 widget:Windows 某些主题下子窗口不会自动继承 app icon
+        _icon_path = find_app_icon_path()
+        if _icon_path:
+            self.stacked_widget.setWindowIcon(QIcon(_icon_path))
 
         # 窗口尺寸:与安装器(800×700)看齐,统一品牌感受。
         # 卸载器原本 600×520 偏小,在 56px 阅读边距 + 卡片版式下,
