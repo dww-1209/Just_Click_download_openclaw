@@ -279,21 +279,6 @@ uv run python build.py --offline --resources-dir resources/macos
 >
 > **文件名不硬编码版本号**：安装器使用 glob 模式匹配（如 `node-v*.tar.gz`、`git-*.tar.gz`），支持任意版本，按版本号降序自动选择最新版。
 
-### 双仓库工作流
-
-本项目包含两个独立的 Git 仓库：
-
-1. **根目录** → GitHub `dww-1209/Just_Click_download_openclaw`（开发主仓库）
-2. **`agentclaw/` 子目录** → Gitea `http://47.116.45.225/ai-team/agentclaw`（下游仓库）
-
-开发完成后，手动将相关文件复制到 `agentclaw/installer/`，然后在 `agentclaw/` 内提交并 push。注意：`agentclaw/` 内执行 git 命令必须使用绝对路径：
-
-```bash
-GIT_DIR=/Users/dww/Desktop/Just_Click_download_openclaw/agentclaw/.git \
-GIT_WORK_TREE=/Users/dww/Desktop/Just_Click_download_openclaw/agentclaw \
-git <command>
-```
-
 ## 注意事项
 
 1. **网络要求**：安装过程需要从 Gitee、国内 npm 镜像下载源码和依赖。如遇下载失败，可尝试切换网络或稍后重试。
